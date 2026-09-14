@@ -4,6 +4,7 @@
 |---|---|
 | Random draw (first position) | 45.0 |
 | Random expected | 46.2 |
+| Zero-shot LLM judge | 45.0 |
 | SC | 48.0 |
 | SQ | 46.0 |
 | TA | 49.0 |
