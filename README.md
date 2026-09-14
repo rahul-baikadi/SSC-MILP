@@ -1,9 +1,7 @@
 # SSC-MILP — reimplementation
 
 Independent reimplementation of **"MILP-Solve-Free Selection of LLM-Generated MILP
-Programs via Multi-Signal Structural-Semantic Consistency"** (Zeng et al.).
-The original repository link in the paper is dead; this code is written from the
-paper alone.
+Programs via Multi-Signal Structural-Semantic Consistency"** 
 
 SSC is a best-of-K selector over a fixed pool of LLM-generated Pyomo programs.
 It never solves a candidate integer program: it combines structural consistency
