@@ -66,43 +66,51 @@ def cmd_check(args):
             log(f"API check FAILED: {e}")
 
 
+def run_dir(args):
+    return ROOT / "runs" / (args.run_name or args.benchmark)
+
+
 def cmd_generate(args):
     from ssc.generate import generate_benchmark
+    if args.no_templates:
+        C.USE_TEMPLATES = False
+    if args.repair_rounds is not None:
+        C.REPAIR_ROUNDS = args.repair_rounds
     problems = load_benchmark(args.benchmark, args.n)
-    generate_benchmark(get_llm(args), problems, ROOT / "runs" / args.benchmark,
+    generate_benchmark(get_llm(args), problems, run_dir(args),
                        problem_workers=args.problem_workers, recipe_workers=args.recipe_workers, log=log)
 
 
 def cmd_extract(args):
     from ssc.extract import extract_benchmark
     problems = load_benchmark(args.benchmark, args.n)
-    extract_benchmark(get_llm(args), problems, ROOT / "runs" / args.benchmark, workers=args.workers, log=log)
+    extract_benchmark(get_llm(args), problems, run_dir(args), workers=args.workers, log=log)
 
 
 def cmd_score(args):
     from ssc.evaluate import score_benchmark
     problems = load_benchmark(args.benchmark, args.n)
-    score_benchmark(problems, ROOT / "runs" / args.benchmark, run_lp=not args.no_lp,
+    score_benchmark(problems, run_dir(args), run_lp=not args.no_lp,
                     workers=args.workers, pool_workers=args.pool_workers, log=log)
 
 
 def cmd_evaluate(args):
     from ssc.evaluate import evaluate_benchmark
     problems = load_benchmark(args.benchmark, args.n)
-    evaluate_benchmark(problems, ROOT / "runs" / args.benchmark, workers=args.workers,
+    evaluate_benchmark(problems, run_dir(args), workers=args.workers,
                        pool_workers=args.pool_workers, log=log)
 
 
 def cmd_judge(args):
     from ssc.judge import judge_benchmark
     problems = load_benchmark(args.benchmark, args.n)
-    judge_benchmark(get_llm(args), problems, ROOT / "runs" / args.benchmark, workers=args.workers, log=log)
+    judge_benchmark(get_llm(args), problems, run_dir(args), workers=args.workers, log=log)
 
 
 def cmd_report(args):
     from ssc.metrics import format_report, load_results, summarize
     problems = load_benchmark(args.benchmark, args.n)
-    out = ROOT / "runs" / args.benchmark
+    out = run_dir(args)
     rows = load_results(out, problems)
     summ = summarize(rows)
     with open(out / "report.json", "w", encoding="utf-8") as fh:
@@ -135,6 +143,9 @@ def main():
     ap.add_argument("--no-lp", action="store_true")
     ap.add_argument("--no-api", action="store_true")
     ap.add_argument("--judge", action="store_true")
+    ap.add_argument("--run-name", default=None, help="output dir under runs/ (default: benchmark name)")
+    ap.add_argument("--no-templates", action="store_true", help="generation control: no retrieved templates")
+    ap.add_argument("--repair-rounds", type=int, default=None, help="generation control: override repair rounds")
     args = ap.parse_args()
     globals()[f"cmd_{args.cmd}"](args)
 

@@ -115,3 +115,4 @@ REPAIR_ROUNDS = 2
 REPAIR_TEMPERATURE = 0.0
 GENERATION_SEED = 0
 MAX_TEMPLATES = 3
+USE_TEMPLATES = True      # generation-side control switch (scripts/run.py --no-templates)

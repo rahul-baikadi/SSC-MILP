@@ -12,6 +12,11 @@ _ROOT = Path(__file__).resolve().parent.parent
 BENCHMARKS = {
     "nl4opt": {"file": "data/benchmarks/nl4opt.jsonl", "n_eval": 100},
     "mamo_easy": {"file": "data/benchmarks/mamo_easy.jsonl", "n_eval": 100},
+    "mamo_complex": {"file": "data/benchmarks/mamo_complex.jsonl", "n_eval": 100},
+    "complexor": {"file": "data/benchmarks/complexor.jsonl", "n_eval": 18},
+    "industryor": {"file": "data/benchmarks/industryor.jsonl", "n_eval": 100},
+    "optibench": {"file": "data/benchmarks/optibench.jsonl", "n_eval": 100},
+    "optmath": {"file": "data/benchmarks/optmath.jsonl", "n_eval": 100},
 }
 
 

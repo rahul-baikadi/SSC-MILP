@@ -67,8 +67,10 @@ def system_prompt() -> str:
 def generation_messages(problem: str, templates: list[dict], variant_idx: int) -> list[dict]:
     vname, vtext = VARIANTS[variant_idx % len(VARIANTS)]
     tmpl = "\n".join(render_template(t) for t in templates)
+    tmpl_block = (f"## Retrieved modelling templates (reference only; adapt, do not copy blindly)\n{tmpl}\n"
+                  if templates else "")
     user = (f"## Problem\n{problem.strip()}\n\n"
-            f"## Retrieved modelling templates (reference only; adapt, do not copy blindly)\n{tmpl}\n"
+            f"{tmpl_block}"
             f"## Reasoning steps\n{COT_STEPS}\n"
             f"## {vtext}\n\n"
             "Work through the six reasoning steps briefly, then output the complete module in one "
@@ -80,9 +82,10 @@ def repair_messages(problem: str, templates: list[dict], variant_idx: int, prior
                     feedback: dict) -> list[dict]:
     vname, vtext = VARIANTS[variant_idx % len(VARIANTS)]
     tmpl = "\n".join(render_template(t) for t in templates)
+    tmpl_block = f"## Retrieved modelling templates\n{tmpl}\n" if templates else ""
     fb = json.dumps(feedback, indent=1)[:4000]
     user = (f"## Problem\n{problem.strip()}\n\n"
-            f"## Retrieved modelling templates\n{tmpl}\n"
+            f"{tmpl_block}"
             f"## {vtext}\n\n"
             f"## Previous attempt\n```python\n{prior_code}\n```\n\n"
             f"## Structured feedback from sandbox and static checks\n{fb}\n\n"

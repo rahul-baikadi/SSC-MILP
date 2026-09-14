@@ -92,7 +92,7 @@ def generate_one(llm: LLMClient, problem: dict, recipe: dict, templates: list[di
 
 
 def generate_pool(llm: LLMClient, problem: dict, workers: int = 4) -> dict:
-    templates = retrieve_templates(problem["question"])
+    templates = retrieve_templates(problem["question"]) if C.USE_TEMPLATES else []
     recs = recipes()
     results: dict[int, dict] = {}
     with ThreadPoolExecutor(max_workers=workers) as ex:
