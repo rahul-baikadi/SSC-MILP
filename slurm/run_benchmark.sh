@@ -13,7 +13,7 @@
 set -euo pipefail
 BENCH=${1:-nl4opt}
 N=${2:-}
-source "$(dirname "$0")/activate.sh"
+source "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}/slurm/activate.sh"
 NARG=""; if [ -n "$N" ]; then NARG="--n $N"; fi
 python scripts/run.py generate --benchmark "$BENCH" $NARG --problem-workers 4 --recipe-workers 4
 python scripts/run.py extract  --benchmark "$BENCH" $NARG --workers 6
