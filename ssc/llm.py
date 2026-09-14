@@ -106,11 +106,15 @@ class LLMClient:
         for attempt in range(self.max_retries):
             try:
                 kwargs = dict(model=self.model, messages=messages, temperature=temperature,
-                              max_tokens=max_tokens)
+                              max_tokens=max_tokens,
+                              extra_body={"thinking": {"type": "disabled"}})
                 if json_mode:
                     kwargs["response_format"] = {"type": "json_object"}
                 resp = self._client.chat.completions.create(**kwargs)
-                content = resp.choices[0].message.content or ""
+                msg = resp.choices[0].message
+                content = msg.content or ""
+                if not content and getattr(msg, "reasoning_content", None):
+                    content = msg.reasoning_content
                 usage = {"prompt_tokens": getattr(resp.usage, "prompt_tokens", 0) or 0,
                          "completion_tokens": getattr(resp.usage, "completion_tokens", 0) or 0}
                 return {"content": content, "usage": usage, "model": getattr(resp, "model", self.model),
