@@ -1,0 +1,304 @@
+{
+ "pid": "optibench_0014",
+ "question": "A man is trapped in a swamp at the location: (3/4,0). The swamp is a curve that y >= x^2, and x >= 0. The rescue team must stay as close to him as possible so that they can pass a rope to him. Find the BEST LOCATION of the rope required to rescue him.",
+ "templates": [
+  "Facility Location"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"man_x\": 0.75,          # x-coordinate of the trapped man (3/4)\n    \"man_y\": 0.0,           # y-coordinate of the trapped man\n    \"x_min\": 0.0,           # swamp requires x >= 0\n    \"x_max\": 2.0,           # upper bound for the grid search in x\n    \"y_min\": 0.0,           # lower bound for the grid search in y\n    \"y_max\": 4.0,           # upper bound for the grid search in y\n    \"x_steps\": 41,          # number of grid points along x\n    \"y_steps\": 41,          # number of grid points along y\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ---- Sets: grid indices ----\n    model.I = pyo.RangeSet(0, d[\"x_steps\"] - 1)\n    model.J = pyo.RangeSet(0, d[\"y_steps\"] - 1)\n\n    # ---- Grid coordinate helpers (constants) ----\n    x_step = (d[\"x_max\"] - d[\"x_min\"]) / (d[\"x_steps\"] - 1)\n    y_step = (d[\"y_max\"] - d[\"y_min\"]) / (d[\"y_steps\"] - 1)\n\n    def gx(i):\n        return d[\"x_min\"] + i * x_step\n\n    def gy(j):\n        return d[\"y_min\"] + j * y_step\n\n    # ---- Feasible swamp grid points: y >= x^2 and x >= 0 ----\n    def swamp_ok(i, j):\n        return (gx(i) >= d[\"x_min\"]) and (gy(j) >= gx(i) ** 2)\n\n    model.FEAS = pyo.Set(\n        initialize=[(i, j) for i in model.I for j in model.J if swamp_ok(i, j)],\n        dimen=2,\n    )\n\n    # ---- Variables ----\n    model.select = pyo.Var(model.FEAS, within=pyo.Binary)\n    model.rope_x = pyo.Var(within=pyo.Reals)\n    model.rope_y = pyo.Var(within=pyo.Reals)\n\n    # ---- Objective: minimise squared Euclidean distance to the man ----\n    def obj_rule(m):\n        return sum(\n            ((gx(i) - d[\"man_x\"]) ** 2 + (gy(j) - d[\"man_y\"]) ** 2) * m.select[i, j]\n            for (i, j) in m.FEAS\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---- Constraint: choose exactly one feasible grid point ----\n    def one_point_rule(m):\n        return sum(m.select[i, j] for (i, j) in m.FEAS) == 1\n\n    model.one_point = pyo.Constraint(rule=one_point_rule)\n\n    # ---- Linking: rope_x equals chosen grid x ----\n    def link_x_rule(m):\n        return m.rope_x == sum(gx(i) * m.select[i, j] for (i, j) in m.FEAS)\n\n    model.link_x = pyo.Constraint(rule=link_x_rule)\n\n    # ---- Linking: rope_y equals chosen grid y ----\n    def link_y_rule(m):\n        return m.rope_y == sum(gy(j) * m.select[i, j] for (i, j) in m.FEAS)\n\n    model.link_y = pyo.Constraint(rule=link_y_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 914,
+      "completion_tokens": 1327
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.28919529914856,
+   "position": 0,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Man's trapped location\n    \"man_x\": 3.0 / 4.0,\n    \"man_y\": 0.0,\n    # Swamp boundary: y = coef * x^2, with x >= x_min\n    \"parabola_coef\": 1.0,\n    \"x_min\": 0.0,\n    \"x_max\": 2.0,\n    # Discretisation of the parabola into candidate rope locations\n    \"num_candidates\": 2001,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    n = d[\"num_candidates\"]\n    x_min = d[\"x_min\"]\n    x_max = d[\"x_max\"]\n    coef = d[\"parabola_coef\"]\n    man_x = d[\"man_x\"]\n    man_y = d[\"man_y\"]\n\n    # Candidate x-coordinates on the swamp boundary (parabola)\n    xs = [x_min + (x_max - x_min) * i / (n - 1) for i in range(n)]\n    # Distance^2 from man to each candidate point (a_i, coef * a_i^2)\n    dist2 = [(xs[i] - man_x) ** 2 + (coef * xs[i] ** 2 - man_y) ** 2 for i in range(n)]\n\n    model.CAND = pyo.RangeSet(0, n - 1)\n\n    # Binary selection of a single candidate rope location\n    model.select = pyo.Var(model.CAND, within=pyo.Binary)\n\n    # Exactly one candidate point is chosen\n    def rule_one_point(m):\n        return sum(m.select[i] for i in m.CAND) == 1\n    model.one_point = pyo.Constraint(rule=rule_one_point)\n\n    # Objective: minimise squared distance from the man to the chosen rope point\n    def rule_obj(m):\n        return sum(dist2[i] * m.select[i] for i in m.CAND)\n    model.obj = pyo.Objective(rule=rule_obj, sense=pyo.minimize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 914,
+      "completion_tokens": 1106
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.884119749069214,
+   "position": 1,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"man_x\": 0.75,      # x-coordinate of the trapped man\n    \"man_y\": 0.0,       # y-coordinate of the trapped man\n    \"x_lo\": 0.0,        # left end of swamp boundary x >= 0\n    \"x_hi\": 2.0,        # right truncated end of the searched boundary\n    \"n_breaks\": 41,     # number of candidate rope points on y = x^2\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    N = d[\"n_breaks\"]\n    x_lo = d[\"x_lo\"]\n    x_hi = d[\"x_hi\"]\n    man_x = d[\"man_x\"]\n    man_y = d[\"man_y\"]\n\n    # Candidate points on the swamp boundary y = x^2\n    xs = [x_lo + (x_hi - x_lo) * k / (N - 1) for k in range(N)]\n    ys = [x * x for x in xs]\n\n    # Squared distances from the man to each candidate point\n    sq = [(xs[k] - man_x) ** 2 + (ys[k] - man_y) ** 2 for k in range(N)]\n\n    model.K = pyo.RangeSet(0, N - 1)\n\n    model.xk = pyo.Param(model.K, initialize={k: xs[k] for k in model.K})\n    model.yk = pyo.Param(model.K, initialize={k: ys[k] for k in model.K})\n    model.sqk = pyo.Param(model.K, initialize={k: sq[k] for k in model.K})\n\n    # Binary selection of the rope point\n    model.pick = pyo.Var(model.K, within=pyo.Binary)\n\n    # Rope location coordinates\n    model.rx = pyo.Var(within=pyo.NonNegativeReals, bounds=(x_lo, x_hi))\n    model.ry = pyo.Var(within=pyo.NonNegativeReals, bounds=(0.0, None))\n\n    # Squared distance from the man to the rope (linearised via selection)\n    max_sq = max(sq) + 1.0\n    model.rsq = pyo.Var(within=pyo.NonNegativeReals, bounds=(0.0, max_sq))\n\n    def rule_one_choice(m):\n        return sum(m.pick[k] for k in m.K) == 1\n\n    def rule_rope_x(m):\n        return m.rx == sum(m.xk[k] * m.pick[k] for k in m.K)\n\n    def rule_rope_y(m):\n        return m.ry == sum(m.yk[k] * m.pick[k] for k in m.K)\n\n    def rule_rope_sq(m):\n        return m.rsq == sum(m.sqk[k] * m.pick[k] for k in m.K)\n\n    model.one_choice = pyo.Constraint(rule=rule_one_choice)\n    model.rope_x = pyo.Constraint(rule=rule_rope_x)\n    model.rope_y = pyo.Constraint(rule=rule_rope_y)\n    model.rope_sq = pyo.Constraint(rule=rule_rope_sq)\n\n    model.obj = pyo.Objective(expr=model.rsq, sense=pyo.minimize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 920,
+      "completion_tokens": 2539
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "possible_nonlinearity",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1678,
+      "completion_tokens": 772
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1633,
+      "completion_tokens": 772
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "possible_nonlinearity"
+   ],
+   "seconds": 18.491468906402588,
+   "position": 2,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant taken from the problem statement / discretisation\n# ---------------------------------------------------------------------------\nDATA = {\n    # \"A man is trapped in a swamp at the location: (3/4,0).\"\n    \"man_x\": 3.0 / 4.0,          # 3/4  -> abscissa of the trapped man\n    \"man_y\": 0.0,                # 0    -> ordinate of the trapped man\n\n    # \"The swamp is a curve that y >= x^2, and x >= 0.\"\n    \"parabola_a\": 1.0,           # coefficient of x^2 in y = a*x^2 + b*x + c\n    \"parabola_b\": 0.0,           # linear coefficient\n    \"parabola_c\": 0.0,           # constant term\n    \"x_min\": 0.0,                # x >= 0\n    \"x_max\": 2.0,                # upper bound used to bound the search region\n    \"y_min\": 0.0,                # y >= 0 (since y >= x^2 >= 0)\n    \"y_max\": 4.0,                # y <= a*x_max^2 = 4\n\n    # Breakpoints of the piecewise-linear representation of y = x^2 on [0,2].\n    \"break_x\": [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    bx = d[\"break_x\"]\n    a = d[\"parabola_a\"]\n    b = d[\"parabola_b\"]\n    c = d[\"parabola_c\"]\n    mx = d[\"man_x\"]\n    my = d[\"man_y\"]\n\n    def par_y(xval):\n        return a * xval * xval + b * xval + c\n\n    model = pyo.ConcreteModel()\n\n    # ----- Sets -------------------------------------------------------------\n    model.BRK = pyo.Set(initialize=list(range(len(bx))))\n\n    # ----- Variables --------------------------------------------------------\n    model.x = pyo.Var(domain=pyo.NonNegativeReals,\n                      bounds=(d[\"x_min\"], d[\"x_max\"]))          # rope abscissa\n    model.y = pyo.Var(domain=pyo.NonNegativeReals,\n                      bounds=(d[\"y_min\"], d[\"y_max\"]))          # rope ordinate\n\n    model.lam_pt = pyo.Var(model.BRK, domain=pyo.NonNegativeReals,\n                           bounds=(0.0, 1.0))\n\n    model.dist2 = pyo.Var(domain=pyo.NonNegativeReals)\n\n    # ----- Objective --------------------------------------------------------\n    model.obj = pyo.Objective(expr=model.dist2, sense=pyo.minimize)\n\n    # ----- Constraints ------------------------------------------------------\n    # Convex combination of breakpoints defines (x, y) on the piecewise-linear\n    # representation of the parabola.\n    def x_def_rule(m):\n        return m.x == sum(m.lam_pt[i] * bx[i] for i in m.BRK)\n\n    def y_def_rule(m):\n        return m.y == sum(m.lam_pt[i] * par_y(bx[i]) for i in m.BRK)\n\n    def conv_rule(m):\n        return sum(m.lam_pt[i] for i in m.BRK) == 1.0\n\n    model.x_def = pyo.Constraint(rule=x_def_rule)\n    model.y_def = pyo.Constraint(rule=y_def_rule)\n    model.conv = pyo.Constraint(rule=conv_rule)\n\n    # Linear lower bounds on dist2 = (x - mx)^2 + (y - my)^2 via tangents at\n    # each breakpoint (outer linearisation of the convex squared-distance).\n    def tangent_rule(m, i):\n        xi = bx[i]\n        yi = par_y(xi)\n        f_i = (xi - mx) ** 2 + (yi - my) ** 2\n        return m.dist2 >= f_i + 2.0 * (xi - mx) * (m.x - xi) \\\n                          + 2.0 * (yi - my) * (m.y - yi)\n\n    model.tangent_con = pyo.Constraint(model.BRK, rule=tangent_rule)\n\n    # Explicit swamp constraint y >= a x^2 + b x + c via tangent lines of the\n    # convex parabola at each breakpoint.\n    def swamp_rule(m, i):\n        xi = bx[i]\n        return m.y >= par_y(xi) + (2.0 * a * xi + b) * (m.x - xi)\n\n    model.swamp = pyo.Constraint(model.BRK, rule=swamp_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 918,
+      "completion_tokens": 3133
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3109,
+      "completion_tokens": 1096
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 18.79595947265625,
+   "position": 3,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Problem restatement\n# ---------------------------------------------------------------------------\n# A man is trapped at point P = (3/4, 0).  The swamp region is\n#     S = { (x, y) : y >= x^2, x >= 0 }.\n# The rescue team must place the rope at the point of the swamp boundary\n# (the parabola y = x^2, x >= 0) that is CLOSEST to the trapped man, so that\n# the rope can be passed to him.  We must find that best location.\n#\n# This is a continuous (nonlinear) geometric problem.  To keep the model\n# LINEAR (as required by the code contract) we discretise the parabola\n# y = x^2, x >= 0, into a finite set of candidate points and choose the one\n# minimising the (squared) Euclidean distance to P.  This is a facility\n# location / closest-point selection model.\n#\n# ---------------------------------------------------------------------------\n# Decision variables\n# ---------------------------------------------------------------------------\n#   z[i] in {0,1}   : 1 if candidate point i on the parabola is chosen\n#   (x_i, y_i) are DATA (fixed candidate coordinates), not variables.\n#\n# ---------------------------------------------------------------------------\n# Objective (in words)\n# ---------------------------------------------------------------------------\n#   Minimise the squared Euclidean distance between the chosen rope location\n#   and the trapped man at (3/4, 0):\n#       min  sum_i z[i] * ( (x_i - 3/4)^2 + (y_i - 0)^2 )\n#\n# ---------------------------------------------------------------------------\n# Constraints\n# ---------------------------------------------------------------------------\n#   (1) Exactly one candidate point is selected:  sum_i z[i] = 1\n#       (source sentence: \"Find the BEST LOCATION of the rope required\".)\n#   (2) z[i] binary  (selection decision).\n# ---------------------------------------------------------------------------\n\n# Candidate points on the parabola y = x^2, x >= 0.\n# A uniform grid over x in [0, X_MAX] with N_POINTS samples.\nN_POINTS = 201\nX_MAX = 2.0\n\nDATA = {\n    \"man_x\": 0.75,          # trapped man's x-coordinate\n    \"man_y\": 0.0,           # trapped man's y-coordinate\n    \"n_points\": N_POINTS,   # number of candidate points on the parabola\n    \"x_max\": X_MAX,         # upper bound on x for the discretisation\n}\n\n\ndef _candidate_points(d):\n    \"\"\"Return list of (x, y) candidate points on y = x^2, x >= 0.\"\"\"\n    n = d[\"n_points\"]\n    x_max = d[\"x_max\"]\n    pts = []\n    for k in range(n):\n        x = x_max * k / (n - 1)\n        y = x * x\n        pts.append((x, y))\n    return pts\n\n\ndef build_model(data=None):\n    d = data or DATA\n    pts = _candidate_points(d)\n    man_x = d[\"man_x\"]\n    man_y = d[\"man_y\"]\n\n    model = pyo.ConcreteModel()\n\n    # Index set of candidate points\n    model.I = pyo.RangeSet(0, len(pts) - 1)\n\n    # Decision variable: choose exactly one candidate point\n    model.z = pyo.Var(model.I, within=pyo.Binary)\n\n    # Precomputed squared distances (data, not variables)\n    dist_sq = {\n        i: (pts[i][0] - man_x) ** 2 + (pts[i][1] - man_y) ** 2\n        for i in model.I\n    }\n\n    # Objective: minimise squared distance to the trapped man\n    def obj_rule(m):\n        return sum(dist_sq[i] * m.z[i] for i in m.I)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint (1): exactly one candidate point selected\n    def select_rule(m):\n        return sum(m.z[i] for i in m.I) == 1\n\n    model.select_one = pyo.Constraint(rule=select_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 934,
+      "completion_tokens": 3689
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 882,
+      "completion_tokens": 937
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 32.57336449623108,
+   "position": 4,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\nimport math\n\nDATA = {\n    \"px\": 3.0 / 4.0,     # trapped man's x-coordinate\n    \"py\": 0.0,           # trapped man's y-coordinate\n    \"x_max\": 2.0,        # upper sample of parabola domain (x >= 0)\n    \"n_break\": 200,      # number of breakpoints on the parabola\n}\n\ndef build_model(data=None):\n    d = data or DATA\n    px = d[\"px\"]\n    py = d[\"py\"]\n    x_max = d[\"x_max\"]\n    n = d[\"n_break\"]\n\n    # Sample points on y = x^2 for breakpoints x_k in [0, x_max]\n    xs = [x_max * k / n for k in range(n + 1)]\n    ys = [x * x for x in xs]\n    squared_dists = [(x - px) ** 2 + (y - py) ** 2 for x, y in zip(xs, ys)]\n\n    model = pyo.ConcreteModel()\n\n    model.K = pyo.RangeSet(0, n)\n\n    # lambda_k : convex-combination weight of parabola breakpoint k\n    model.lam = pyo.Var(model.K, within=pyo.NonNegativeReals, bounds=(0.0, 1.0))\n\n    # x, y : the rope location (must lie in the swamp region), and u : squared distance surrogate\n    model.x = pyo.Var(within=pyo.NonNegativeReals)\n    model.y = pyo.Var(within=pyo.NonNegativeReals)\n    model.u = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Convex combination: sum_k lambda_k = 1\n    def rule_conv(m):\n        return sum(m.lam[k] for k in m.K) == 1\n    model.conv = pyo.Constraint(rule=rule_conv)\n\n    # x equals the convex combination of sampled x_k  (x >= 0 automatic since xs >= 0)\n    def rule_x(m):\n        return m.x == sum(xs[k] * m.lam[k] for k in m.K)\n    model.link_x = pyo.Constraint(rule=rule_x)\n\n    # y equals the convex combination of sampled y_k = x_k^2  (y >= x^2 enforced by convexity)\n    def rule_y(m):\n        return m.y == sum(ys[k] * m.lam[k] for k in m.K)\n    model.link_y = pyo.Constraint(rule=rule_y)\n\n    # u >= squared Euclid distance (linear: coefficients squared_dists are constants)\n    def rule_u(m):\n        return m.u >= sum(squared_dists[k] * m.lam[k] for k in m.K)\n    model.def_u = pyo.Constraint(rule=rule_u)\n\n    # Minimise squared distance to the trapped man -> equivalent nearest point projection\n    def rule_obj(m):\n        return m.u\n    model.obj = pyo.Objective(rule=rule_obj, sense=pyo.minimize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 930,
+      "completion_tokens": 1773
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 9.640153169631958,
+   "position": 5,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant, with the source sentence that produced it.\n# ---------------------------------------------------------------------------\nDATA = {\n    # \"trapped ... at the location: (3/4, 0)\"  -> man's coordinates\n    \"man_x\": 0.75,\n    \"man_y\": 0.0,\n    # \"x >= 0\"  -> lower bound on the x-coordinate of the rope location\n    \"x_lb\": 0.0,\n    # breakpoints used to build tangent (supporting) planes of y >= x^2\n    \"parabola_breaks\": [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0],\n    # breakpoints used to build supporting planes of the squared distance\n    \"dist_breaks\": [\n        (0.0, 0.0), (0.25, 0.0), (0.5, 0.0), (0.75, 0.0),\n        (1.0, 0.0), (1.5, 0.0), (2.0, 0.0),\n        (0.5, 0.25), (0.75, 0.25), (1.0, 0.25),\n        (0.5, 0.5), (0.75, 0.5),\n    ],\n    # large bound on the epigraph variable t (squared distance upper bound)\n    \"t_ub\": 100.0,\n    # bounds on the rope y-coordinate (swamp region is unbounded above,\n    # but the closest point has small y; a generous box keeps the LP bounded)\n    \"y_lb\": -10.0,\n    \"y_ub\": 10.0,\n    # bounds on the rope x-coordinate\n    \"x_ub\": 10.0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ---- Sets -------------------------------------------------------------\n    # breakpoints for tangent planes of the parabola y >= x^2\n    model.K = pyo.Set(initialize=range(len(d[\"parabola_breaks\"])))\n    # breakpoints (x0,y0) for supporting planes of the squared-distance function\n    model.P = pyo.Set(initialize=range(len(d[\"dist_breaks\"])))\n\n    # ---- Variables --------------------------------------------------------\n    # rope location coordinates\n    model.x = pyo.Var(\n        domain=pyo.NonNegativeReals,\n        bounds=(d[\"x_lb\"], d[\"x_ub\"]),\n    )\n    model.y = pyo.Var(\n        domain=pyo.Reals,\n        bounds=(d[\"y_lb\"], d[\"y_ub\"]),\n    )\n    # epigraph variable for the squared distance to the man\n    model.t = pyo.Var(\n        domain=pyo.NonNegativeReals,\n        bounds=(0.0, d[\"t_ub\"]),\n    )\n\n    # ---- Objective --------------------------------------------------------\n    # minimize squared distance from rope location to the man at (3/4, 0)\n    model.obj = pyo.Objective(expr=model.t, sense=pyo.minimize)\n\n    # ---- Constraints ------------------------------------------------------\n    # (x,y) must lie in the swamp: y >= x^2, enforced by tangent cuts\n    def parabola_cut_rule(m, k):\n        xk = d[\"parabola_breaks\"][k]\n        # tangent line to x^2 at xk:  y >= 2*xk*x - xk^2\n        return m.y >= 2.0 * xk * m.x - xk * xk\n    model.parabola_cut = pyo.Constraint(model.K, rule=parabola_cut_rule)\n\n    # epigraph: t >= (x - man_x)^2 + (y - man_y)^2\n    # enforced by supporting (tangent) planes of the convex squared distance\n    def dist_cut_rule(m, p):\n        x0, y0 = d[\"dist_breaks\"][p]\n        # gradient of (x-a)^2+(y-b)^2 at (x0,y0): 2(x0-a), 2(y0-b)\n        gx = 2.0 * (x0 - d[\"man_x\"])\n        gy = 2.0 * (y0 - d[\"man_y\"])\n        f0 = (x0 - d[\"man_x\"]) ** 2 + (y0 - d[\"man_y\"]) ** 2\n        # supporting plane: t >= f0 + gx*(x-x0) + gy*(y-y0)\n        return m.t >= f0 + gx * (m.x - x0) + gy * (m.y - y0)\n    model.dist_cut = pyo.Constraint(model.P, rule=dist_cut_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 918,
+      "completion_tokens": 2028
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 9.953711748123169,
+   "position": 6,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "\"\"\"\nOptimal rope location for a man trapped in a swamp y >= x^2, x >= 0.\nMan's position: (3/4, 0).  Find the point (x*, y*) of the swamp region\nnearest to the man.\n\nModel: minimize the 1-norm surrogate of the geometric distance (an exact\nlocator of the projection for the decision point lying in the planar\nfirst-octant parabolic region), subject to a piecewise-linear\nOUTER approximation of the epigraph  y >= x^2  given by tangent lines\nof the parabola at chosen breakpoints a_k.\n\nLinear program, no products of two decision variables.\n\"\"\"\n\nimport pyomo.environ as pyo\n\nDATA = {\n    # Man / target location\n    \"x_man\": 0.75,\n    \"y_man\": 0.0,\n    # Bounds on the rope location\n    \"x_lb\": 0.0,\n    \"x_ub\": 1.0,\n    \"y_lb\": -1.0,\n    \"y_ub\": 1.0,\n    # Breakpoints for tangent lines of y = x^2 (epigraph outer approx)\n    \"breakpoints\": [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],\n    # Slacks / unconstrained coordinate variables t >= distance (surrogate)\n    \"slack_lb\": 0.0,\n    \"slack_ub\": 2.0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # ---------------------------------------------------------------- sets\n    m.K = pyo.Set(initialize=range(len(d[\"breakpoints\"])), ordered=True)\n\n    # ----------------------------------------------------------- variables\n    # Best candidate location of the rope (inside swamp y >= x^2, x >= 0)\n    m.x = pyo.Var(\n        domain=pyo.NonNegativeReals,\n        bounds=(d[\"x_lb\"], d[\"x_ub\"]),\n    )\n    m.y = pyo.Var(\n        domain=pyo.Reals,\n        bounds=(d[\"y_lb\"], d[\"y_ub\"]),\n    )\n    # Nonnegative surrogate \"radius\" t (Manhattan-style) to linearise the\n    # distance; optimal solution is unchanged because minimisation of a\n    # monotone distance surrogate occurs on the boundary of the region.\n    m.t = pyo.Var(\n        domain=pyo.NonNegativeReals,\n        bounds=(d[\"slack_lb\"], d[\"slack_ub\"]),\n    )\n\n    # --------------------------------------------------------- objective\n    # Minimise the Manhattan/Kantorovich-L1 surrogate radius t, which\n    # encodes proximity to (x_man, y_man).\n    def obj_rule(m):\n        return m.t\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --------------------------------------------------------- constraints\n    # Sentence: \"The swamp is a curve y >= x^2, x >= 0.\"\n    #   (x >= 0 is a variable bound.)\n    # Sentence: \"y >= x^2\" ---> piecewise linear outer approximation by\n    # tangents of the parabola y = x^2 at the breakpoints a_k:\n    #     y >= 2*a_k*x - a_k^2\n    def swamp_tangent_rule(m, k):\n        a_k = d[\"breakpoints\"][k]\n        return m.y >= 2.0 * a_k * m.x - a_k * a_k\n\n    m.swamp_tangent = pyo.Constraint(m.K, rule=swamp_tangent_rule)\n\n    # Sentence: \"The rescue team must stay as close to him as possible.\"\n    # Because the L1 surrogate for the distance |x-x_man|+|y-y_man| needs\n    # two per-coordinate slacks, but the geometry of the projection makes\n    # the surrogate tight at the boundary.  We implement the L1 distance\n    # exactly via two absolute-value constraints (linear), and TIE t to\n    # the L-infinity radius so no raw distances act as decision products.\n    # constraint:   t  <=  max(2|x-x_man|, 2|y-y_man|) via\n    #               2*(x - x_man) <= t   AND   2*(x_man - x) <= t\n    #               2*(y - y_man) <= t   AND   2*(y_man - y) <= t\n    def eps_x_upper_rule(m):\n        return 2.0 * (m.x - d[\"x_man\"]) <= m.t\n\n    m.eps_x_upper = pyo.Constraint(rule=eps_x_upper_rule)\n\n    def eps_x_lower_rule(m):\n        return 2.0 * (d[\"x_man\"] - m.x) <= m.t\n\n    m.eps_x_lower = pyo.Constraint(rule=eps_x_lower_rule)\n\n    def eps_y_upper_rule(m):\n        return 2.0 * (m.y - d[\"y_man\"]) <= m.t\n\n    m.eps_y_upper = pyo.Constraint(rule=eps_y_upper_rule)\n\n    def eps_y_lower_rule(m):\n        return 2.0 * (d[\"y_man\"] - m.y) <= m.t\n\n    m.eps_y_lower = pyo.Constraint(rule=eps_y_lower_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 920,
+      "completion_tokens": 1971
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 9.575445890426636,
+   "position": 7,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Problem restatement\n# ---------------------------------------------------------------------------\n# A man is trapped at point P = (3/4, 0).  The swamp region is\n#     S = { (x, y) : y >= x^2, x >= 0 }.\n# The rescue team must place the rope at the point of the swamp boundary\n# (the parabola y = x^2, x >= 0) that is CLOSEST to the trapped man.\n#\n# This is a continuous (nonlinear) geometric problem.  We model it as a\n# linear program by exploiting the structure of the parabola:\n#\n#   * The closest point on the curve y = x^2 to P = (3/4, 0) is found by\n#     minimising the squared distance  D(x) = (x - 3/4)^2 + (x^2 - 0)^2.\n#   * Because the objective is convex in x, we can linearise it by\n#     introducing a piecewise-linear (PWL) approximation of the convex\n#     function D(x) over a bounded interval [0, X_MAX].\n#   * A convex function is the pointwise maximum of its tangent lines, so\n#     D(x) >= a_k * x + b_k for every tangent line k, and minimising a\n#     variable t subject to t >= a_k x + b_k yields t = D(x) at the optimum.\n#\n# Decision variables\n#   x  : NonNegativeReals in [0, X_MAX]  -- x-coordinate of the rope point\n#   y  : NonNegativeReals in [0, X_MAX^2] -- y-coordinate of the rope point\n#   t  : NonNegativeReals                -- epigraph variable for D(x)\n#\n# Objective (minimise)\n#   t   (the squared distance from the rope point to the trapped man)\n#\n# Constraints\n#   (1) y = x^2  is enforced through the PWL tangent constraints on t,\n#       together with the definition of the squared distance.\n#   (2) t >= a_k * x + b_k  for each tangent line k of D(x) = (x-3/4)^2 + x^4.\n#   (3) y is tied to x by the parabola relation y = x^2, which for the\n#       optimum is captured by the same tangent construction; we keep y as\n#       an explicit variable and link it linearly via the tangent lines of\n#       the parabola itself:  y >= 2*x_k*x - x_k^2  (tangent at x_k).\n#       Since y is minimised implicitly through t, the binding tangent\n#       gives y = x^2 at the optimum.\n# ---------------------------------------------------------------------------\n\nDATA = {\n    # Trapped man's location\n    \"px\": 0.75,          # x-coordinate of the trapped man (3/4)\n    \"py\": 0.0,           # y-coordinate of the trapped man (0)\n\n    # Bounds on the search interval for x (swamp boundary x >= 0)\n    \"x_min\": 0.0,\n    \"x_max\": 2.0,        # generous upper bound; optimum lies well inside\n\n    # Number of tangent linearisation points for the convex objective\n    \"n_tangents\": 21,\n\n    # Big-M used to keep y within the parabola's range (linear bound)\n    \"y_max\": 4.0,        # x_max^2\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # ------------------------------------------------------------------\n    # Sets\n    # ------------------------------------------------------------------\n    model.K = pyo.RangeSet(0, d[\"n_tangents\"] - 1)\n\n    # ------------------------------------------------------------------\n    # Decision variables\n    # ------------------------------------------------------------------\n    model.x = pyo.Var(\n        domain=pyo.NonNegativeReals,\n        bounds=(d[\"x_min\"], d[\"x_max\"]),\n    )\n    model.y = pyo.Var(\n        domain=pyo.NonNegativeReals,\n        bounds=(0.0, d[\"y_max\"]),\n    )\n    model.t = pyo.Var(domain=pyo.NonNegativeReals)\n\n    # ------------------------------------------------------------------\n    # Pre-computed tangent data (numeric constants only)\n    # ------------------------------------------------------------------\n    # Sample points x_k evenly spaced on [x_min, x_max]\n    xk = [\n        d[\"x_min\"] + (d[\"x_max\"] - d[\"x_min\"]) * k / (d[\"n_tangents\"] - 1)\n        for k in range(d[\"n_tangents\"])\n    ]\n\n    # Tangent lines of the squared-distance function\n    #   D(x) = (x - px)^2 + (x^2 - py)^2\n    # For py = 0 this is D(x) = (x - px)^2 + x^4.\n    # D'(x) = 2 (x - px) + 4 x^3  (for py = 0)\n    # Tangent at x_k:  t >= D(x_k) + D'(x_k) * (x - x_k)\n    #               = D'(x_k) * x + (D(x_k) - D'(x_k) * x_k)\n    slope = []\n    intercept = []\n    for xk_val in xk:\n        dval = (xk_val - d[\"px\"]) ** 2 + (xk_val ** 2 - d[\"py\"]) ** 2\n        dprime = 2.0 * (xk_val - d[\"px\"]) + 4.0 * xk_val ** 3\n        slope.append(dprime)\n        intercept.append(dval - dprime * xk_val)\n\n    # Tangent lines of the parabola y = x^2:\n    #   y >= 2 x_k x - x_k^2\n    par_slope = [2.0 * xk_val for xk_val in xk]\n    par_intercept = [-(xk_val ** 2) for xk_val in xk]\n\n    # ------------------------------------------------------------------\n    # Objective: minimise squared distance (epigraph variable t)\n    # ------------------------------------------------------------------\n    model.obj = pyo.Objective(expr=model.t, sense=pyo.minimize)\n\n    # ------------------------------------------------------------------\n    # Constraint (2): epigraph / tangent linearisation of D(x)\n    # ------------------------------------------------------------------\n    def rule_tangent(m, k):\n        return m.t >= slope[k] * m.x + intercept[k]\n\n    model.tangent = pyo.Constraint(model.K, rule=rule_tangent)\n\n    # ------------------------------------------------------------------\n    # Constraint (3): tangent linearisation of the parabola y = x^2\n    # ------------------------------------------------------------------\n    def rule_parabola(m, k):\n        return m.y >= par_slope[k] * m.x + par_intercept[k]\n\n    model.parabola = pyo.Constraint(model.K, rule=rule_parabola)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 934,
+      "completion_tokens": 1794
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 896,
+      "completion_tokens": 1535
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 20.643649578094482,
+   "position": 8,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"man_x\": 0.75,          # man's x-coordinate\n    \"man_y\": 0.0,           # man's y-coordinate\n    \"x_max\": 5.0,           # upper bound on swamp boundary x (x >= 0)\n    \"n_points\": 2001,       # number of discretised boundary points\n    \"big_m\": 1.0e6,         # big-M for squared-distance disjunction\n}\n\ndef build_model(data=None):\n    d = data or DATA\n    man_x = d[\"man_x\"]\n    man_y = d[\"man_y\"]\n    x_max = d[\"x_max\"]\n    n = d[\"n_points\"]\n    M = d[\"big_m\"]\n\n    # boundary sample x-values: t_i = i * (x_max / (n-1))\n    step = x_max / (n - 1)\n    t = {i: i * step for i in range(n)}\n\n    model = pyo.ConcreteModel()\n    model.I = pyo.RangeSet(0, n - 1)\n\n    # z_i binary: choose boundary point i\n    model.z = pyo.Var(model.I, within=pyo.Binary)\n\n    # chosen rope coordinates on the swamp boundary\n    model.x = pyo.Var(within=pyo.NonNegativeReals, bounds=(0.0, x_max))\n    model.y = pyo.Var(within=pyo.NonNegativeReals)\n\n    # auxiliary squared distance\n    model.u = pyo.Var(within=pyo.NonNegativeReals)\n\n    # objective: minimise squared Euclidean distance to the man\n    model.obj = pyo.Objective(expr=model.u, sense=pyo.minimize)\n\n    # exactly one boundary point is chosen\n    def rule_pick(m):\n        return sum(m.z[i] for i in m.I) == 1\n    model.pick = pyo.Constraint(rule=rule_pick)\n\n    # x links to chosen point's x-coordinate\n    def rule_link_x(m):\n        return m.x == sum(t[i] * m.z[i] for i in m.I)\n    model.link_x = pyo.Constraint(rule=rule_link_x)\n\n    # y links to chosen point's y-coordinate (= t_i^2)\n    def rule_link_y(m):\n        return m.y == sum((t[i] ** 2) * m.z[i] for i in m.I)\n    model.link_y = pyo.Constraint(rule=rule_link_y)\n\n    # squared distance: u >= dist_i^2 - M(1 - z_i)   (>= because minimising u)\n    def rule_dist(m, i):\n        dist_sq = (t[i] - man_x) ** 2 + (t[i] ** 2 - man_y) ** 2\n        return m.u >= dist_sq - M * (1 - m.z[i])\n    model.dist = pyo.Constraint(model.I, rule=rule_dist)\n\n    return model\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 930,
+      "completion_tokens": 1311
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.178989410400391,
+   "position": 9,
+   "recipe_index": 2
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:50:55"
+}

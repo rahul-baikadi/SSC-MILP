@@ -1,0 +1,332 @@
+{
+ "pid": "mamo_complex_0088",
+ "question": "The Chinese University of Hong Kong, Shenzhen decides to build a circular fountain on the campus. The school wants the fountain to be round and as large as possible but it must be restricted in a polygonal construction field, which is given by the following points: (0, 1), (0, 6), (4, 10), (8, 10), (11, 7), (11, 4), (7, 0), and (1, 0), the unit is m. Give a linear optimization formulation and find the maximal area. Keep your answer in four significant digit number.",
+ "templates": [
+  "General LP/MILP"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import math\nimport pyomo.environ as pyo\n\nDATA = {\n    \"vertices\": [\n        (0.0, 1.0),\n        (0.0, 6.0),\n        (4.0, 10.0),\n        (8.0, 10.0),\n        (11.0, 7.0),\n        (11.0, 4.0),\n        (7.0, 0.0),\n        (1.0, 0.0),\n    ],\n    \"pi\": math.pi,\n    # interior half-plane coefficients a*x + b*y <= c for each edge,\n    # precomputed outward normals so the polygon interior is the feasible side.\n    \"edges\": [\n        # (a, b, c)  with interior = {a*x + b*y <= c}\n        (1.0,  0.0, 11.0),   # edge (0,1)-(0,6):  x >= 0  -> -x <= 0\n        (-4.0, 0.0,  0.0),   # placeholder replaced below\n    ],\n}\n\n\ndef _build_edge_data(vertices):\n    \"\"\"Return list of (a, b, c) such that interior half-plane is a*x+b*y <= c.\"\"\"\n    n = len(vertices)\n    # centroid to determine interior side\n    gx = sum(v[0] for v in vertices) / n\n    gy = sum(v[1] for v in vertices) / n\n    edges = []\n    for k in range(n):\n        x1, y1 = vertices[k]\n        x2, y2 = vertices[(k + 1) % n]\n        # line through (x1,y1),(x2,y2): a*x + b*y = c\n        a = (y2 - y1)\n        b = -(x2 - x1)\n        c = a * x1 + b * y1\n        # ensure centroid satisfies a*gx + b*gy <= c\n        if a * gx + b * gy > c:\n            a, b, c = -a, -b, -c\n        edges.append((a, b, c))\n    return edges\n\n\nDATA[\"edges\"] = _build_edge_data(DATA[\"vertices\"])\nDATA[\"edge_norms\"] = [math.hypot(a, b) for (a, b, c) in DATA[\"edges\"]]\n\n\ndef build_model(data=None):\n    d = data or DATA\n    vertices = d[\"vertices\"]\n    edges = d[\"edges\"]\n    norms = d[\"edge_norms\"]\n    n_edges = len(edges)\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.RangeSet(0, n_edges - 1)\n\n    model.cx = pyo.Var(domain=pyo.Reals)\n    model.cy = pyo.Var(domain=pyo.Reals)\n    model.r = pyo.Var(domain=pyo.NonNegativeReals, bounds=(0.0, None))\n\n    def inside_rule(m, i):\n        a, b, c = edges[i]\n        nrm = norms[i]\n        return a * m.cx + b * m.cy + nrm * m.r <= c\n\n    model.inside = pyo.Constraint(model.I, rule=inside_rule)\n\n    model.obj = pyo.Objective(expr=model.r, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 932,
+      "completion_tokens": 1182
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.068185567855835,
+   "position": 0,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\nimport math\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem statement\n# ---------------------------------------------------------------------------\nDATA = {\n    # polygon vertices in counter-clockwise order (given points, m)\n    \"vertices\": [\n        (0, 1), (0, 6), (4, 10), (8, 10), (11, 7), (11, 4), (7, 0), (1, 0),\n    ],\n    # number of polygon edges (= number of vertices, closed polygon)\n    \"num_edges\": 8,\n    # pi used only for the reported area\n    \"pi\": math.pi,\n    # big bound used for centre coordinates (bounding box of field)\n    \"coord_lb\": -20.0,\n    \"coord_ub\": 20.0,\n    # upper bound on radius (half bounding-box diagonal)\n    \"r_ub\": 50.0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    verts = d[\"vertices\"]\n    n = d[\"num_edges\"]\n\n    model = pyo.ConcreteModel()\n\n    # ------------------------------------------------------------------\n    # Sets\n    # ------------------------------------------------------------------\n    model.K = pyo.RangeSet(0, n - 1)  # edge index\n\n    # Pre-store edge geometry as plain python tuples (NOT decision vars)\n    edges = []\n    for k in range(n):\n        ax, ay = verts[k]\n        bx, by = verts[(k + 1) % n]\n        # inward normal for CCW polygon edge A->B is (-(by-ay), (bx-ax))\n        nx = -(by - ay)\n        ny = (bx - ax)\n        length = math.sqrt(nx * nx + ny * ny)\n        # unit inward normal and line offset\n        ux = nx / length\n        uy = ny / length\n        rhs = ux * ax + uy * ay  # n_unit . A\n        edges.append((ux, uy, rhs))\n\n    model.edge_ux = pyo.Param(model.K,\n                              initialize={k: edges[k][0] for k in range(n)},\n                              within=pyo.Reals)\n    model.edge_uy = pyo.Param(model.K,\n                              initialize={k: edges[k][1] for k in range(n)},\n                              within=pyo.Reals)\n    model.edge_rhs = pyo.Param(model.K,\n                               initialize={k: edges[k][2] for k in range(n)},\n                               within=pyo.Reals)\n\n    # ------------------------------------------------------------------\n    # Variables\n    # ------------------------------------------------------------------\n    model.cx = pyo.Var(domain=pyo.Reals,\n                       bounds=(d[\"coord_lb\"], d[\"coord_ub\"]))\n    model.cy = pyo.Var(domain=pyo.Reals,\n                       bounds=(d[\"coord_lb\"], d[\"coord_ub\"]))\n    model.r = pyo.Var(domain=pyo.NonNegativeReals, bounds=(0.0, d[\"r_ub\"]))\n\n    # ------------------------------------------------------------------\n    # Objective: maximise the radius (area = pi*r^2 is monotone in r)\n    # ------------------------------------------------------------------\n    model.obj = pyo.Objective(expr=model.r, sense=pyo.maximize)\n\n    # ------------------------------------------------------------------\n    # Constraints: circle must lie inside every edge's inner half-plane\n    #   ux*cx + uy*cy - r >= rhs   (distance from centre to edge line >= r)\n    # ------------------------------------------------------------------\n    def in_halfplane_rule(m, k):\n        return (m.edge_ux[k] * m.cx\n                + m.edge_uy[k] * m.cy\n                - m.r\n                >= m.edge_rhs[k])\n\n    model.in_halfplane = pyo.Constraint(model.K, rule=in_halfplane_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 948,
+      "completion_tokens": 1299
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1755,
+      "completion_tokens": 861
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1750,
+      "completion_tokens": 861
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "possible_nonlinearity"
+   ],
+   "seconds": 14.51603364944458,
+   "position": 1,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import math\nimport pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant, with the sentence it comes from.\n# ---------------------------------------------------------------------------\nDATA = {\n    # \"given by the following points: (0,1),(0,6),(4,10),(8,10),(11,7),(11,4),(7,0),(1,0)\"\n    \"vertices\": [(0.0, 1.0), (0.0, 6.0), (4.0, 10.0), (8.0, 10.0),\n                 (11.0, 7.0), (11.0, 4.0), (7.0, 0.0), (1.0, 0.0)],\n    # \"the fountain to be round and as large as possible\" -> number of edges = polygon sides\n    \"n_edges\": 8,\n    # unit is m  (no other numeric limits are given; centre is free, radius >= 0)\n}\n\nGOLD_ANSWER = None\n\n\ndef _edge_halfplanes(vertices):\n    \"\"\"Return list of (nx, ny, c) for inward half-planes nx*x + ny*y <= c.\"\"\"\n    n = len(vertices)\n    planes = []\n    for i in range(n):\n        x1, y1 = vertices[i]\n        x2, y2 = vertices[(i + 1) % n]\n        dx, dy = x2 - x1, y2 - y1\n        # inward normal (vertices listed counter-clockwise -> rotate edge dir by -90 deg)\n        nx, ny = -dy, dx\n        norm = math.hypot(nx, ny)\n        nx, ny = nx / norm, ny / norm\n        c = nx * x1 + ny * y1\n        planes.append((nx, ny, c))\n    return planes\n\n\ndef build_model(data=None):\n    d = data or DATA\n    planes = _edge_halfplanes(d[\"vertices\"])\n\n    model = pyo.ConcreteModel()\n\n    # index set of edges\n    model.E = pyo.RangeSet(0, d[\"n_edges\"] - 1)\n\n    # decision variables: centre (a, b) and radius r\n    model.a = pyo.Var(domain=pyo.Reals)\n    model.b = pyo.Var(domain=pyo.Reals)\n    model.r = pyo.Var(domain=pyo.NonNegativeReals)\n\n    # objective: maximise radius (area = pi*r^2 is increasing in r)\n    model.obj = pyo.Objective(expr=model.r, sense=pyo.maximize)\n\n    # circle must lie inside every edge half-plane:  nx*a + ny*b + r <= c\n    def edge_rule(m, i):\n        nx, ny, c = planes[i]\n        return nx * m.a + ny * m.b + m.r <= c\n\n    model.inside = pyo.Constraint(model.E, rule=edge_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 936,
+      "completion_tokens": 1018
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.538594722747803,
+   "position": 2,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import math\nimport pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem, with its source.\n# ---------------------------------------------------------------------------\nDATA = {\n    # \"polygonal construction field, which is given by the following points\"\n    \"polygon_points\": [\n        (0.0, 1.0),\n        (0.0, 6.0),\n        (4.0, 10.0),\n        (8.0, 10.0),\n        (11.0, 7.0),\n        (11.0, 4.0),\n        (7.0, 0.0),\n        (1.0, 0.0),\n    ],\n    # \"Keep your answer in four significant digit number\" -> reporting precision\n    \"report_significant_digits\": 4,\n    # mathematical constant pi (needed to convert radius to area)\n    \"pi\": math.pi,\n}\n\n\ndef _edge_normals_and_offsets(points):\n    \"\"\"For each edge of the (convex) polygon, return (a, b, c) such that the\n    polygon interior is { (x,y) : a*x + b*y <= c }.  Vertices are assumed to be\n    listed counter-clockwise.\"\"\"\n    n = len(points)\n    edges = []\n    for i in range(n):\n        x1, y1 = points[i]\n        x2, y2 = points[(i + 1) % n]\n        dx, dy = x2 - x1, y2 - y1\n        a, b = dy, -dx\n        norm = math.hypot(a, b)\n        a, b = a / norm, b / norm\n        c = a * x1 + b * y1\n        edges.append((a, b, c))\n    return edges\n\n\ndef build_model(data=None):\n    d = data or DATA\n    points = d[\"polygon_points\"]\n    edges = _edge_normals_and_offsets(points)\n\n    model = pyo.ConcreteModel()\n\n    # --- sets ---------------------------------------------------------------\n    model.I = pyo.RangeSet(0, len(edges) - 1)          # polygon edge index\n\n    # --- parameters (linear coefficients of each half-plane) ----------------\n    model.a = pyo.Param(model.I, initialize={i: edges[i][0] for i in model.I})\n    model.b = pyo.Param(model.I, initialize={i: edges[i][1] for i in model.I})\n    model.c = pyo.Param(model.I, initialize={i: edges[i][2] for i in model.I})\n\n    # --- variables ----------------------------------------------------------\n    model.cx = pyo.Var(domain=pyo.Reals)               # centre x\n    model.cy = pyo.Var(domain=pyo.Reals)               # centre y\n    model.r = pyo.Var(domain=pyo.NonNegativeReals)     # radius >= 0\n\n    # --- constraints: disc inside every half-plane --------------------------\n    def edge_rule(m, i):\n        return m.a[i] * m.cx + m.b[i] * m.cy + m.r <= m.c[i]\n\n    model.inside_edges = pyo.Constraint(model.I, rule=edge_rule)\n\n    # --- objective: maximise radius (area = pi * r^2 is monotone in r) ------\n    model.obj = pyo.Objective(expr=model.r, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 936,
+      "completion_tokens": 1251
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1685,
+      "completion_tokens": 768
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1645,
+      "completion_tokens": 768
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "possible_nonlinearity"
+   ],
+   "seconds": 14.003007650375366,
+   "position": 3,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\nimport math\n\nDATA = {\n    \"vertices\": [\n        (0, 1), (0, 6), (4, 10), (8, 10),\n        (11, 7), (11, 4), (7, 0), (1, 0),\n    ],\n    \"pi\": math.pi,\n    \"x_lo\": 0.0,\n    \"x_hi\": 11.0,\n    \"y_lo\": 0.0,\n    \"y_hi\": 10.0,\n}\n\n\ndef _edges(vertices):\n    \"\"\"Yield (i, x1, y1, x2, y2) for each directed edge of the polygon.\"\"\"\n    n = len(vertices)\n    for i in range(n):\n        x1, y1 = vertices[i]\n        x2, y2 = vertices[(i + 1) % n]\n        yield i, x1, y1, x2, y2\n\n\ndef _inward_unit_normal(x1, y1, x2, y2):\n    \"\"\"\n    For a counter-clockwise polygon, the interior lies to the LEFT of each\n    directed edge. Return the unit inward normal (nx, ny) and the offset c\n    such that interior satisfies  nx*x + ny*y <= c.\n    \"\"\"\n    dx = x2 - x1\n    dy = y2 - y1\n    length = math.hypot(dx, dy)\n    # Left normal of (dx, dy) is (-dy, dx)\n    nx = -dy / length\n    ny = dx / length\n    c = nx * x1 + ny * y1\n    return nx, ny, c\n\n\ndef build_model(data=None):\n    d = data or DATA\n    vertices = d[\"vertices\"]\n    pi = d[\"pi\"]\n\n    edge_list = list(_edges(vertices))\n    edge_ids = [e[0] for e in edge_list]\n    normals = {e[0]: _inward_unit_normal(e[1], e[2], e[3], e[4]) for e in edge_list}\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=edge_ids, ordered=True)\n\n    # Decision variables\n    model.cx = pyo.Var(domain=pyo.Reals, bounds=(d[\"x_lo\"], d[\"x_hi\"]))\n    model.cy = pyo.Var(domain=pyo.Reals, bounds=(d[\"y_lo\"], d[\"y_hi\"]))\n    model.r = pyo.Var(domain=pyo.NonNegativeReals,\n                      bounds=(0.0, min(d[\"x_hi\"] - d[\"x_lo\"], d[\"y_hi\"] - d[\"y_lo\"]) / 2.0))\n\n    # Objective: maximise radius (equivalent to maximising area = pi * r^2)\n    model.obj = pyo.Objective(expr=model.r, sense=pyo.maximize)\n\n    # Constraint: circle stays inside every edge's half-plane\n    def inside_rule(m, i):\n        nx, ny, c = normals[i]\n        return nx * m.cx + ny * m.cy + m.r <= c\n\n    model.inside = pyo.Constraint(model.I, rule=inside_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 932,
+      "completion_tokens": 1167
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.928393840789795,
+   "position": 4,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import math\nimport pyomo.environ as pyo\n\nDATA = {\n    \"vertices\": [\n        (0.0, 1.0), (0.0, 6.0), (4.0, 10.0), (8.0, 10.0),\n        (11.0, 7.0), (11.0, 4.0), (7.0, 0.0), (1.0, 0.0)\n    ],\n    \"pi\": 3.141592653589793,\n}\n\ndef build_model(data=None):\n    d = data or DATA\n    verts = d[\"vertices\"]\n    n = len(verts)\n    edges = [(verts[k], verts[(k + 1) % n]) for k in range(n)]\n\n    model = pyo.ConcreteModel()\n    model.K = pyo.RangeSet(0, n - 1)\n\n    model.a = pyo.Var(domain=pyo.Reals, bounds=(0.0, 11.0))\n    model.b = pyo.Var(domain=pyo.Reals, bounds=(0.0, 10.0))\n    model.r = pyo.Var(domain=pyo.NonNegativeReals)\n\n    model.edge_coefs = pyo.Param(model.K, [0, 1, 2],\n        initialize={(k, 0): (edges[k][1][1] - edges[k][0][1]) for k in range(n)})\n\n    def coef(k, pos):\n        (x1, y1), (x2, y2) = edges[k]\n        nx, ny = y2 - y1, x1 - x2\n        L = math.sqrt(nx * nx + ny * ny)\n        nx, ny = nx / L, ny / L\n        c = nx * x1 + ny * y1\n        if pos == 0:\n            return nx\n        if pos == 1:\n            return ny\n        return c\n\n    def edge_rule(m, k):\n        return coef(k, 0) * m.a + coef(k, 1) * m.b - m.r >= coef(k, 2)\n\n    model.edge_con = pyo.Constraint(model.K, rule=edge_rule)\n\n    model.obj = pyo.Objective(expr=model.r, sense=pyo.maximize)\n\n    return model\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 938,
+      "completion_tokens": 1528
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.080790996551514,
+   "position": 5,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Problem: largest circle (fountain) inscribed in a convex polygon.\n#\n# Decision variables\n#   cx : x-coordinate of the fountain centre            (Real)\n#   cy : y-coordinate of the fountain centre            (Real)\n#   r  : radius of the fountain                         (NonNegativeReals)\n#\n# Objective (maximise)\n#   area of the circle = pi * r^2  ->  since pi is a constant and r >= 0,\n#   maximising the area is equivalent to maximising r.\n#\n# Constraints (one per polygon edge, numbered by the source sentence)\n#   For each edge i with outward unit normal (nx_i, ny_i) and offset b_i,\n#   the circle lies inside the half-plane  nx*x + ny*y <= b  iff\n#       nx_i * cx + ny_i * cy + r <= b_i\n#   (the \"+ r\" term is the support distance of the disk in the normal\n#    direction; this is linear in (cx, cy, r)).\n# ---------------------------------------------------------------------------\n\nDATA = {\n    # polygon vertices in order (counter-clockwise), metres\n    \"vertices\": [\n        (0.0, 1.0),\n        (0.0, 6.0),\n        (4.0, 10.0),\n        (8.0, 10.0),\n        (11.0, 7.0),\n        (11.0, 4.0),\n        (7.0, 0.0),\n        (1.0, 0.0),\n    ],\n    # outward unit normals and offsets for each edge (nx, ny, b)\n    # edge i joins vertices[i] -> vertices[(i+1) % n]\n    \"edges\": [\n        (-1.0, 0.0, 0.0),      # (0,1)  -> (0,6)   : x >= 0\n        (-0.70710678, 0.70710678, 4.24264069),   # (0,6)  -> (4,10)\n        (0.0, 1.0, 10.0),      # (4,10) -> (8,10)  : y <= 10\n        (0.70710678, 0.70710678, 12.72792206),   # (8,10) -> (11,7)\n        (1.0, 0.0, 11.0),      # (11,7) -> (11,4)  : x <= 11\n        (0.70710678, -0.70710678, 4.94974747),   # (11,4) -> (7,0)\n        (0.0, -1.0, 0.0),      # (7,0)  -> (1,0)   : y >= 0\n        (-0.70710678, -0.70710678, 0.70710678),  # (1,0)  -> (0,1)\n    ],\n    \"pi\": 3.141592653589793,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # index set over polygon edges\n    model.E = pyo.RangeSet(0, len(d[\"edges\"]) - 1)\n\n    # decision variables\n    model.cx = pyo.Var(domain=pyo.Reals)\n    model.cy = pyo.Var(domain=pyo.Reals)\n    model.r = pyo.Var(domain=pyo.NonNegativeReals)\n\n    # objective: maximise the radius (equivalent to maximising the area)\n    model.obj = pyo.Objective(expr=model.r, sense=pyo.maximize)\n\n    # constraints: disk inside each half-plane\n    def edge_rule(m, i):\n        nx, ny, b = d[\"edges\"][i]\n        return nx * m.cx + ny * m.cy + m.r <= b\n\n    model.inside = pyo.Constraint(model.E, rule=edge_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 952,
+      "completion_tokens": 5998
+     },
+     "finish_reason": "length"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 6872,
+      "completion_tokens": 917
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 52.089696407318115,
+   "position": 6,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   x, y : coordinates of the centre of the circular fountain (continuous)\n#   r    : radius of the fountain (continuous, >= 0)\n#\n# Objective (in words)\n#   Maximise the radius r of the circle contained in the polygonal field.\n#   (The area is pi*r^2, a monotone function of r, so maximising r maximises\n#    the area; the area itself is reported after solving.)\n#\n# Constraints (numbered, with source sentence)\n#   1. For every edge of the polygon, the signed distance from the centre to\n#      the edge line, measured along the inward unit normal, must be at least\n#      r.  This keeps the whole circle inside the polygon.\n#      Source: \"the fountain ... must be restricted in a polygonal\n#      construction field\".\n#   2. r >= 0.  Source: \"the fountain ... round and as large as possible\".\n# ---------------------------------------------------------------------------\n\nDATA = {\n    # Polygon vertices, in order, in metres.\n    \"vertices\": [\n        (0.0, 1.0),\n        (0.0, 6.0),\n        (4.0, 10.0),\n        (8.0, 10.0),\n        (11.0, 7.0),\n        (11.0, 4.0),\n        (7.0, 0.0),\n        (1.0, 0.0),\n    ],\n    # A point strictly inside the polygon, used to orient the inward normals.\n    \"interior_point\": (5.0, 5.0),\n    # Big-M is not needed: the formulation is a pure LP.\n    \"radius_lower_bound\": 0.0,\n}\n\n\ndef _edges(vertices):\n    \"\"\"Return the list of polygon edges as pairs of consecutive vertices.\"\"\"\n    n = len(vertices)\n    return [(vertices[i], vertices[(i + 1) % n]) for i in range(n)]\n\n\ndef _inward_normals(vertices, interior):\n    \"\"\"Return, for each edge, the inward unit normal and the line offset.\n\n    For edge from A to B the line is  n . p = c  with n the inward unit\n    normal, so that n . p - c >= 0 for points inside the polygon.\n    \"\"\"\n    ix, iy = interior\n    normals = []\n    for (ax, ay), (bx, by) in _edges(vertices):\n        dx = bx - ax\n        dy = by - ay\n        length = (dx * dx + dy * dy) ** 0.5\n        # A normal to the edge direction (dx, dy).\n        nx = -dy / length\n        ny = dx / length\n        c = nx * ax + ny * ay\n        # Orient it so that the interior point lies on the positive side.\n        if nx * ix + ny * iy - c < 0.0:\n            nx = -nx\n            ny = -ny\n            c = -c\n        normals.append((nx, ny, c))\n    return normals\n\n\ndef build_model(data=None):\n    d = data or DATA\n    vertices = d[\"vertices\"]\n    interior = d[\"interior_point\"]\n    normals = _inward_normals(vertices, interior)\n\n    model = pyo.ConcreteModel()\n\n    # Index set over the polygon edges.\n    model.E = pyo.RangeSet(0, len(normals) - 1)\n\n    # Decision variables.\n    model.x = pyo.Var(within=pyo.Reals)\n    model.y = pyo.Var(within=pyo.Reals)\n    model.r = pyo.Var(\n        within=pyo.NonNegativeReals,\n        bounds=(d[\"radius_lower_bound\"], None),\n    )\n\n    # Constraint 1: the circle of radius r centred at (x, y) lies inside the\n    # polygon, i.e. the inward signed distance to every edge is at least r.\n    def edge_rule(m, i):\n        nx, ny, c = normals[i]\n        return nx * m.x + ny * m.y - c >= m.r\n\n    model.inside = pyo.Constraint(model.E, rule=edge_rule)\n\n    # Objective: maximise the radius (equivalently the area pi * r^2).\n    model.obj = pyo.Objective(expr=model.r, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 952,
+      "completion_tokens": 5742
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3043,
+      "completion_tokens": 989
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 49.559948444366455,
+   "position": 7,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import math\n\nimport pyomo.environ as pyo\n\n\nDATA = {\n    \"vertices\": [\n        (0.0, 1.0),\n        (0.0, 6.0),\n        (4.0, 10.0),\n        (8.0, 10.0),\n        (11.0, 7.0),\n        (11.0, 4.0),\n        (7.0, 0.0),\n        (1.0, 0.0),\n    ],\n    \"pi\": 3.141592653589793,\n    \"x_lo\": 0.0,\n    \"x_hi\": 11.0,\n    \"y_lo\": 0.0,\n    \"y_hi\": 10.0,\n    \"r_hi\": 10.0,\n}\n\n\ndef _outward_unit_normals(vertices):\n    \"\"\"Outward unit normal and a point for each edge of the given CCW/CW polygon.\"\"\"\n    n = len(vertices)\n    cx = sum(p[0] for p in vertices) / n\n    cy = sum(p[1] for p in vertices) / n\n    edges = []\n    for i in range(n):\n        x1, y1 = vertices[i]\n        x2, y2 = vertices[(i + 1) % n]\n        dx, dy = x2 - x1, y2 - y1\n        length = math.hypot(dx, dy)\n        # candidate normal (rotate edge direction by -90 deg)\n        nx, ny = dy / length, -dx / length\n        # ensure it points away from the centroid (outward)\n        if nx * (cx - x1) + ny * (cy - y1) > 0:\n            nx, ny = -nx, -ny\n        edges.append((nx, ny, x1, y1))\n    return edges\n\n\ndef build_model(data=None):\n    d = data or DATA\n    vertices = d[\"vertices\"]\n    edges = _outward_unit_normals(vertices)\n\n    model = pyo.ConcreteModel()\n    model.E = pyo.RangeSet(0, len(edges) - 1)\n\n    model.x = pyo.Var(bounds=(d[\"x_lo\"], d[\"x_hi\"]), within=pyo.Reals)\n    model.y = pyo.Var(bounds=(d[\"y_lo\"], d[\"y_hi\"]), within=pyo.Reals)\n    model.r = pyo.Var(bounds=(0.0, d[\"r_hi\"]), within=pyo.NonNegativeReals)\n\n    # Interior half-plane for each edge: n\u00b7(centre - point) + r <= 0\n    def edge_rule(m, i):\n        nx, ny, px, py = edges[i]\n        return nx * (m.x - px) + ny * (m.y - py) + m.r <= 0.0\n\n    model.inside = pyo.Constraint(model.E, rule=edge_rule)\n\n    # Maximise radius (equivalent to maximising area for fixed pi)\n    model.obj = pyo.Objective(expr=model.r, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 948,
+      "completion_tokens": 1382
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.307754278182983,
+   "position": 8,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"vertices\": [\n        (0.0, 1.0), (0.0, 6.0), (4.0, 10.0), (8.0, 10.0),\n        (11.0, 7.0), (11.0, 4.0), (7.0, 0.0), (1.0, 0.0),\n    ],\n    # For each edge (v_i -> v_{i+1}) we store (a, b, c) such that the\n    # polygon interior satisfies a*x + b*y <= c, with (a,b) a unit inward normal.\n    \"edges\": [\n        (1.0, 0.0, 0.0),          # x >= 0  ->  -x <= 0\n        (0.7071, 0.7071, 4.2426), # x + y <= 6\n        (0.0, 1.0, 10.0),         # y <= 10\n        (-0.3162, 0.9487, 6.3246),# -x + 3y <= 20\n        (1.0, 0.0, 11.0),         # x <= 11\n        (0.0, -1.0, -4.0),        # y >= 4  ->  -y <= -4\n        (0.0, -1.0, 0.0),         # y >= 0  ->  -y <= 0\n        (-0.7071, 0.7071, 0.7071),# -x + y <= 1\n    ],\n    \"bigM\": 1.0e4,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    edges = d[\"edges\"]\n    n = len(edges)\n\n    model = pyo.ConcreteModel()\n\n    model.E = pyo.RangeSet(0, n - 1)\n\n    # Decision variables: centre (cx, cy) and radius rr\n    model.cx = pyo.Var(within=pyo.Reals)\n    model.cy = pyo.Var(within=pyo.Reals)\n    model.rr = pyo.Var(within=pyo.NonNegativeReals)\n\n    # The circle of radius rr centred at (cx, cy) lies inside the polygon iff\n    # for every edge a*cx + b*cy + rr <= c.\n    def edge_rule(m, i):\n        a, b, c = edges[i]\n        return a * m.cx + b * m.cy + m.rr <= c\n\n    model.inside = pyo.Constraint(model.E, rule=edge_rule)\n\n    # Maximise the area -> maximise the radius (area = pi * rr^2 is increasing in rr).\n    model.obj = pyo.Objective(expr=model.rr, sense=pyo.maximize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 938,
+      "completion_tokens": 1131
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "missing_constraints",
+      "missing_objective",
+      "sandbox_no_constraints",
+      "sandbox_no_objective"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1412,
+      "completion_tokens": 665
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 11.075568437576294,
+   "position": 9,
+   "recipe_index": 3
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T10:35:37"
+}

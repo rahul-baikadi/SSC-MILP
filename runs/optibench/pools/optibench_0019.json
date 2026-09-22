@@ -1,0 +1,305 @@
+{
+ "pid": "optibench_0019",
+ "question": "A manufacturing company produces three types of electronic devices: smartphones, tablets, and laptops. The company has four different production lines, each with varying efficiency and capacity. On production line 1, each worker produces 10 smartphones, 5 tablets, and 3 laptops per hour. On production line 2, each worker produces 8 smartphones, 6 tablets, and 4 laptops per hour. On production line 3, each worker produces 6 smartphones, 7 tablets, and 5 laptops per hour. On production line 4, each worker produces 5 smartphones, 8 tablets, and 6 laptops per hour. The company needs to produce at least 1000 smartphones, 800 tablets, and 600 laptops daily. The production lines can only be operated or shut down at the same time. Determine the minimum number of hours needed to meet the daily demand. There are a total of 50 workers available. Each production line can be staffed by up to 20 workers at a time. The company wants to ensure that at least one production line is fully staffed (20 workers) if it is operational. Each production line has different productivity rates for each device.",
+ "templates": [
+  "Production Planning / Product Mix",
+  "Workforce / Shift Scheduling"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"The company needs to produce at least 1000 smartphones, 800 tablets, and 600 laptops daily.\"\n    \"demand\": {\"smart\": 1000, \"tablet\": 800, \"laptop\": 600},\n\n    # Production rates per worker per hour, quoted:\n    # \"On production line 1, each worker produces 10 smartphones, 5 tablets, and 3 laptops per hour.\"\n    # \"On production line 2, each worker produces 8 smartphones, 6 tablets, and 4 laptops per hour.\"\n    # \"On production line 3, each worker produces 6 smartphones, 7 tablets, and 5 laptops per hour.\"\n    # \"On production line 4, each worker produces 5 smartphones, 8 tablets, and 6 laptops per hour.\"\n    \"rate\": {\n        1: {\"smart\": 10, \"tablet\": 5, \"laptop\": 3},\n        2: {\"smart\": 8,  \"tablet\": 6, \"laptop\": 4},\n        3: {\"smart\": 6,  \"tablet\": 7, \"laptop\": 5},\n        4: {\"smart\": 5,  \"tablet\": 8, \"laptop\": 6},\n    },\n\n    # \"There are a total of 50 workers available.\"\n    \"total_workers\": 50,\n\n    # \"Each production line can be staffed by up to 20 workers at a time.\"\n    \"max_workers_per_line\": 20,\n\n    # \"The company wants to ensure that at least one production line is fully staffed (20 workers) if it is operational.\"\n    # fully staffed count equals max_workers_per_line (20); at least one line must be full.\n    \"min_full_lines\": 1,\n\n    # Hours bound for a single day.\n    \"max_hours\": 24,\n\n    # Big-M for worker-hours linearisation (max workers * max hours).\n    \"big_m\": 20 * 24,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    lines = sorted(d[\"rate\"].keys())\n    products = list(d[\"demand\"].keys())\n\n    model = pyo.ConcreteModel()\n\n    model.L = pyo.Set(initialize=lines)\n    model.P = pyo.Set(initialize=products)\n\n    max_w = d[\"max_workers_per_line\"]\n    max_h = d[\"max_hours\"]\n    big_m = d[\"big_m\"]\n\n    # Binary: line operational?\n    model.y = pyo.Var(model.L, within=pyo.Binary)\n\n    # Workers assigned to each line (0 if shut down).\n    model.w = pyo.Var(model.L, within=pyo.NonNegativeIntegers,\n                      bounds=(0, max_w))\n\n    # Hours each line operates.\n    model.h = pyo.Var(model.L, within=pyo.NonNegativeReals,\n                      bounds=(0, max_h))\n\n    # Binary: line fully staffed while operational.\n    model.z = pyo.Var(model.L, within=pyo.Binary)\n\n    # Worker-hours on each line = w[l] * h[l], linearised (McCormick).\n    model.t = pyo.Var(model.L, within=pyo.NonNegativeReals,\n                      bounds=(0, big_m))\n\n    # Objective: minimise total operating hours across lines.\n    def obj_rule(m):\n        return sum(m.h[l] for l in m.L)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand constraints: sum_l rate[l,p] * (w[l]*h[l]) >= demand[p]\n    # w*h replaced by t[l].\n    def demand_rule(m, p):\n        return sum(d[\"rate\"][l][p] * m.t[l] for l in m.L) >= d[\"demand\"][p]\n    model.demand = pyo.Constraint(model.P, rule=demand_rule)\n\n    # Total workers available.\n    def total_workers_rule(m):\n        return sum(m.w[l] for l in m.L) <= d[\"total_workers\"]\n    model.total_workers = pyo.Constraint(rule=total_workers_rule)\n\n    # Workers only on operational lines.\n    def workers_if_open_rule(m, l):\n        return m.w[l] <= max_w * m.y[l]\n    model.workers_if_open = pyo.Constraint(model.L, rule=workers_if_open_rule)\n\n    # Fully-staffed lines: z[l]=1 implies w[l] == max_w.\n    def full_staff_lb_rule(m, l):\n        return m.w[l] >= max_w * m.z[l]\n    model.full_staff_lb = pyo.Constraint(model.L, rule=full_staff_lb_rule)\n\n    def full_staff_ub_rule(m, l):\n        return m.w[l] <= max_w * m.z[l] + (max_w - 1) * (1 - m.z[l])\n    model.full_staff_ub = pyo.Constraint(model.L, rule=full_staff_ub_rule)\n\n    # z implies operational.\n    def z_implies_y_rule(m, l):\n        return m.z[l] <= m.y[l]\n    model.z_implies_y = pyo.Constraint(model.L, rule=z_implies_y_rule)\n\n    # At least one line fully staffed if operational.\n    def min_full_rule(m):\n        return sum(m.z[l] for l in m.L) >= d[\"min_full_lines\"]\n    model.min_full = pyo.Constraint(rule=min_full_rule)\n\n    # McCormick envelopes for t[l] = w[l] * h[l].\n    def t_ub_h_rule(m, l):\n        return m.t[l] <= max_w * m.h[l]\n    model.t_ub_h = pyo.Constraint(model.L, rule=t_ub_h_rule)\n\n    def t_ub_w_rule(m, l):\n        return m.t[l] <= max_h * m.w[l]\n    model.t_ub_w = pyo.Constraint(model.L, rule=t_ub_w_rule)\n\n    def t_lb_rule(m, l):\n        return m.t[l] >= max_h * m.w[l] + max_w * m.h[l] - big_m\n    model.t_lb = pyo.Constraint(model.L, rule=t_lb_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1203,
+      "completion_tokens": 2027
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.193199634552002,
+   "position": 0,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"lines\": [1, 2, 3, 4],\n    \"products\": [1, 2, 3],  # 1=smartphone, 2=tablet, 3=laptop\n    \"rate\": {\n        1: {1: 10, 2: 5, 3: 3},\n        2: {1: 8,  2: 6, 3: 4},\n        3: {1: 6,  2: 7, 3: 5},\n        4: {1: 5,  2: 8, 3: 6},\n    },\n    \"demand\": {1: 1000, 2: 800, 3: 600},\n    \"total_workers\": 50,\n    \"max_workers_per_line\": 20,\n    \"full_staff\": 20,          # required fully-staffed level when operational\n    \"Tmax\": 1000,              # big-M upper bound on hours per line\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.L = pyo.Set(initialize=d[\"lines\"], ordered=True)\n    model.P = pyo.Set(initialize=d[\"products\"], ordered=True)\n\n    # maximum possible value of w[i] = n[i]*t[i]\n    Wmax = d[\"full_staff\"] * d[\"Tmax\"]\n\n    model.b = pyo.Var(model.L, within=pyo.Binary)\n    model.n = pyo.Var(model.L, within=pyo.NonNegativeIntegers)\n    model.t = pyo.Var(model.L, within=pyo.NonNegativeReals)\n    model.w = pyo.Var(model.L, within=pyo.NonNegativeReals)  # = n[i]*t[i]\n\n    # Objective: minimize total operating hours\n    def obj_rule(m):\n        return sum(m.t[i] for i in m.L)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand: sum_i rate[i,p] * w[i] >= demand[p]\n    def demand_rule(m, p):\n        return sum(d[\"rate\"][i][p] * m.w[i] for i in m.L) >= d[\"demand\"][p]\n    model.demand_con = pyo.Constraint(model.P, rule=demand_rule)\n\n    # Total workers used <= total_workers\n    def workers_rule(m):\n        return sum(m.n[i] for i in m.L) <= d[\"total_workers\"]\n    model.workers_con = pyo.Constraint(rule=workers_rule)\n\n    # Per-line worker cap (30) and full-staff logic\n    def cap_rule(m, i):\n        return m.n[i] <= d[\"max_workers_per_line\"]\n    model.cap_con = pyo.Constraint(model.L, rule=cap_rule)\n\n    # n[i] <= 20 * b[i]  (no staff if shut down)\n    def staff_if_open_rule(m, i):\n        return m.n[i] <= d[\"full_staff\"] * m.b[i]\n    model.staff_if_open_con = pyo.Constraint(model.L, rule=staff_if_open_rule)\n\n    # n[i] >= 20 * b[i]  (if operational, must be fully staffed at 20)\n    def full_if_open_rule(m, i):\n        return m.n[i] >= d[\"full_staff\"] * m.b[i]\n    model.full_if_open_con = pyo.Constraint(model.L, rule=full_if_open_rule)\n\n    # McCormick envelopes for w[i] = n[i]*t[i]\n    # w <= Tmax * n\n    def w_le_tn_rule(m, i):\n        return m.w[i] <= d[\"Tmax\"] * m.n[i]\n    model.w_le_tn_con = pyo.Constraint(model.L, rule=w_le_tn_rule)\n\n    # w <= Nmax * t   (Nmax = 20, cap on workers)\n    def w_le_nt_rule(m, i):\n        return m.w[i] <= d[\"max_workers_per_line\"] * m.t[i]\n    model.w_le_nt_con = pyo.Constraint(model.L, rule=w_le_nt_rule)\n\n    # w >= Tmax*n + Nmax*t - Tmax*Nmax\n    def w_ge_rule(m, i):\n        return (m.w[i]\n                >= d[\"Tmax\"] * m.n[i]\n                + d[\"max_workers_per_line\"] * m.t[i]\n                - d[\"Tmax\"] * d[\"max_workers_per_line\"])\n    model.w_ge_con = pyo.Constraint(model.L, rule=w_ge_rule)\n\n    # w >= 0 is implied by domain; w <= Nmax*Tmax implied by other bounds.\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1215,
+      "completion_tokens": 1697
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.641601085662842,
+   "position": 1,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"lines\": [1, 2, 3, 4],\n    \"products\": [\"smartphone\", \"tablet\", \"laptop\"],\n    # rate[line][product] = units per worker-hour\n    \"rate\": {\n        1: {\"smartphone\": 10, \"tablet\": 5, \"laptop\": 3},\n        2: {\"smartphone\": 8,  \"tablet\": 6, \"laptop\": 4},\n        3: {\"smartphone\": 6,  \"tablet\": 7, \"laptop\": 5},\n        4: {\"smartphone\": 5,  \"tablet\": 8, \"laptop\": 6},\n    },\n    \"demand\": {\"smartphone\": 1000, \"tablet\": 800, \"laptop\": 600},\n    \"total_workers\": 50,\n    \"max_workers_per_line\": 20,\n    \"full_staff\": 20,\n    \"big_M_hours\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    m.L = pyo.Set(initialize=d[\"lines\"])\n    m.P = pyo.Set(initialize=d[\"products\"])\n\n    # Decision variables\n    m.open_line = pyo.Var(m.L, within=pyo.Binary)\n    m.hours = pyo.Var(m.L, within=pyo.NonNegativeReals)\n    m.workers = pyo.Var(m.L, within=pyo.NonNegativeIntegers,\n                        bounds=(0, d[\"max_workers_per_line\"]))\n    # effort[l] = worker-hours spent on line l (linear surrogate for workers*hours)\n    m.effort = pyo.Var(m.L, within=pyo.NonNegativeReals)\n\n    # Objective: minimize total operating hours\n    def obj_rule(m):\n        return sum(m.hours[l] for l in m.L)\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand constraints: sum_l rate[l][p] * effort[l] >= demand[p]\n    def demand_rule(m, p):\n        return sum(d[\"rate\"][l][p] * m.effort[l] for l in m.L) >= d[\"demand\"][p]\n    m.demand = pyo.Constraint(m.P, rule=demand_rule)\n\n    # Total workers available\n    def total_workers_rule(m):\n        return sum(m.workers[l] for l in m.L) <= d[\"total_workers\"]\n    m.total_workers = pyo.Constraint(rule=total_workers_rule)\n\n    # Effort bounded by worker-hours available on the line: effort <= workers * big_M_hours\n    # (linear link: effort[l] <= max_workers_per_line * hours[l])\n    def effort_hours_rule(m, l):\n        return m.effort[l] <= d[\"max_workers_per_line\"] * m.hours[l]\n    m.effort_hours = pyo.Constraint(m.L, rule=effort_hours_rule)\n\n    # Effort bounded by workers actually assigned (each worker can work at most big_M_hours)\n    def effort_workers_rule(m, l):\n        return m.effort[l] <= d[\"big_M_hours\"] * m.workers[l]\n    m.effort_workers = pyo.Constraint(m.L, rule=effort_workers_rule)\n\n    # Hours only if line is open\n    def hours_open_rule(m, l):\n        return m.hours[l] <= d[\"big_M_hours\"] * m.open_line[l]\n    m.hours_open = pyo.Constraint(m.L, rule=hours_open_rule)\n\n    # If operational, line must be fully staffed (workers = full_staff); else workers = 0\n    def full_staff_rule(m, l):\n        return m.workers[l] == d[\"full_staff\"] * m.open_line[l]\n    m.full_staff = pyo.Constraint(m.L, rule=full_staff_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1199,
+      "completion_tokens": 1480
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.824050664901733,
+   "position": 2,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"lines\": [1, 2, 3, 4],\n    \"products\": [\"smartphone\", \"tablet\", \"laptop\"],\n    \"rate\": {\n        (1, \"smartphone\"): 10, (1, \"tablet\"): 5, (1, \"laptop\"): 3,\n        (2, \"smartphone\"): 8, (2, \"tablet\"): 6, (2, \"laptop\"): 4,\n        (3, \"smartphone\"): 6, (3, \"tablet\"): 7, (3, \"laptop\"): 5,\n        (4, \"smartphone\"): 5, (4, \"tablet\"): 8, (4, \"laptop\"): 6,\n    },\n    \"demand\": {\n        \"smartphone\": 1000,\n        \"tablet\": 800,\n        \"laptop\": 600,\n    },\n    \"total_workers\": 50,\n    \"workers_per_line_max\": 20,\n    \"fully_staffed_level\": 20,\n    \"T_MAX\": 1000,\n    \"BIG_M\": 1000000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.L = pyo.Set(initialize=d[\"lines\"])\n    model.P = pyo.Set(initialize=d[\"products\"])\n\n    # Common operating hours (all operational lines run for the same window)\n    model.T = pyo.Var(domain=pyo.NonNegativeReals, bounds=(0, d[\"T_MAX\"]))\n\n    # Workers assigned to each line\n    model.n = pyo.Var(\n        model.L,\n        domain=pyo.NonNegativeIntegers,\n        bounds=(0, d[\"workers_per_line_max\"]),\n    )\n\n    # Binary: line is operational\n    model.y = pyo.Var(model.L, domain=pyo.Binary)\n\n    # Binary: line is fully staffed (20 workers)\n    model.full = pyo.Var(model.L, domain=pyo.Binary)\n\n    # Worker-hours on each line: h[l] = n[l] * T (linearised via big-M)\n    model.h = pyo.Var(\n        model.L,\n        domain=pyo.NonNegativeReals,\n        bounds=(0, d[\"workers_per_line_max\"] * d[\"T_MAX\"]),\n    )\n\n    # --- Objective: minimise common operating hours ---\n    model.obj = pyo.Objective(expr=model.T, sense=pyo.minimize)\n\n    # --- Demand constraints: total output per product meets demand ---\n    def demand_rule(m, p):\n        return sum(d[\"rate\"][(l, p)] * m.h[l] for l in m.L) >= d[\"demand\"][p]\n\n    model.demand_con = pyo.Constraint(model.P, rule=demand_rule)\n\n    # --- Total workers across lines <= 50 ---\n    def total_workers_rule(m):\n        return sum(m.n[l] for l in m.L) <= d[\"total_workers\"]\n\n    model.total_workers_con = pyo.Constraint(rule=total_workers_rule)\n\n    # --- Operational line must have at least one worker; shut line has none ---\n    def op_lower_rule(m, l):\n        return m.n[l] >= m.y[l]\n\n    model.op_lower_con = pyo.Constraint(model.L, rule=op_lower_rule)\n\n    def op_upper_rule(m, l):\n        return m.n[l] <= d[\"workers_per_line_max\"] * m.y[l]\n\n    model.op_upper_con = pyo.Constraint(model.L, rule=op_upper_rule)\n\n    # --- Fully staffed indicator: full[l] = 1 => n[l] = 20 and y[l] = 1 ---\n    def full_upper_rule(m, l):\n        return m.n[l] >= d[\"fully_staffed_level\"] - d[\"BIG_M\"] * (1 - m.full[l])\n\n    model.full_upper_con = pyo.Constraint(model.L, rule=full_upper_rule)\n\n    def full_op_rule(m, l):\n        return m.full[l] <= m.y[l]\n\n    model.full_op_con = pyo.Constraint(model.L, rule=full_op_rule)\n\n    # At least one operational line is fully staffed\n    def at_least_one_full_rule(m):\n        return sum(m.full[l] for l in m.L) >= 1\n\n    model.at_least_one_full_con = pyo.Constraint(rule=at_least_one_full_rule)\n\n    # --- Linearisation of h[l] = n[l] * T via big-M (McCormick-style) ---\n    # Since n[l] in [0, 20] and T in [0, T_MAX]:\n    # h[l] <= 20 * T\n    # h[l] <= T_MAX * n[l]\n    # h[l] >= 20 * T - T_MAX * (20 - n[l])\n    # h[l] >= T_MAX * n[l] - T_MAX * (T_MAX - T)  -> simplified below\n    def h_upper_T_rule(m, l):\n        return m.h[l] <= d[\"workers_per_line_max\"] * m.T\n\n    model.h_upper_T_con = pyo.Constraint(model.L, rule=h_upper_T_rule)\n\n    def h_upper_n_rule(m, l):\n        return m.h[l] <= d[\"T_MAX\"] * m.n[l]\n\n    model.h_upper_n_con = pyo.Constraint(model.L, rule=h_upper_n_rule)\n\n    def h_lower_T_rule(m, l):\n        return m.h[l] >= d[\"workers_per_line_max\"] * m.T - d[\"T_MAX\"] * (\n            d[\"workers_per_line_max\"] - m.n[l]\n        )\n\n    model.h_lower_T_con = pyo.Constraint(model.L, rule=h_lower_T_rule)\n\n    def h_lower_n_rule(m, l):\n        return m.h[l] >= d[\"T_MAX\"] * m.n[l] - d[\"T_MAX\"] * (d[\"T_MAX\"] - m.T)\n\n    model.h_lower_n_con = pyo.Constraint(model.L, rule=h_lower_n_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1205,
+      "completion_tokens": 1972
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3098,
+      "completion_tokens": 1401
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 15.768924713134766,
+   "position": 3,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# =============================================================================\n# PROBLEM SUMMARY\n# -----------------------------------------------------------------------------\n# Three products: smartphones, tablets, laptops.\n# Four production lines, each with per-worker hourly output rates.\n# Demand (daily): >= 1000 smartphones, >= 800 tablets, >= 600 laptops.\n# Total workers available: 50.\n# Each line can be staffed by up to 20 workers at a time.\n# Lines can only be operated or shut down as a whole (binary on/off).\n# If a line is operational, it must be fully staffed (20 workers).\n# Objective: minimise the number of hours needed to meet daily demand.\n#\n# DECISION VARIABLES\n#   h[p]  in R+   : hours line p is operated (p in LINES)\n#   y[p]  in {0,1}: 1 if line p is operational, 0 otherwise\n#\n# OBJECTIVE (minimise total operating hours)\n#   min sum_p h[p]\n#\n# CONSTRAINTS\n#   (1) Demand for smartphones:  sum_p rate[p,'smartphone'] * 20 * h[p] >= 1000\n#   (2) Demand for tablets:      sum_p rate[p,'tablet']     * 20 * h[p] >= 800\n#   (3) Demand for laptops:      sum_p rate[p,'laptop']     * 20 * h[p] >= 600\n#   (4) Total workers:           sum_p 20 * y[p] <= 50\n#   (5) Line fully staffed:      h[p] <= M * y[p]   for all p\n#       (a line can only run hours if it is operational; when operational it\n#        is staffed by exactly 20 workers, so the per-hour output is\n#        20 * rate[p, product])\n# =============================================================================\n\nDATA = {\n    \"lines\": [1, 2, 3, 4],\n    \"products\": [\"smartphone\", \"tablet\", \"laptop\"],\n    # rate[p][product] = units produced per worker per hour on line p\n    \"rate\": {\n        1: {\"smartphone\": 10, \"tablet\": 5, \"laptop\": 3},\n        2: {\"smartphone\": 8,  \"tablet\": 6, \"laptop\": 4},\n        3: {\"smartphone\": 6,  \"tablet\": 7, \"laptop\": 5},\n        4: {\"smartphone\": 5,  \"tablet\": 8, \"laptop\": 6},\n    },\n    \"demand\": {\"smartphone\": 1000, \"tablet\": 800, \"laptop\": 600},\n    \"total_workers\": 50,\n    \"max_workers_per_line\": 20,\n    # Big-M for the h[p] <= M * y[p] linking constraint\n    \"big_m\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.LINES = pyo.Set(initialize=d[\"lines\"])\n    model.PRODUCTS = pyo.Set(initialize=d[\"products\"])\n\n    # h[p]: hours line p operates\n    model.h = pyo.Var(model.LINES, within=pyo.NonNegativeReals)\n\n    # y[p]: 1 if line p is operational\n    model.y = pyo.Var(model.LINES, within=pyo.Binary)\n\n    # Objective: minimise total operating hours\n    def obj_rule(m):\n        return sum(m.h[p] for p in m.LINES)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # (1)-(3) Demand constraints per product\n    def demand_rule(m, prod):\n        return sum(\n            d[\"rate\"][p][prod] * d[\"max_workers_per_line\"] * m.h[p]\n            for p in m.LINES\n        ) >= d[\"demand\"][prod]\n    model.demand_con = pyo.Constraint(model.PRODUCTS, rule=demand_rule)\n\n    # (4) Total workers available\n    def workers_rule(m):\n        return sum(\n            d[\"max_workers_per_line\"] * m.y[p] for p in m.LINES\n        ) <= d[\"total_workers\"]\n    model.workers_con = pyo.Constraint(rule=workers_rule)\n\n    # (5) Line can only run hours if operational (fully staffed when on)\n    def link_rule(m, p):\n        return m.h[p] <= d[\"big_m\"] * m.y[p]\n    model.link_con = pyo.Constraint(model.LINES, rule=link_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1219,
+      "completion_tokens": 635
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1417,
+      "completion_tokens": 1046
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 10.084342002868652,
+   "position": 4,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# Every numeric constant from the problem, with its source sentence.\nDATA = {\n    # \"each worker produces 10 smartphones, 5 tablets, and 3 laptops per hour\" (line 1)\n    # productivity[line][product]\n    \"prod_rate\": {\n        1: {\"smartphone\": 10, \"tablet\": 5, \"laptop\": 3},  # line 1\n        2: {\"smartphone\": 8,  \"tablet\": 6, \"laptop\": 4},  # \"8 smartphones, 6 tablets, 4 laptops\" (line 2)\n        3: {\"smartphone\": 6,  \"tablet\": 7, \"laptop\": 5},  # \"6 smartphones, 7 tablets, 5 laptops\" (line 3)\n        4: {\"smartphone\": 5,  \"tablet\": 8, \"laptop\": 6},  # \"5 smartphones, 8 tablets, 6 laptops\" (line 4)\n    },\n    # \"at least 1000 smartphones, 800 tablets, and 600 laptops daily\"\n    \"demand\": {\"smartphone\": 1000, \"tablet\": 800, \"laptop\": 600},\n    # \"There are a total of 50 workers available\"\n    \"total_workers\": 50,\n    # \"Each production line can be staffed by up to 20 workers at a time\"\n    \"max_workers_per_line\": 20,\n    # \"at least one production line is fully staffed (20 workers) if it is operational\"\n    \"full_staff\": 20,\n    \"min_full_staffed_lines\": 1,\n    # big-M for time-horizon linking (generous upper bound on hours)\n    \"big_m\": 10000,\n}\n\n# Sets\nPRODUCTS = [\"smartphone\", \"tablet\", \"laptop\"]\nLINES = [1, 2, 3, 4]\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=PRODUCTS)\n    model.L = pyo.Set(initialize=LINES)\n\n    # y[l]: line l operational (1) or shut down (0)\n    model.y = pyo.Var(model.L, within=pyo.Binary)\n    # n[l]: workers assigned to line l (0..20)\n    model.n = pyo.Var(model.L, within=pyo.NonNegativeIntegers,\n                      bounds=(0, d[\"max_workers_per_line\"]))\n    # t[l]: hours line l operates\n    model.t = pyo.Var(model.L, within=pyo.NonNegativeReals)\n    # w[l]: line l is fully staffed (20 workers)\n    model.w = pyo.Var(model.L, within=pyo.Binary)\n    # h[l]: effective worker-hours on line l (= n[l]*t[l], linearised)\n    model.h = pyo.Var(model.L, within=pyo.NonNegativeReals)\n\n    # Objective: minimize total operating hours\n    def obj_rule(m):\n        return sum(m.t[l] for l in m.L)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand: total output per product >= required units\n    def demand_rule(m, p):\n        return sum(d[\"prod_rate\"][l][p] * m.h[l] for l in m.L) >= d[\"demand\"][p]\n    model.demand_con = pyo.Constraint(model.P, rule=demand_rule)\n\n    # Worker pool: total workers assigned <= 50\n    def pool_rule(m):\n        return sum(m.n[l] for l in m.L) <= d[\"total_workers\"]\n    model.pool_con = pyo.Constraint(rule=pool_rule)\n\n    # Workers only on operational lines\n    def staff_oper_rule(m, l):\n        return m.n[l] <= d[\"max_workers_per_line\"] * m.y[l]\n    model.staff_oper_con = pyo.Constraint(model.L, rule=staff_oper_rule)\n\n    # Full-staffed line must have 20 workers\n    def full_link_rule(m, l):\n        return m.n[l] >= d[\"full_staff\"] * m.w[l]\n    model.full_link_con = pyo.Constraint(model.L, rule=full_link_rule)\n\n    # A fully-staffed line must be operational\n    def full_oper_rule(m, l):\n        return m.w[l] <= m.y[l]\n    model.full_oper_con = pyo.Constraint(model.L, rule=full_oper_rule)\n\n    # At least one fully-staffed operational line\n    def at_least_one_rule(m):\n        return sum(m.w[l] for l in m.L) >= d[\"min_full_staffed_lines\"]\n    model.at_least_one_con = pyo.Constraint(rule=at_least_one_rule)\n\n    # Worker-hours consistency: h[l] = n[l]*t[l]\n    # If fully staffed (w=1): n=20, so h = 20*t\n    def h_full_rule(m, l):\n        return m.h[l] == d[\"full_staff\"] * m.t[l]\n    # If not fully staffed (w=0): h <= 20*t\n    def h_loose_rule(m, l):\n        return m.h[l] <= d[\"full_staff\"] * m.t[l]\n\n    # Big-M linking: h = 20*t enforced only when w=1\n    def h_bigm_upper_rule(m, l):\n        # h <= 20*t + M*(1-w)\n        return m.h[l] <= d[\"full_staff\"] * m.t[l] + d[\"big_m\"] * (1 - m.w[l])\n\n    def h_bigm_lower_rule(m, l):\n        # h >= 20*t - M*(1-w)\n        return m.h[l] >= d[\"full_staff\"] * m.t[l] - d[\"big_m\"] * (1 - m.w[l])\n\n    model.h_bigm_upper_con = pyo.Constraint(model.L, rule=h_bigm_upper_rule)\n    model.h_bigm_lower_con = pyo.Constraint(model.L, rule=h_bigm_lower_rule)\n\n    # Loose upper bound on h for non-fully-staffed lines\n    def h_loose_con_rule(m, l):\n        return m.h[l] <= d[\"max_workers_per_line\"] * m.t[l]\n    model.h_loose_con = pyo.Constraint(model.L, rule=h_loose_con_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1203,
+      "completion_tokens": 2013
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.466082096099854,
+   "position": 5,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"phone\", \"tab\", \"lap\"],\n    \"lines\": [1, 2, 3, 4],\n    # units produced per worker-hour on each line\n    \"rate\": {\n        (1, \"phone\"): 10, (1, \"tab\"): 5, (1, \"lap\"): 3,\n        (2, \"phone\"): 8,  (2, \"tab\"): 6, (2, \"lap\"): 4,\n        (3, \"phone\"): 6,  (3, \"tab\"): 7, (3, \"lap\"): 5,\n        (4, \"phone\"): 5,  (4, \"tab\"): 8, (4, \"lap\"): 6,\n    },\n    \"demand\": {\"phone\": 1000, \"tab\": 800, \"lap\": 600},\n    \"workers_total\": 50,\n    \"max_workers_per_line\": 20,\n    \"full_staff_level\": 20,\n    \"big_m_hours\": 1000.0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.LINES = pyo.Set(initialize=d[\"lines\"])\n    model.PRODUCTS = pyo.Set(initialize=d[\"products\"])\n\n    # y[l] = 1 if line l is operational\n    model.y = pyo.Var(model.LINES, within=pyo.Binary)\n\n    # h[l] = hours line l operates\n    model.h = pyo.Var(model.LINES, within=pyo.NonNegativeReals)\n\n    # w[l] = workers assigned to line l\n    model.w = pyo.Var(model.LINES, within=pyo.NonNegativeIntegers,\n                      bounds=(0, d[\"max_workers_per_line\"]))\n\n    # z[l] = 1 if line l is fully staffed (20 workers)\n    model.z = pyo.Var(model.LINES, within=pyo.Binary)\n\n    # Objective: minimize total operating hours across lines\n    def obj_rule(m):\n        return sum(m.h[l] for l in m.LINES)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand constraints: total production per product must meet demand\n    def demand_rule(m, p):\n        return sum(d[\"rate\"][l, p] * m.w[l] * m.h[l] for l in m.LINES) >= d[\"demand\"][p]\n    model.demand_con = pyo.Constraint(model.PRODUCTS, rule=demand_rule)\n\n    # Total workers across lines cannot exceed available workers\n    def workers_rule(m):\n        return sum(m.w[l] for l in m.LINES) <= d[\"workers_total\"]\n    model.workers_con = pyo.Constraint(rule=workers_rule)\n\n    # Hours only if operational (big-M linking)\n    def hours_link_rule(m, l):\n        return m.h[l] <= d[\"big_m_hours\"] * m.y[l]\n    model.hours_link_con = pyo.Constraint(model.LINES, rule=hours_link_rule)\n\n    # Workers only if operational\n    def workers_link_rule(m, l):\n        return m.w[l] <= d[\"max_workers_per_line\"] * m.y[l]\n    model.workers_link_con = pyo.Constraint(model.LINES, rule=workers_link_rule)\n\n    # Full staffing: z[l] = 1 implies w[l] = 20\n    def full_staff_rule(m, l):\n        return m.w[l] >= d[\"full_staff_level\"] * m.z[l]\n    model.full_staff_con = pyo.Constraint(model.LINES, rule=full_staff_rule)\n\n    # z[l] can only be 1 if line is operational\n    def full_staff_link_rule(m, l):\n        return m.z[l] <= m.y[l]\n    model.full_staff_link_con = pyo.Constraint(model.LINES, rule=full_staff_link_rule)\n\n    # At least one operational line must be fully staffed\n    def at_least_one_full_rule(m):\n        return sum(m.z[l] for l in m.LINES) >= 1\n    model.at_least_one_full_con = pyo.Constraint(rule=at_least_one_full_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1219,
+      "completion_tokens": 6000
+     },
+     "finish_reason": "length"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1362,
+      "completion_tokens": 984
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "possible_nonlinearity",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2315,
+      "completion_tokens": 986
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "possible_nonlinearity"
+   ],
+   "seconds": 58.916810274124146,
+   "position": 6,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"smartphone\", \"tablet\", \"laptop\"],\n    \"lines\": [1, 2, 3, 4],\n    # rate[line][product] units per worker per hour\n    \"rate\": {\n        1: [10, 5, 3],\n        2: [8, 6, 4],\n        3: [6, 7, 5],\n        4: [5, 8, 6],\n    },\n    \"demand\": [1000, 800, 600],       # per product\n    \"total_workers\": 50,\n    \"workers_per_line_max\": 20,\n    \"fully_staffed\": 20,\n    \"time_horizon\": 24,               # big-M safe upper bound on hours daily\n    \"n_products\": 3,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.LINES = pyo.Set(initialize=d[\"lines\"])\n    m.PRODS = pyo.Set(initialize=list(range(d[\"n_products\"])))\n\n    # y[j] = 1 if line j operational\n    m.y = pyo.Var(m.LINES, within=pyo.Binary)\n    # w[j] workers assigned (integer, 0..20)\n    m.w = pyo.Var(m.LINES, within=pyo.NonNegativeIntegers,\n                  bounds=(0, d[\"workers_per_line_max\"]))\n    # h[j] hours line j runs\n    m.h = pyo.Var(m.LINES, within=pyo.NonNegativeReals,\n                  bounds=(0, d[\"time_horizon\"]))\n    # T = max running time (objective)\n    m.T = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, d[\"time_horizon\"]))\n\n    # line state linking: staffed iff operational (fully staffed if operational)\n    def w_upper_rule(m, j):\n        return m.w[j] <= d[\"fully_staffed\"] * m.y[j]\n\n    def w_lower_rule(m, j):\n        return m.w[j] >= d[\"fully_staffed\"] * m.y[j]\n\n    m.w_upper = pyo.Constraint(m.LINES, rule=w_upper_rule)\n    m.w_lower = pyo.Constraint(m.LINES, rule=w_lower_rule)\n\n    def h_upper_rule(m, j):\n        return m.h[j] <= d[\"time_horizon\"] * m.y[j]\n\n    m.h_upper = pyo.Constraint(m.LINES, rule=h_upper_rule)\n\n    # Demand for each product: sum_j rate[j][p] * w[j] * h[j] >= demand[p]\n    # Since w[j] = 20*y[j], productivity is rate*20*h when on.\n    def demand_rule(m, p):\n        return sum(\n            d[\"rate\"][j][p] * d[\"fully_staffed\"] * m.h[j] for j in m.LINES\n        ) >= d[\"demand\"][p]\n\n    m.demand = pyo.Constraint(m.PRODS, rule=demand_rule)\n\n    # Total workers limit\n    def total_workers_rule(m):\n        return sum(m.w[j] for j in m.LINES) <= d[\"total_workers\"]\n\n    m.total_workers = pyo.Constraint(rule=total_workers_rule)\n\n    # At least one line operational\n    def at_least_one_rule(m):\n        return sum(m.y[j] for j in m.LINES) >= 1\n\n    m.at_least_one = pyo.Constraint(rule=at_least_one_rule)\n\n    # T >= h[j] for all lines -> T is max hours\n    def max_hours_rule(m, j):\n        return m.T >= m.h[j]\n\n    m.max_hours = pyo.Constraint(m.LINES, rule=max_hours_rule)\n\n    m.obj = pyo.Objective(expr=m.T, sense=pyo.minimize)\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1205,
+      "completion_tokens": 1474
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "disallowed_lambda_rule"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2064,
+      "completion_tokens": 916
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 11.159107208251953,
+   "position": 7,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"lines\": [1, 2, 3, 4],\n    \"products\": [\"smartphone\", \"tablet\", \"laptop\"],\n    \"rate\": {\n        (1, \"smartphone\"): 10, (1, \"tablet\"): 5, (1, \"laptop\"): 3,\n        (2, \"smartphone\"): 8,  (2, \"tablet\"): 6, (2, \"laptop\"): 4,\n        (3, \"smartphone\"): 6,  (3, \"tablet\"): 7, (3, \"laptop\"): 5,\n        (4, \"smartphone\"): 5,  (4, \"tablet\"): 8, (4, \"laptop\"): 6,\n    },\n    \"demand\": {\"smartphone\": 1000, \"tablet\": 800, \"laptop\": 600},\n    \"total_workers\": 50,\n    \"max_workers_per_line\": 20,\n    \"big_m_hours\": 1000,\n    \"big_m_worker_hours\": 20000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.L = pyo.Set(initialize=d[\"lines\"])\n    m.P = pyo.Set(initialize=d[\"products\"])\n\n    # Decision variables\n    m.open = pyo.Var(m.L, within=pyo.Binary)\n    m.workers = pyo.Var(m.L, within=pyo.NonNegativeIntegers,\n                        bounds=(0, d[\"max_workers_per_line\"]))\n    m.hours = pyo.Var(m.L, within=pyo.NonNegativeReals,\n                      bounds=(0, d[\"big_m_hours\"]))\n    m.worker_hours = pyo.Var(m.L, within=pyo.NonNegativeReals,\n                             bounds=(0, d[\"big_m_worker_hours\"]))\n    m.full = pyo.Var(m.L, within=pyo.Binary)\n    m.prod = pyo.Var(m.P, within=pyo.NonNegativeReals)\n    m.makespan = pyo.Var(within=pyo.NonNegativeReals,\n                         bounds=(0, d[\"big_m_hours\"]))\n\n    # Objective: minimize the maximum operating hours (minimum hours needed)\n    def obj_rule(mm):\n        return mm.makespan\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand satisfaction\n    def demand_rule(mm, p):\n        return mm.prod[p] >= d[\"demand\"][p]\n    m.demand_con = pyo.Constraint(m.P, rule=demand_rule)\n\n    # Production definition: prod[p] = sum_l rate[l,p] * worker_hours[l]\n    def prod_rule(mm, p):\n        return mm.prod[p] == sum(\n            d[\"rate\"][(l, p)] * mm.worker_hours[l] for l in mm.L\n        )\n    m.prod_con = pyo.Constraint(m.P, rule=prod_rule)\n\n    # worker_hours[l] <= workers[l] * hours[l]  (linearized via 20*hours)\n    def wh_hours_rule(mm, l):\n        return mm.worker_hours[l] <= d[\"max_workers_per_line\"] * mm.hours[l]\n    m.wh_hours_con = pyo.Constraint(m.L, rule=wh_hours_rule)\n\n    # worker_hours[l] <= workers[l] * bigM  ->  linearized: wh <= 20*workers is too tight;\n    # use wh[l] <= bigM_wh * open[l] and wh[l] <= workers[l]*bigM_hours\n    def wh_open_rule(mm, l):\n        return mm.worker_hours[l] <= d[\"big_m_worker_hours\"] * mm.open[l]\n    m.wh_open_con = pyo.Constraint(m.L, rule=wh_open_rule)\n\n    def wh_workers_rule(mm, l):\n        return mm.worker_hours[l] <= d[\"big_m_hours\"] * mm.workers[l]\n    m.wh_workers_con = pyo.Constraint(m.L, rule=wh_workers_rule)\n\n    # hours[l] <= bigM * open[l]\n    def hours_open_rule(mm, l):\n        return mm.hours[l] <= d[\"big_m_hours\"] * mm.open[l]\n    m.hours_open_con = pyo.Constraint(m.L, rule=hours_open_rule)\n\n    # workers[l] <= 20 * open[l]\n    def workers_open_rule(mm, l):\n        return mm.workers[l] <= d[\"max_workers_per_line\"] * mm.open[l]\n    m.workers_open_con = pyo.Constraint(m.L, rule=workers_open_rule)\n\n    # Total workers limited\n    def total_workers_rule(mm):\n        return sum(mm.workers[l] for l in mm.L) <= d[\"total_workers\"]\n    m.total_workers_con = pyo.Constraint(rule=total_workers_rule)\n\n    # Full staffing: workers[l] >= 20 * full[l]\n    def full_link_rule(mm, l):\n        return mm.workers[l] >= d[\"max_workers_per_line\"] * mm.full[l]\n    m.full_link_con = pyo.Constraint(m.L, rule=full_link_rule)\n\n    # If any line is open, at least one line is fully staffed\n    def full_require_rule(mm, l):\n        return sum(mm.full[k] for k in mm.L) >= mm.open[l]\n    m.full_require_con = pyo.Constraint(m.L, rule=full_require_rule)\n\n    # makespan: hours[l] <= makespan\n    def makespan_rule(mm, l):\n        return mm.hours[l] <= mm.makespan\n    m.makespan_con = pyo.Constraint(m.L, rule=makespan_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1199,
+      "completion_tokens": 2107
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 9.071961402893066,
+   "position": 8,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"lines\": [1, 2, 3, 4],\n    \"products\": [\"phone\", \"tablet\", \"laptop\"],\n    # rate[l][p] = units of product p per worker per hour on line l\n    \"rate\": {\n        1: {\"phone\": 10, \"tablet\": 5, \"laptop\": 3},\n        2: {\"phone\": 8,  \"tablet\": 6, \"laptop\": 4},\n        3: {\"phone\": 6,  \"tablet\": 7, \"laptop\": 5},\n        4: {\"phone\": 5,  \"tablet\": 8, \"laptop\": 6},\n    },\n    \"demand\": {\"phone\": 1000, \"tablet\": 800, \"laptop\": 600},\n    \"total_workers\": 50,\n    \"line_worker_max\": 20,\n    \"line_full_staff\": 20,   # min workers if a line is operational\n    \"max_hours\": 24,         # daily horizon / upper bound on operating hours\n    \"worker_levels\": list(range(0, 21)),  # 0..20 possible worker counts per line\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    L = d[\"lines\"]\n    P = d[\"products\"]\n    K = d[\"worker_levels\"]\n    Wmax = d[\"line_worker_max\"]\n    Tmax = d[\"max_hours\"]\n\n    model = pyo.ConcreteModel()\n\n    model.L = pyo.Set(initialize=L)\n    model.P = pyo.Set(initialize=P)\n    model.K = pyo.Set(initialize=K)\n\n    # y[l]: 1 if line l is operational\n    model.y = pyo.Var(model.L, within=pyo.Binary)\n\n    # x[l]: hours line l is operated\n    model.x = pyo.Var(model.L, within=pyo.NonNegativeReals, bounds=(0, Tmax))\n\n    # w[l]: integer workers assigned to line l\n    model.w = pyo.Var(model.L, within=pyo.NonNegativeIntegers, bounds=(0, Wmax))\n\n    # b[l,k]: 1 if line l is staffed with exactly k workers\n    model.b = pyo.Var(model.L, model.K, within=pyo.Binary)\n\n    # s[l,k]: auxiliary = k * x[l] when b[l,k] = 1\n    model.s = pyo.Var(model.L, model.K, within=pyo.NonNegativeReals, bounds=(0, Tmax * Wmax))\n\n    # h[l]: worker-hours on line l (= w[l]*x[l], linearised)\n    model.h = pyo.Var(model.L, within=pyo.NonNegativeReals, bounds=(0, Wmax * Tmax))\n\n    # T: makespan (hours needed)\n    model.T = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, Tmax))\n\n    # Objective: minimise total hours needed\n    model.obj = pyo.Objective(expr=model.T, sense=pyo.minimize)\n\n    # (1) each line has exactly one worker level selected\n    def rule_level(m, l):\n        return sum(m.b[l, k] for k in m.K) == 1\n    model.c_level = pyo.Constraint(model.L, rule=rule_level)\n\n    # (2) w[l] = sum_k k * b[l,k]\n    def rule_wdef(m, l):\n        return m.w[l] == sum(k * m.b[l, k] for k in m.K)\n    model.c_wdef = pyo.Constraint(model.L, rule=rule_wdef)\n\n    # (3) line is open iff it has workers: w[l] <= Wmax*y[l]\n    def rule_wmax(m, l):\n        return m.w[l] <= Wmax * m.y[l]\n    model.c_wmax = pyo.Constraint(model.L, rule=rule_wmax)\n\n    # (4) if open, must be fully staffed: w[l] >= full*y[l]\n    def rule_wmin(m, l):\n        return m.w[l] >= d[\"line_full_staff\"] * m.y[l]\n    model.c_wmin = pyo.Constraint(model.L, rule=rule_wmin)\n\n    # (5) total workers used <= 50\n    def rule_total_workers(m):\n        return sum(m.w[l] for l in m.L) <= d[\"total_workers\"]\n    model.c_total_workers = pyo.Constraint(rule=rule_total_workers)\n\n    # (6) hours min: if closed x[l] = 0; also x[l] <= T\n    def rule_x_is_open(m, l):\n        return m.x[l] <= Tmax * m.y[l]\n    model.c_x_is_open = pyo.Constraint(model.L, rule=rule_x_is_open)\n\n    def rule_x_le_T(m, l):\n        return m.x[l] <= m.T\n    model.c_x_le_T = pyo.Constraint(model.L, rule=rule_x_le_T)\n\n    # (7) linearise s[l,k] = k * x[l] conditioned on b[l,k]\n    def rule_s_le_x(m, l, k):\n        return m.s[l, k] <= m.x[l]\n    model.c_s_le_x = pyo.Constraint(model.L, model.K, rule=rule_s_le_x)\n\n    def rule_s_le_bigM(m, l, k):\n        return m.s[l, k] <= Tmax * m.b[l, k]\n    model.c_s_le_bigM = pyo.Constraint(model.L, model.K, rule=rule_s_le_bigM)\n\n    def rule_s_ge(m, l, k):\n        return m.s[l, k] >= m.x[l] - Tmax * (1 - m.b[l, k])\n    model.c_s_ge = pyo.Constraint(model.L, model.K, rule=rule_s_ge)\n\n    # (8) h[l] = sum_k k * s[l,k]  (= w[l]*x[l])\n    def rule_hdef(m, l):\n        return m.h[l] == sum(k * m.s[l, k] for k in m.K)\n    model.c_hdef = pyo.Constraint(model.L, rule=rule_hdef)\n\n    # (9) demand coverage: sum_l rate[l,p]*h[l] >= demand[p]\n    def rule_demand(m, p):\n        return sum(d[\"rate\"][l][p] * m.h[l] for l in m.L) >= d[\"demand\"][p]\n    model.c_demand = pyo.Constraint(model.P, rule=rule_demand)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1215,
+      "completion_tokens": 2544
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 10.709784507751465,
+   "position": 9,
+   "recipe_index": 7
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:52:15"
+}

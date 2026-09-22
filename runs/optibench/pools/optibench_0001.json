@@ -1,0 +1,303 @@
+{
+ "pid": "optibench_0001",
+ "question": "You want to sell a kind of item in order to maximize your profit. Market research tells you that if you set the price at $1.50, you will be able to sell 5000 items, and for every 10 cents you lower the price below $1.50 you will be able to sell another 1000 items. You can only reduce the price by a multiple of 10 cents. Suppose that your fixed costs ( \u201cstart-up costs\u201d ) total $2000, and the per item cost of production ( \u201cmarginal cost\u201d ) is $0.50. Find the price to set per item and the number of items sold in order to maximize profit, and also determine the maximum profit you can get.",
+ "templates": [
+  "Production Planning / Product Mix",
+  "Knapsack / Project Selection"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"base_price\": 1.50,\n    \"base_quantity\": 5000,\n    \"price_step\": 0.10,\n    \"quantity_step\": 1000,\n    \"fixed_cost\": 2000.0,\n    \"marginal_cost\": 0.50,\n    \"max_reductions\": 15,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    base_price = d[\"base_price\"]\n    base_quantity = d[\"base_quantity\"]\n    price_step = d[\"price_step\"]\n    quantity_step = d[\"quantity_step\"]\n    fixed_cost = d[\"fixed_cost\"]\n    marginal_cost = d[\"marginal_cost\"]\n    max_reductions = d[\"max_reductions\"]\n\n    model = pyo.ConcreteModel()\n\n    # Set: possible number of 10-cent reductions\n    model.K = pyo.RangeSet(0, max_reductions)\n\n    # Binary: choose exactly one reduction level\n    model.reductions = pyo.Var(model.K, within=pyo.Binary)\n\n    # Reporting variables\n    model.price = pyo.Var(within=pyo.NonNegativeReals)\n    model.quantity = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Exactly one reduction level\n    def rule_choose_one(m):\n        return sum(m.reductions[k] for k in m.K) == 1\n    model.choose_one = pyo.Constraint(rule=rule_choose_one)\n\n    # Price link\n    def rule_price_link(m):\n        return m.price == base_price - price_step * sum(\n            k * m.reductions[k] for k in m.K\n        )\n    model.price_link = pyo.Constraint(rule=rule_price_link)\n\n    # Quantity link\n    def rule_quantity_link(m):\n        return m.quantity == base_quantity + quantity_step * sum(\n            k * m.reductions[k] for k in m.K\n        )\n    model.quantity_link = pyo.Constraint(rule=rule_quantity_link)\n\n    # Objective: maximize profit (linearised over the binaries)\n    def rule_obj(m):\n        return sum(\n            (base_price - price_step * k) * (base_quantity + quantity_step * k)\n            - marginal_cost * (base_quantity + quantity_step * k)\n            for k in m.K\n        ) * 0  # placeholder replaced below\n    # Build objective explicitly (linear in reductions)\n    profit_terms = []\n    for k in range(0, max_reductions + 1):\n        p_k = base_price - price_step * k\n        q_k = base_quantity + quantity_step * k\n        profit_terms.append((p_k * q_k - marginal_cost * q_k) * model.reductions[k])\n    model.obj = pyo.Objective(\n        expr=sum(profit_terms) - fixed_cost, sense=pyo.maximize\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1104,
+      "completion_tokens": 1067
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.9892003536224365,
+   "position": 0,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   k[i] : binary, selects the number i of 10-cent reductions below $1.50\n#          (i in 0..max_steps). Exactly one i is chosen.\n#   p    : selling price per item ($), continuous nonnegative\n#   q    : number of items sold, continuous nonnegative\n#\n# Objective (maximize): profit = revenue - production cost - fixed cost\n#   profit = p * q - marginal_cost * q - fixed_cost\n#\n# Constraints\n#   (1) one-step selection:  sum_i k[i] = 1\n#   (2) price definition:    p = base_price - price_step * sum_i (i * k[i])\n#   (3) quantity definition: q = base_quantity + quantity_step * sum_i (i * k[i])\n#   (4) revenue linearisation: r = p * q is bilinear, so we linearise using\n#       the fact that q is determined by the chosen step. Define revenue\n#       directly as a linear function of the selected step:\n#         revenue = sum_i (price_i * quantity_i) * k[i]\n#       where price_i = base_price - price_step*i and\n#             quantity_i = base_quantity + quantity_step*i.\n#       Then profit = revenue - marginal_cost * q - fixed_cost.\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"base_price\": 1.50,        # price at which 5000 items sell\n    \"base_quantity\": 5000,     # items sold at base price\n    \"price_step\": 0.10,        # 10-cent reduction per step\n    \"quantity_step\": 1000,     # extra items per 10-cent reduction\n    \"fixed_cost\": 2000.0,      # start-up costs\n    \"marginal_cost\": 0.50,     # per-item production cost\n    \"max_steps\": 15,           # price cannot go below zero: 1.50/0.10 = 15\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Index set of possible reduction steps\n    model.K = pyo.RangeSet(0, d[\"max_steps\"])\n\n    # Decision variables\n    model.k = pyo.Var(model.K, within=pyo.Binary)\n    model.p = pyo.Var(within=pyo.NonNegativeReals)\n    model.q = pyo.Var(within=pyo.NonNegativeReals)\n    model.rev = pyo.Var(within=pyo.NonNegativeReals)\n\n    # (1) Exactly one price step is chosen\n    def rule_one_step(m):\n        return sum(m.k[i] for i in m.K) == 1\n    model.one_step = pyo.Constraint(rule=rule_one_step)\n\n    # (2) Price definition\n    def rule_price(m):\n        return m.p == d[\"base_price\"] - d[\"price_step\"] * sum(i * m.k[i] for i in m.K)\n    model.price_def = pyo.Constraint(rule=rule_price)\n\n    # (3) Quantity definition\n    def rule_quantity(m):\n        return m.q == d[\"base_quantity\"] + d[\"quantity_step\"] * sum(i * m.k[i] for i in m.K)\n    model.quantity_def = pyo.Constraint(rule=rule_quantity)\n\n    # (4) Revenue linearisation: revenue equals the revenue of the chosen step\n    def rule_revenue(m):\n        return m.rev == sum(\n            (d[\"base_price\"] - d[\"price_step\"] * i)\n            * (d[\"base_quantity\"] + d[\"quantity_step\"] * i)\n            * m.k[i]\n            for i in m.K\n        )\n    model.revenue_def = pyo.Constraint(rule=rule_revenue)\n\n    # Objective: maximize profit = revenue - marginal_cost * q - fixed_cost\n    def rule_obj(m):\n        return m.rev - d[\"marginal_cost\"] * m.q - d[\"fixed_cost\"]\n    model.obj = pyo.Objective(rule=rule_obj, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1124,
+      "completion_tokens": 680
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1191,
+      "completion_tokens": 823
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1888,
+      "completion_tokens": 941
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 15.308448076248169,
+   "position": 1,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"base_price\": 1.50,       # price at reference point ($)\n    \"base_demand\": 5000,      # items sold at base price\n    \"price_step\": 0.10,       # discount per reduction step ($)\n    \"demand_step\": 1000,      # extra items per reduction step\n    \"fixed_cost\": 2000.0,     # start-up cost ($)\n    \"marginal_cost\": 0.50,    # per-item production cost ($)\n    \"k_max\": 15,              # max number of 10-cent reductions\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # --- Sets ---\n    m.K = pyo.RangeSet(0, d[\"k_max\"])  # possible discount levels k\n\n    # --- Decision variables ---\n    m.y = pyo.Var(m.K, within=pyo.Binary)                      # choose level k\n    m.n = pyo.Var(within=pyo.NonNegativeIntegers)              # items sold\n    m.p = pyo.Var(within=pyo.NonNegativeReals)                 # price per item\n\n    # --- Precomputed linear profit coefficients per level k ---\n    def profit_coef(m, k):\n        price = d[\"base_price\"] - d[\"price_step\"] * k\n        demand = d[\"base_demand\"] + d[\"demand_step\"] * k\n        return price * demand - d[\"marginal_cost\"] * demand - d[\"fixed_cost\"]\n\n    # --- Objective: maximize total profit ---\n    m.obj = pyo.Objective(\n        expr=sum(profit_coef(m, k) * m.y[k] for k in m.K),\n        sense=pyo.maximize,\n    )\n\n    # --- Constraint: choose exactly one discount level (<=1 enforced as ==) ---\n    def choose_one_rule(m):\n        return sum(m.y[k] for k in m.K) == 1\n    m.choose_one = pyo.Constraint(rule=choose_one_rule)\n\n    # --- Constraint: price equals chosen level ---\n    def price_rule(m):\n        return m.p == d[\"base_price\"] - d[\"price_step\"] * sum(k * m.y[k] for k in m.K)\n    m.price_link = pyo.Constraint(rule=price_rule)\n\n    # --- Constraint: demand equals chosen level's demand ---\n    def demand_rule(m):\n        return m.n == d[\"base_demand\"] + d[\"demand_step\"] * sum(k * m.y[k] for k in m.K)\n    m.demand_link = pyo.Constraint(rule=demand_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1120,
+      "completion_tokens": 1354
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.877612590789795,
+   "position": 2,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem, with its source sentence.\n# ---------------------------------------------------------------------------\nDATA = {\n    # \"if you set the price at $1.50, you will be able to sell 5000 items\"\n    \"base_price\": 1.50,          # $ per item at zero reductions\n    \"base_items\": 5000,          # items sold at base_price\n    # \"for every 10 cents you lower the price ... you will be able to sell another 1000 items\"\n    \"step_price\": 0.10,          # $ reduction per step\n    \"step_items\": 1000,          # extra items per step\n    # \"You can only reduce the price by a multiple of 10 cents.\"\n    \"n_steps\": 10,               # 0..10 steps => prices $1.50 down to $0.50\n    # \"fixed costs ... total $2000\"\n    \"fixed_cost\": 2000.0,        # $\n    # \"per item cost of production ... is $0.50\"\n    \"marginal_cost\": 0.50,       # $ per item\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    # -------------------------------------------------------------------\n    # Sets: k = number of 10-cent reductions applied (0 .. n_steps)\n    # -------------------------------------------------------------------\n    m.K = pyo.RangeSet(0, d[\"n_steps\"])\n\n    # -------------------------------------------------------------------\n    # Variables\n    # x[k] = 1 if we lower the price by k * 10 cents (exactly one chosen)\n    # -------------------------------------------------------------------\n    m.x = pyo.Var(m.K, within=pyo.Binary)\n\n    # -------------------------------------------------------------------\n    # Objective: maximize profit = revenue - variable cost - fixed cost\n    # For a chosen level k:\n    #   price_k = base_price - step_price * k\n    #   items_k = base_items + step_items * k\n    #   profit_k = (price_k - marginal_cost) * items_k - fixed_cost\n    # Because exactly one x[k] = 1, the objective is linear in the binaries.\n    # -------------------------------------------------------------------\n    def profit_k(k):\n        price_k = d[\"base_price\"] - d[\"step_price\"] * k\n        items_k = d[\"base_items\"] + d[\"step_items\"] * k\n        return (price_k - d[\"marginal_cost\"]) * items_k - d[\"fixed_cost\"]\n\n    m.obj = pyo.Objective(\n        expr=sum(profit_k(k) * m.x[k] for k in m.K),\n        sense=pyo.maximize,\n    )\n\n    # -------------------------------------------------------------------\n    # Constraint: choose exactly one reduction level\n    # \"You can only reduce the price by a multiple of 10 cents.\"\n    # -------------------------------------------------------------------\n    def choose_one_rule(m):\n        return sum(m.x[k] for k in m.K) == 1\n\n    m.choose_one = pyo.Constraint(rule=choose_one_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1108,
+      "completion_tokens": 1311
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.106707811355591,
+   "position": 3,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Every numeric constant from the problem statement lives here.\n# ---------------------------------------------------------------------------\nDATA = {\n    \"price_initial\": 1.50,          # base price ($ per item)\n    \"quantity_initial\": 5000,       # items sold at base price\n    \"price_step\": 0.10,             # price reduction per discount level ($)\n    \"quantity_step\": 1000,          # extra items sold per discount level\n    \"marginal_cost\": 0.50,          # per-item production cost ($)\n    \"fixed_cost\": 2000.0,           # start-up cost ($)\n    # Number of permissible 10-cent discounts, price must stay >= marginal cost:\n    # floor((1.50 - 0.50) / 0.10) = 10  (computed in build_model from DATA)\n}\n\n# Optional placeholder used by some graders; not used in the model.\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    n_steps = int((d[\"price_initial\"] - d[\"marginal_cost\"]) / d[\"price_step\"])\n\n    m = pyo.ConcreteModel()\n\n    # --- Set: discount levels k = 0 .. n_steps -----------------------------\n    m.K = pyo.RangeSet(0, n_steps)\n\n    # --- Decision: pick exactly one discount level (binary) ----------------\n    m.y = pyo.Var(m.K, domain=pyo.Binary)\n\n    # --- Reporting variables, linearly linked to the chosen discount ------\n    m.price = pyo.Var(domain=pyo.NonNegativeReals, bounds=(0, None))\n    m.sales = pyo.Var(domain=pyo.NonNegativeReals, bounds=(0, None))\n\n    # --- Objective: maximize revenue - variable cost - fixed cost ----------\n    # Contribution of level k is a CONSTANT (k is a set index, not a var):\n    #   (price(k) - mc) * (q0 + k * qs)\n    def profit_expression(m):\n        contrib = 0\n        k = 0\n        return (\n            sum(\n                (\n                    (d[\"price_initial\"] - k_ * d[\"price_step\"] - d[\"marginal_cost\"])\n                    * (d[\"quantity_initial\"] + k_ * d[\"quantity_step\"])\n                ) * m.y[k_]\n                for k_ in m.K\n            )\n            - d[\"fixed_cost\"]\n        )\n\n    m.obj = pyo.Objective(expr=profit_expression(m), sense=pyo.maximize)\n\n    # --- Constraint: choose exactly one discount level ---------------------\n    def one_discount_rule(m):\n        return sum(m.y[k] for k in m.K) == 1\n\n    m.one_discount = pyo.Constraint(rule=one_discount_rule)\n\n    # --- Constraint: price equals initial price minus chosen discount ------\n    def price_rule(m):\n        return m.price == sum(\n            (d[\"price_initial\"] - k * d[\"price_step\"]) * m.y[k] for k in m.K\n        )\n\n    m.price_def = pyo.Constraint(rule=price_rule)\n\n    # --- Constraint: sales equal base sales plus increments ---------------\n    def sales_rule(m):\n        return m.sales == sum(\n            (d[\"quantity_initial\"] + k * d[\"quantity_step\"]) * m.y[k] for k in m.K\n        )\n\n    m.sales_def = pyo.Constraint(rule=sales_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1110,
+      "completion_tokens": 1329
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.849241495132446,
+   "position": 4,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Problem data\n# ---------------------------------------------------------------------------\n# Decision variables\n#   k  : integer number of 10-cent price reductions below $1.50  (k >= 0)\n#   p  : selling price per item = 1.50 - 0.10 * k\n#   q  : number of items sold   = 5000 + 1000 * k\n#\n# Objective (in words): maximize profit = revenue - fixed cost - production cost\n#   profit = p * q - FIXED_COST - MARGINAL_COST * q\n#\n# Because p and q are both affine in the single integer variable k, the\n# product p*q is quadratic in k.  To keep the model LINEAR we enumerate the\n# candidate values of k (0..K_MAX) with binary selectors z[k] and use the\n# precomputed linear profit coefficients.\n#\n# Constraints\n#   (1) exactly one reduction level is chosen:  sum_k z[k] = 1\n#   (2) price definition:      p = 1.50 - 0.10 * k\n#   (3) quantity definition:   q = 5000 + 1000 * k\n#   (4) linking k to the chosen z:  k = sum_k k * z[k]\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"base_price\": 1.50,          # price at which 5000 items sell\n    \"base_quantity\": 5000,       # items sold at base price\n    \"price_step\": 0.10,          # each 10-cent reduction\n    \"quantity_step\": 1000,       # extra items per 10-cent reduction\n    \"fixed_cost\": 2000.0,        # start-up costs\n    \"marginal_cost\": 0.50,       # per-item production cost\n    \"max_reductions\": 15,        # upper bound on k (price stays positive)\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    base_price = d[\"base_price\"]\n    base_quantity = d[\"base_quantity\"]\n    price_step = d[\"price_step\"]\n    quantity_step = d[\"quantity_step\"]\n    fixed_cost = d[\"fixed_cost\"]\n    marginal_cost = d[\"marginal_cost\"]\n    max_reductions = d[\"max_reductions\"]\n\n    model = pyo.ConcreteModel()\n\n    # Index set of candidate reduction levels\n    model.K = pyo.RangeSet(0, max_reductions)\n\n    # Binary selector for each candidate reduction level\n    model.z = pyo.Var(model.K, within=pyo.Binary)\n\n    # Integer number of 10-cent reductions actually applied\n    model.k = pyo.Var(within=pyo.NonNegativeIntegers,\n                      bounds=(0, max_reductions))\n\n    # Price and quantity (continuous, determined by k)\n    model.p = pyo.Var(within=pyo.NonNegativeReals)\n    model.q = pyo.Var(within=pyo.NonNegativeReals)\n\n    # (1) choose exactly one reduction level\n    def rule_choose_one(m):\n        return sum(m.z[i] for i in m.K) == 1\n    model.choose_one = pyo.Constraint(rule=rule_choose_one)\n\n    # (4) link integer k to the selected candidate\n    def rule_link_k(m):\n        return m.k == sum(i * m.z[i] for i in m.K)\n    model.link_k = pyo.Constraint(rule=rule_link_k)\n\n    # (2) price definition\n    def rule_price(m):\n        return m.p == base_price - price_step * m.k\n    model.price_def = pyo.Constraint(rule=rule_price)\n\n    # (3) quantity definition\n    def rule_quantity(m):\n        return m.q == base_quantity + quantity_step * m.k\n    model.quantity_def = pyo.Constraint(rule=rule_quantity)\n\n    # Objective: maximize profit = p*q - fixed_cost - marginal_cost*q\n    # p*q is quadratic in k, so we use the precomputed linear coefficients\n    # over the enumerated candidates z[i].\n    def rule_obj(m):\n        total = 0\n        for i in m.K:\n            price_i = base_price - price_step * i\n            qty_i = base_quantity + quantity_step * i\n            profit_i = price_i * qty_i - fixed_cost - marginal_cost * qty_i\n            total += profit_i * m.z[i]\n        return total\n    model.obj = pyo.Objective(rule=rule_obj, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1124,
+      "completion_tokens": 1444
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2489,
+      "completion_tokens": 1031
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 14.833467960357666,
+   "position": 5,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"base_price\": 1.50,\n    \"base_quantity\": 5000,\n    \"price_step\": 0.10,\n    \"quantity_step\": 1000,\n    \"fixed_cost\": 2000.0,\n    \"marginal_cost\": 0.50,\n    \"max_reductions\": 15,          # cannot drop below $0.00 (1.50/0.10)\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # Set of allowed discount steps: 0 .. max_reductions\n    model.J = pyo.RangeSet(0, d[\"max_reductions\"])\n\n    # Decision: choose exactly one number of 10-cent reductions\n    model.y = pyo.Var(model.J, domain=pyo.Binary)\n\n    # Auxiliary continuous variables for reporting price and quantity\n    price_ub = d[\"base_price\"]\n    price_lb = max(\n        0.0, d[\"base_price\"] - d[\"price_step\"] * d[\"max_reductions\"]\n    )\n    model.p = pyo.Var(\n        domain=pyo.NonNegativeReals, bounds=(price_lb, price_ub)\n    )\n    model.q = pyo.Var(\n        domain=pyo.NonNegativeReals,\n        bounds=(\n            0.0,\n            d[\"base_quantity\"]\n            + d[\"quantity_step\"] * d[\"max_reductions\"],\n        ),\n    )\n\n    # Exactly one step is selected\n    def one_step_rule(m):\n        return sum(m.y[j] for j in m.J) == 1\n\n    model.con_one_step = pyo.Constraint(rule=one_step_rule)\n\n    # Price defined by selected step (linear: constants * binaries)\n    def price_def_rule(m):\n        return m.p == sum(\n            (d[\"base_price\"] - d[\"price_step\"] * j) * m.y[j]\n            for j in m.J\n        )\n\n    model.con_price_def = pyo.Constraint(rule=price_def_rule)\n\n    # Quantity defined by selected step (linear: constants * binaries)\n    def qty_def_rule(m):\n        return m.q == sum(\n            (d[\"base_quantity\"] + d[\"quantity_step\"] * j) * m.y[j]\n            for j in m.J\n        )\n\n    model.con_qty_def = pyo.Constraint(rule=qty_def_rule)\n\n    # Objective: maximize profit\n    # profit_j = price_j * qty_j - fixed - marginal * qty_j\n    def profit_expr(m):\n        return sum(\n            (\n                (d[\"base_price\"] - d[\"price_step\"] * j)\n                * (d[\"base_quantity\"] + d[\"quantity_step\"] * j)\n                - d[\"fixed_cost\"]\n                - d[\"marginal_cost\"]\n                * (d[\"base_quantity\"] + d[\"quantity_step\"] * j)\n            )\n            * m.y[j]\n            for j in m.J\n        )\n\n    model.obj = pyo.Objective(expr=profit_expr(model), sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1110,
+      "completion_tokens": 1652
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.457350492477417,
+   "position": 6,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"base_price\": 1.50,          # price at which 5000 items sell\n    \"base_items\": 5000,          # items sold at base price\n    \"price_step\": 0.10,          # each 10-cent reduction ...\n    \"item_step\": 1000,           # ... adds 1000 items\n    \"fixed_cost\": 2000.0,        # start-up costs\n    \"marginal_cost\": 0.50,       # per-item production cost\n    \"max_reductions\": 10,        # price can fall to marginal cost => 10 steps\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    base_price = d[\"base_price\"]\n    base_items = d[\"base_items\"]\n    price_step = d[\"price_step\"]\n    item_step = d[\"item_step\"]\n    fixed_cost = d[\"fixed_cost\"]\n    marginal_cost = d[\"marginal_cost\"]\n    max_red = d[\"max_reductions\"]\n\n    model = pyo.ConcreteModel()\n\n    # Set of possible numbers of 10-cent reductions\n    model.K = pyo.RangeSet(0, max_red)\n\n    # Precomputed constants for each reduction level k\n    def price_for(k):\n        return base_price - price_step * k\n\n    def items_for(k):\n        return base_items + item_step * k\n\n    def profit_for(k):\n        p = price_for(k)\n        q = items_for(k)\n        return p * q - marginal_cost * q - fixed_cost\n\n    # Binary selection of exactly one reduction level\n    model.reductions = pyo.Var(model.K, within=pyo.Binary)\n\n    # Reported decision variables\n    model.price = pyo.Var(within=pyo.NonNegativeReals)\n    model.quantity = pyo.Var(within=pyo.NonNegativeReals)\n    model.profit = pyo.Var(within=pyo.Reals)\n\n    # Exactly one reduction level chosen\n    def choose_one_rule(m):\n        return sum(m.reductions[k] for k in m.K) == 1\n\n    model.choose_one = pyo.Constraint(rule=choose_one_rule)\n\n    # Price link\n    def price_link_rule(m):\n        return m.price == base_price - price_step * sum(k * m.reductions[k] for k in m.K)\n\n    model.price_link = pyo.Constraint(rule=price_link_rule)\n\n    # Quantity link\n    def quantity_link_rule(m):\n        return m.quantity == base_items + item_step * sum(k * m.reductions[k] for k in m.K)\n\n    model.quantity_link = pyo.Constraint(rule=quantity_link_rule)\n\n    # Profit definition (linearised via precomputed constants)\n    def profit_link_rule(m):\n        return m.profit == sum(profit_for(k) * m.reductions[k] for k in m.K)\n\n    model.profit_link = pyo.Constraint(rule=profit_link_rule)\n\n    # Objective: maximize profit\n    def obj_rule(m):\n        return m.profit\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1104,
+      "completion_tokens": 1268
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "reserved_pyomo_component_name",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1958,
+      "completion_tokens": 723
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 10.963807582855225,
+   "position": 7,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Every numeric constant from the problem statement lives here.\n# ---------------------------------------------------------------------------\nDATA = {\n    # \"if you set the price at $1.50\"  -> base price\n    \"base_price\": 1.50,\n    # \"you will be able to sell 5000 items\"  -> base quantity\n    \"base_qty\": 5000,\n    # \"for every 10 cents you lower the price\"  -> price step per reduction unit\n    \"price_step\": 0.10,\n    # \"you will be able to sell another 1000 items\"  -> quantity step per unit\n    \"qty_step\": 1000,\n    # \"fixed costs ... total $2000\"\n    \"fixed_cost\": 2000,\n    # \"per item cost of production ... is $0.50\"\n    \"unit_cost\": 0.50,\n    # price cannot go below 0 -> max number of 10-cent reductions = 1.50/0.10 = 15\n    \"max_reductions\": 15,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ---- Set: candidate number of 10-cent price reductions ----------------\n    model.K = pyo.Set(initialize=list(range(0, d[\"max_reductions\"] + 1)))\n\n    # ---- Variables --------------------------------------------------------\n    # y[k] = 1 if we apply exactly k reductions of 10 cents (choose one level)\n    model.y = pyo.Var(model.K, within=pyo.Binary)\n\n    # resulting price per item and quantity sold (continuous, bounded)\n    model.price = pyo.Var(within=pyo.NonNegativeReals,\n                          bounds=(0.0, d[\"base_price\"]))\n    model.qty = pyo.Var(within=pyo.NonNegativeReals,\n                        bounds=(0.0, d[\"base_qty\"] + d[\"qty_step\"] * d[\"max_reductions\"]))\n    model.profit = pyo.Var(within=pyo.Reals)\n\n    # ---- Objective: maximize total profit ---------------------------------\n    # Profit for level k is a constant (price_k * qty_k - unit_cost*qty_k - fixed_cost),\n    # so the objective is linear in the binary selection variables y[k].\n    def obj_rule(m):\n        return sum(\n            ((d[\"base_price\"] - d[\"price_step\"] * k)\n             * (d[\"base_qty\"] + d[\"qty_step\"] * k)\n             - d[\"unit_cost\"] * (d[\"base_qty\"] + d[\"qty_step\"] * k)\n             - d[\"fixed_cost\"]) * m.y[k]\n            for k in m.K\n        )\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # ---- Constraints ------------------------------------------------------\n    # exactly one reduction level is chosen\n    def choose_one_rule(m):\n        return sum(m.y[k] for k in m.K) == 1\n    model.choose_one = pyo.Constraint(rule=choose_one_rule)\n\n    # price equals the price implied by the chosen level\n    def price_def_rule(m):\n        return m.price == sum(\n            (d[\"base_price\"] - d[\"price_step\"] * k) * m.y[k] for k in m.K\n        )\n    model.price_def = pyo.Constraint(rule=price_def_rule)\n\n    # quantity equals the demand implied by the chosen level\n    def qty_def_rule(m):\n        return m.qty == sum(\n            (d[\"base_qty\"] + d[\"qty_step\"] * k) * m.y[k] for k in m.K\n        )\n    model.qty_def = pyo.Constraint(rule=qty_def_rule)\n\n    # profit equals revenue - variable cost - fixed cost.\n    # revenue = price * qty is bilinear in (price, qty); since both are fully\n    # determined by the chosen level k, we linearise by expressing profit as a\n    # convex combination of the per-level profit constants.\n    def profit_def_rule(m):\n        return m.profit == sum(\n            ((d[\"base_price\"] - d[\"price_step\"] * k)\n             * (d[\"base_qty\"] + d[\"qty_step\"] * k)\n             - d[\"unit_cost\"] * (d[\"base_qty\"] + d[\"qty_step\"] * k)\n             - d[\"fixed_cost\"]) * m.y[k]\n            for k in m.K\n        )\n    model.profit_def = pyo.Constraint(rule=profit_def_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1108,
+      "completion_tokens": 1674
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1929,
+      "completion_tokens": 1029
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 14.49876070022583,
+   "position": 8,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"base_price\": 1.50,        # price at which 5000 items sell\n    \"base_quantity\": 5000,     # items sold at the base price\n    \"price_step\": 0.10,        # each reduction is a multiple of 10 cents\n    \"quantity_step\": 1000,     # extra items sold per 10-cent reduction\n    \"fixed_cost\": 2000.0,      # start-up costs\n    \"marginal_cost\": 0.50,     # per-item production cost\n    \"max_reductions\": 10,      # cap on number of 10-cent reductions (price floor at MC)\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Set of possible numbers of 10-cent price reductions\n    model.K = pyo.RangeSet(0, d[\"max_reductions\"])\n\n    # Binary: x[k] = 1 if exactly k reductions are applied\n    model.x = pyo.Var(model.K, within=pyo.Binary)\n\n    # Quantity sold (nonnegative) and chosen price (nonnegative)\n    model.q = pyo.Var(within=pyo.NonNegativeReals)\n    model.p = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Exactly one reduction level is selected\n    def one_level_rule(m):\n        return sum(m.x[k] for k in m.K) == 1\n    model.one_level = pyo.Constraint(rule=one_level_rule)\n\n    # Quantity equals the quantity associated with the chosen reduction level\n    def quantity_link_rule(m):\n        return m.q == sum(\n            (d[\"base_quantity\"] + d[\"quantity_step\"] * k) * m.x[k] for k in m.K\n        )\n    model.quantity_link = pyo.Constraint(rule=quantity_link_rule)\n\n    # Price equals the price associated with the chosen reduction level\n    def price_link_rule(m):\n        return m.p == sum(\n            (d[\"base_price\"] - d[\"price_step\"] * k) * m.x[k] for k in m.K\n        )\n    model.price_link = pyo.Constraint(rule=price_link_rule)\n\n    # Objective: maximise profit = (p - marginal_cost)*q - fixed_cost, linearised\n    # over the discrete branch choices.\n    def obj_rule(m):\n        return sum(\n            ((d[\"base_price\"] - d[\"price_step\"] * k - d[\"marginal_cost\"])\n             * (d[\"base_quantity\"] + d[\"quantity_step\"] * k)) * m.x[k]\n            for k in m.K\n        ) - d[\"fixed_cost\"]\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1120,
+      "completion_tokens": 1090
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.799973011016846,
+   "position": 9,
+   "recipe_index": 2
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:48:35"
+}

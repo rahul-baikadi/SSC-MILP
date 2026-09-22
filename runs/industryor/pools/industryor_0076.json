@@ -1,0 +1,265 @@
+{
+ "pid": "industryor_0076",
+ "question": "A restaurant needs to order tables from three different suppliers, A, B, and C. The cost of ordering each table from supplier A is $120, from supplier B is $110, and from supplier C is $100. The restaurant wants to minimize the total cost of the orders.\n\nIn addition, each order from supplier A will include 20 tables, while orders from suppliers B and C will include 15 tables each. The quantity of orders can only be whole numbers. The restaurant needs to order at least 150 tables.\n\nEach order from supplier A will include 20 tables, while orders from suppliers B and C will include 15 tables each. The restaurant needs to order a maximum of 600 tables.\n\nIf the restaurant decides to order tables from supplier A, it must also order at least 30 tables from supplier B.\n\nFurthermore, if the restaurant decides to order tables from supplier B, it must also order tables from supplier C.",
+ "templates": [
+  "Blending / Diet"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"suppliers\": [\"A\", \"B\", \"C\"],\n    \"cost\": {\"A\": 120, \"B\": 110, \"C\": 100},\n    \"tables_per_order\": {\"A\": 20, \"B\": 15, \"C\": 15},\n    \"min_tables\": 150,\n    \"max_tables\": 600,\n    \"tables_B_if_A\": 30,              # at least 30 tables from B if A used\n    \"orders_B_if_A\": 2,               # 30 tables / 15 per order\n    \"big_M\": 1000,                    # upper bound on number of orders of any supplier\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.S = pyo.Set(initialize=d[\"suppliers\"], ordered=True)\n\n    # Number of orders per supplier\n    model.x = pyo.Var(model.S, domain=pyo.NonNegativeIntegers, bounds=(0, None))\n\n    # Binary indicators for \"do we order from supplier i?\"\n    model.y = pyo.Var(model.S, domain=pyo.Binary)\n\n    # Objective: minimize total ordering cost\n    def obj_rule(m):\n        return sum(d[\"cost\"][i] * m.x[i] for i in m.S)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # tables delivered total = sum_i tables_per_order_i * x_i\n    def tables_expr(m):\n        return sum(d[\"tables_per_order\"][i] * m.x[i] for i in m.S)\n\n    # At least 150 tables\n    def min_tables_rule(m):\n        return tables_expr(m) >= d[\"min_tables\"]\n\n    model.min_tables = pyo.Constraint(rule=min_tables_rule)\n\n    # Maximum of 600 tables\n    def max_tables_rule(m):\n        return tables_expr(m) <= d[\"max_tables\"]\n\n    model.max_tables = pyo.Constraint(rule=max_tables_rule)\n\n    # Indicator linking: x_i <= M * y_i   (order placed -> indicator 1)\n    def link_upper_rule(m, i):\n        return m.x[i] <= d[\"big_M\"] * m.y[i]\n\n    model.link_upper = pyo.Constraint(model.S, rule=link_upper_rule)\n\n    # Indicator linking: x_i >= y_i   (indicator 1 -> at least one order)\n    def link_lower_rule(m, i):\n        return m.x[i] >= m.y[i]\n\n    model.link_lower = pyo.Constraint(model.S, rule=link_lower_rule)\n\n    # If ordering from A, must order at least 30 tables from B (-> 2 orders)\n    def if_a_then_b_rule(m):\n        return m.x[\"B\"] >= d[\"orders_B_if_A\"] * m.y[\"A\"]\n\n    model.if_a_then_b = pyo.Constraint(rule=if_a_then_b_rule)\n\n    # If ordering from B, must also order from C\n    def if_b_then_c_rule(m):\n        return m.y[\"B\"] <= m.y[\"C\"]\n\n    model.if_b_then_c = pyo.Constraint(rule=if_b_then_c_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1015,
+      "completion_tokens": 1175
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.56908106803894,
+   "position": 0,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Every numeric constant from the problem statement, with its source sentence.\n# ---------------------------------------------------------------------------\nDATA = {\n    \"suppliers\": [\"A\", \"B\", \"C\"],\n    # \"The cost of ordering each table from supplier A is $120, from supplier B\n    #  is $110, and from supplier C is $100.\"\n    \"cost\": {\"A\": 120, \"B\": 110, \"C\": 100},\n    # \"Each order from supplier A will include 20 tables, while orders from\n    #  suppliers B and C will include 15 tables each.\"\n    \"tables_per_order\": {\"A\": 20, \"B\": 15, \"C\": 15},\n    # \"The restaurant needs to order at least 150 tables.\"\n    \"min_tables\": 150,\n    # \"The restaurant needs to order a maximum of 600 tables.\"\n    \"max_tables\": 600,\n    # \"If the restaurant decides to order tables from supplier A, it must also\n    #  order at least 30 tables from supplier B.\"\n    \"min_tables_from_B_if_A\": 30,\n    # Big-M: upper bound on number of orders per supplier.\n    # From max 600 tables: A -> 600/20 = 30 orders; B,C -> 600/15 = 40 orders.\n    \"big_m\": {\"A\": 30, \"B\": 40, \"C\": 40},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ---- Sets -------------------------------------------------------------\n    model.I = pyo.Set(initialize=d[\"suppliers\"])\n\n    # ---- Variables --------------------------------------------------------\n    # number of whole orders placed with each supplier (>= 0 integer)\n    model.x = pyo.Var(model.I, within=pyo.NonNegativeIntegers)\n\n    # binary: 1 if any order is placed with the supplier\n    model.y = pyo.Var(model.I, within=pyo.Binary)\n\n    # ---- Objective: minimize total cost -----------------------------------\n    def obj_rule(m):\n        return sum(d[\"cost\"][i] * m.x[i] for i in m.I)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---- Constraints ------------------------------------------------------\n\n    # Minimum tables: 20*xA + 15*xB + 15*xC >= 150\n    def min_tables_rule(m):\n        return sum(d[\"tables_per_order\"][i] * m.x[i] for i in m.I) >= d[\"min_tables\"]\n\n    model.min_tables = pyo.Constraint(rule=min_tables_rule)\n\n    # Maximum tables: 20*xA + 15*xB + 15*xC <= 600\n    def max_tables_rule(m):\n        return sum(d[\"tables_per_order\"][i] * m.x[i] for i in m.I) <= d[\"max_tables\"]\n\n    model.max_tables = pyo.Constraint(rule=max_tables_rule)\n\n    # Link binary to orders: x[i] <= M[i] * y[i]\n    def link_rule(m, i):\n        return m.x[i] <= d[\"big_m\"][i] * m.y[i]\n\n    model.link = pyo.Constraint(model.I, rule=link_rule)\n\n    # A -> at least 30 tables from B: 15*xB >= 30*yA\n    def a_implies_b_rule(m):\n        return d[\"tables_per_order\"][\"B\"] * m.x[\"B\"] >= d[\"min_tables_from_B_if_A\"] * m.y[\"A\"]\n\n    model.a_implies_b = pyo.Constraint(rule=a_implies_b_rule)\n\n    # B -> at least one order from C: xC >= yB\n    def b_implies_c_rule(m):\n        return m.x[\"C\"] >= m.y[\"B\"]\n\n    model.b_implies_c = pyo.Constraint(rule=b_implies_c_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1013,
+      "completion_tokens": 1316
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.697692632675171,
+   "position": 1,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"suppliers\": [\"A\", \"B\", \"C\"],\n    \"cost\": {\"A\": 120, \"B\": 110, \"C\": 100},\n    \"tables_per_order\": {\"A\": 20, \"B\": 15, \"C\": 15},\n    \"min_tables\": 150,\n    \"max_tables\": 600,\n    \"min_tables_from_B_if_A\": 30,\n    # big-M values: max possible orders given the 600-table cap\n    \"max_orders_A\": 30,   # 600 / 20\n    \"max_orders_B\": 40,   # 600 / 15\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    suppliers = d[\"suppliers\"]\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=suppliers)\n\n    # Decision variables: number of orders per supplier (whole numbers)\n    model.orders = pyo.Var(model.I, within=pyo.NonNegativeIntegers)\n\n    # Binary indicators for conditional logic\n    model.use_A = pyo.Var(within=pyo.Binary)\n    model.use_B = pyo.Var(within=pyo.Binary)\n\n    # Objective: minimize total ordering cost\n    def obj_rule(m):\n        return sum(d[\"cost\"][i] * m.orders[i] for i in m.I)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Total tables must be at least the minimum\n    def min_tables_rule(m):\n        return sum(d[\"tables_per_order\"][i] * m.orders[i] for i in m.I) >= d[\"min_tables\"]\n    model.min_tables_con = pyo.Constraint(rule=min_tables_rule)\n\n    # Total tables must be at most the maximum\n    def max_tables_rule(m):\n        return sum(d[\"tables_per_order\"][i] * m.orders[i] for i in m.I) <= d[\"max_tables\"]\n    model.max_tables_con = pyo.Constraint(rule=max_tables_rule)\n\n    # If ordering from A, must order at least 30 tables from B\n    def min_B_if_A_rule(m):\n        return d[\"tables_per_order\"][\"B\"] * m.orders[\"B\"] >= d[\"min_tables_from_B_if_A\"] * m.use_A\n    model.min_B_if_A_con = pyo.Constraint(rule=min_B_if_A_rule)\n\n    # If ordering from B, must order from C (at least one order)\n    def C_if_B_rule(m):\n        return m.orders[\"C\"] >= m.use_B\n    model.C_if_B_con = pyo.Constraint(rule=C_if_B_rule)\n\n    # Link A indicator: orders[A] <= max_orders_A * use_A\n    def link_A_rule(m):\n        return m.orders[\"A\"] <= d[\"max_orders_A\"] * m.use_A\n    model.link_A_con = pyo.Constraint(rule=link_A_rule)\n\n    # Link B indicator: orders[B] <= max_orders_B * use_B\n    def link_B_rule(m):\n        return m.orders[\"B\"] <= d[\"max_orders_B\"] * m.use_B\n    model.link_B_con = pyo.Constraint(rule=link_B_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1009,
+      "completion_tokens": 1177
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.31280517578125,
+   "position": 2,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# All numeric constants from the problem statement live here.\n# ---------------------------------------------------------------------------\nDATA = {\n    \"suppliers\": [\"A\", \"B\", \"C\"],\n    \"cost\":     {\"A\": 120, \"B\": 110, \"C\": 100},   # $ per order\n    \"size\":     {\"A\": 20,  \"B\": 15,  \"C\": 15},    # tables per order\n    \"min_tables\": 150,                            # \"at least 150 tables\"\n    \"max_tables\": 600,                            # \"maximum of 600 tables\"\n    \"min_b_tables_if_a\": 30,                      # \"at least 30 tables from B\" if A used\n    \"bigM\": 1000,                                 # safe upper bound on any order count\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    sup = d[\"suppliers\"]\n\n    model = pyo.ConcreteModel()\n\n    # --- Sets -------------------------------------------------------------\n    model.I = pyo.Set(initialize=sup, ordered=True)\n\n    # --- Variables --------------------------------------------------------\n    # x[i] = number of orders placed with supplier i (whole orders, >= 0)\n    model.x = pyo.Var(model.I, domain=pyo.NonNegativeIntegers)\n\n    # Binary indicators used to linearise the if-then statements\n    model.yA = pyo.Var(domain=pyo.Binary)   # 1 if we order from A\n    model.yB = pyo.Var(domain=pyo.Binary)   # 1 if we order from B\n\n    # --- Objective: minimise total cost -----------------------------------\n    def obj_rule(m):\n        return sum(d[\"cost\"][i] * m.x[i] for i in m.I)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --- Constraint: minimum number of tables -----------------------------\n    # 20 x_A + 15 x_B + 15 x_C >= 150\n    def min_tables_rule(m):\n        return sum(d[\"size\"][i] * m.x[i] for i in m.I) >= d[\"min_tables\"]\n    model.min_tables = pyo.Constraint(rule=min_tables_rule)\n\n    # --- Constraint: maximum number of tables -----------------------------\n    # 20 x_A + 15 x_B + 15 x_C <= 600\n    def max_tables_rule(m):\n        return sum(d[\"size\"][i] * m.x[i] for i in m.I) <= d[\"max_tables\"]\n    model.max_tables = pyo.Constraint(rule=max_tables_rule)\n\n    # --- Indicator linkage for \"order from A\" -----------------------------\n    # x_A <= M * yA   (yA = 1 whenever any order from A is placed)\n    def a_link_rule(m):\n        return m.x[\"A\"] <= d[\"bigM\"] * m.yA\n    model.a_link = pyo.Constraint(rule=a_link_rule)\n\n    # --- Constraint: A used  =>  at least 30 tables from B ----------------\n    # 30 tables / 15 tables per order = 2 orders, so x_B >= 2 * yA\n    def a_forces_b_rule(m):\n        num_orders = d[\"min_b_tables_if_a\"] // d[\"size\"][\"B\"]\n        return m.x[\"B\"] >= num_orders * m.yA\n    model.a_forces_b = pyo.Constraint(rule=a_forces_b_rule)\n\n    # --- Indicator linkage for \"order from B\" -----------------------------\n    # x_B <= M * yB\n    def b_link_rule(m):\n        return m.x[\"B\"] <= d[\"bigM\"] * m.yB\n    model.b_link = pyo.Constraint(rule=b_link_rule)\n\n    # --- Constraint: B used  =>  order from C -----------------------------\n    # x_C >= yB\n    def b_forces_c_rule(m):\n        return m.x[\"C\"] >= m.yB\n    model.b_forces_c = pyo.Constraint(rule=b_forces_c_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1025,
+      "completion_tokens": 1395
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.988905191421509,
+   "position": 3,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# =============================================================================\n# Problem: restaurant orders tables from three suppliers A, B, C.\n#\n# SETS AND INDICES\n#   S = {1, 2, 3}  representing suppliers A (1), B (2), C (3)\n#\n# DECISION VARIABLES\n#   x[i] : number of ORDERS placed with supplier i  -> NonNegativeIntegers.\n#          Each order from A delivers 20 tables; each order from B or C\n#          delivers 15 tables.\n#   y[i] : 1 if we order from supplier i (x[i] >= 1), else 0  -> Binary.\n#\n# OBJECTIVE (minimise total cost):\n#   sum_i cost_per_order[i] * x[i]\n#\n# CONSTRAINTS (each traces to a sentence of the statement)\n#   (C1) total tables ordered >= min_tables  (\"at least 150 tables\")\n#   (C2) total tables ordered <= max_tables  (\"maximum of 600 tables\")\n#   (C3) x[i] <= M * y[i]  for all i  (linking: y[i]=0 => x[i]=0)\n#   (C4) x[i] >= y[i]      for all i  (y[i]=1 => x[i] >= 1)\n#   (C5) if order from A (y[1]=1) then at least 30 tables from B:\n#        tables_B >= 30 * y[1]  ->  15*x[2] >= 30*y[1]\n#   (C6) if order from B (y[2]=1) then order from C: y[2] <= y[3]\n# =============================================================================\n\nDATA = {\n    \"suppliers\": [1, 2, 3],                       # A=1, B=2, C=3\n    \"cost_per_order\": {1: 120, 2: 110, 3: 100},   # cost per order\n    \"tables_per_order\": {1: 20, 2: 15, 3: 15},    # tables per order\n    \"min_tables\": 150,                            # at least 150 tables\n    \"max_tables\": 600,                            # at most 600 tables\n    \"min_tables_from_B_if_A\": 30,                 # >=30 tables from B if A used\n    \"big_M\": 600,                                 # upper bound on any x[i]\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.S = pyo.Set(initialize=d[\"suppliers\"])\n\n    # Decision variables\n    m.x = pyo.Var(m.S, within=pyo.NonNegativeIntegers,\n                  bounds=(0, d[\"big_M\"]))\n    m.y = pyo.Var(m.S, within=pyo.Binary)\n\n    # Objective: minimise total ordering cost\n    def obj_rule(m):\n        return sum(d[\"cost_per_order\"][i] * m.x[i] for i in m.S)\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # (C1) total tables >= min_tables\n    def min_tables_rule(m):\n        return sum(d[\"tables_per_order\"][i] * m.x[i] for i in m.S) >= d[\"min_tables\"]\n    m.min_tables_con = pyo.Constraint(rule=min_tables_rule)\n\n    # (C2) total tables <= max_tables\n    def max_tables_rule(m):\n        return sum(d[\"tables_per_order\"][i] * m.x[i] for i in m.S) <= d[\"max_tables\"]\n    m.max_tables_con = pyo.Constraint(rule=max_tables_rule)\n\n    # (C3) x[i] <= M * y[i]\n    def link_upper_rule(m, i):\n        return m.x[i] <= d[\"big_M\"] * m.y[i]\n    m.link_upper_con = pyo.Constraint(m.S, rule=link_upper_rule)\n\n    # (C4) x[i] >= y[i]\n    def link_lower_rule(m, i):\n        return m.x[i] >= m.y[i]\n    m.link_lower_con = pyo.Constraint(m.S, rule=link_lower_rule)\n\n    # (C5) if A used then at least 30 tables from B: 15*x[2] >= 30*y[1]\n    def a_implies_b_rule(m):\n        return (d[\"tables_per_order\"][2] * m.x[2]\n                >= d[\"min_tables_from_B_if_A\"] * m.y[1])\n    m.a_implies_b_con = pyo.Constraint(rule=a_implies_b_rule)\n\n    # (C6) if B used then C used: y[2] <= y[3]\n    def b_implies_c_rule(m):\n        return m.y[2] <= m.y[3]\n    m.b_implies_c_con = pyo.Constraint(rule=b_implies_c_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1029,
+      "completion_tokens": 1032
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1978,
+      "completion_tokens": 1152
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 11.779512882232666,
+   "position": 4,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"suppliers\": [\"A\", \"B\", \"C\"],\n    \"cost\": {\"A\": 120, \"B\": 110, \"C\": 100},\n    \"tables_per_order\": {\"A\": 20, \"B\": 15, \"C\": 15},\n    \"min_tables\": 150,\n    \"max_tables\": 600,\n    \"min_tables_from_B_if_A\": 30,\n    # big-M (number of orders) safe upper bounds for binary linearisation\n    \"bigM_A\": 100,\n    \"bigM_B\": 100,\n    \"pairs\": [(\"A\", \"B\"), (\"B\", \"C\")],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # --- sets ---\n    model.I = pyo.Set(initialize=d[\"suppliers\"])\n    model.J = pyo.Set(initialize=d[\"pairs\"], dimen=2)\n\n    # --- variables ---\n    model.x = pyo.Var(\n        model.I,\n        within=pyo.NonNegativeIntegers,\n        bounds=(0, d[\"bigM_A\"]),\n    )\n    model.yA = pyo.Var(within=pyo.Binary)\n    model.yB = pyo.Var(within=pyo.Binary)\n\n    # --- objective ---\n    model.obj = pyo.Objective(\n        expr=sum(d[\"cost\"][i] * model.x[i] for i in model.I),\n        sense=pyo.minimize,\n    )\n\n    # --- constraints ---\n    # At least min_tables\n    def c_min_tables_rule(m):\n        return sum(d[\"tables_per_order\"][i] * m.x[i] for i in m.I) >= d[\"min_tables\"]\n    model.c_min_tables = pyo.Constraint(rule=c_min_tables_rule)\n\n    # At most max_tables\n    def c_max_tables_rule(m):\n        return sum(d[\"tables_per_order\"][i] * m.x[i] for i in m.I) <= d[\"max_tables\"]\n    model.c_max_tables = pyo.Constraint(rule=c_max_tables_rule)\n\n    # If A ordered => order at least 30 tables (i.e. x_B*15 >= 30) from B\n    # x_A >= 1 -> x_B >= 2  ; via y_A indicator and big-M\n    def c_yA_le_xA_rule(m):\n        return m.yA <= m.x[\"A\"]\n    model.c_yA_le_xA = pyo.Constraint(rule=c_yA_le_xA_rule)\n\n    def c_yA_ge_xA_rule(m):\n        # enforce yA = 1 when x_A >= 1\n        return m.x[\"A\"] <= d[\"bigM_A\"] * m.yA\n    model.c_yA_ge_xA = pyo.Constraint(rule=c_yA_ge_xA_rule)\n\n    def c_B_if_A_rule(m):\n        # minimum tables from B required when A ordered\n        minB_orders = d[\"min_tables_from_B_if_A\"] / d[\"tables_per_order\"][\"B\"]\n        return m.x[\"B\"] >= minB_orders * m.yA\n    model.c_B_if_A = pyo.Constraint(rule=c_B_if_A_rule)\n\n    # If B ordered => order from C (x_B >= 1 -> x_C >= 1)\n    def c_yB_le_xB_rule(m):\n        return m.yB <= m.x[\"B\"]\n    model.c_yB_le_xB = pyo.Constraint(rule=c_yB_le_xB_rule)\n\n    def c_yB_ge_xB_rule(m):\n        return m.x[\"B\"] <= d[\"bigM_B\"] * m.yB\n    model.c_yB_ge_xB = pyo.Constraint(rule=c_yB_ge_xB_rule)\n\n    def c_C_if_B_rule(m):\n        return m.x[\"C\"] >= m.yB\n    model.c_C_if_B = pyo.Constraint(rule=c_C_if_B_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1015,
+      "completion_tokens": 1381
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.309166669845581,
+   "position": 5,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"suppliers\": [\"A\", \"B\", \"C\"],\n    \"cost_per_order\": {\"A\": 120, \"B\": 110, \"C\": 100},\n    \"tables_per_order\": {\"A\": 20, \"B\": 15, \"C\": 15},\n    \"min_tables\": 150,\n    \"max_tables\": 600,\n    \"min_tables_from_B_if_A\": 30,\n    \"big_M\": 40,  # max orders per supplier (600 / 15)\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    suppliers = d[\"suppliers\"]\n\n    model = pyo.ConcreteModel()\n    model.S = pyo.Set(initialize=suppliers)\n\n    # Decision variables\n    model.orders = pyo.Var(model.S, domain=pyo.NonNegativeIntegers)\n    model.use = pyo.Var(model.S, domain=pyo.Binary)\n\n    # Objective: minimize total cost\n    def obj_rule(m):\n        return sum(d[\"cost_per_order\"][i] * m.orders[i] for i in m.S)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Total tables expression\n    def total_tables(m):\n        return sum(d[\"tables_per_order\"][i] * m.orders[i] for i in m.S)\n\n    # At least 150 tables\n    def min_tables_rule(m):\n        return total_tables(m) >= d[\"min_tables\"]\n\n    model.min_tables_con = pyo.Constraint(rule=min_tables_rule)\n\n    # At most 600 tables\n    def max_tables_rule(m):\n        return total_tables(m) <= d[\"max_tables\"]\n\n    model.max_tables_con = pyo.Constraint(rule=max_tables_rule)\n\n    # Link orders and use: orders[i] <= M * use[i]\n    def link_upper_rule(m, i):\n        return m.orders[i] <= d[\"big_M\"] * m.use[i]\n\n    model.link_upper = pyo.Constraint(model.S, rule=link_upper_rule)\n\n    # Link orders and use: orders[i] >= use[i]  (use=1 forces at least one order)\n    def link_lower_rule(m, i):\n        return m.orders[i] >= m.use[i]\n\n    model.link_lower = pyo.Constraint(model.S, rule=link_lower_rule)\n\n    # If A is used, at least 30 tables from B => orders[B] >= 2 when use[A]=1\n    # orders[B] >= 2 * use[A]\n    def b_if_a_rule(m):\n        return m.orders[\"B\"] >= (\n            d[\"min_tables_from_B_if_A\"] / d[\"tables_per_order\"][\"B\"]\n        ) * m.use[\"A\"]\n\n    model.b_if_a = pyo.Constraint(rule=b_if_a_rule)\n\n    # If B is used, C must be used: use[B] <= use[C]\n    def c_if_b_rule(m):\n        return m.use[\"B\"] <= m.use[\"C\"]\n\n    model.c_if_b = pyo.Constraint(rule=c_if_b_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1009,
+      "completion_tokens": 1074
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.445446968078613,
+   "position": 6,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"cost of ordering each table from supplier A is $120, from B is $110, C is $100\"\n    \"cost\": {\"A\": 120, \"B\": 110, \"C\": 100},\n    # \"each order from supplier A will include 20 tables, orders from B and C include 15 tables each\"\n    \"tables_per_order\": {\"A\": 20, \"B\": 15, \"C\": 15},\n    # \"restaurant needs to order at least 150 tables\"\n    \"min_tables\": 150,\n    # \"restaurant needs to order a maximum of 600 tables\"\n    \"max_tables\": 600,\n    # \"if it decides to order from A, it must also order at least 30 tables from B\"\n    \"min_tables_from_B_if_A\": 30,\n    # big-M: an upper bound on the number of orders from any supplier\n    # derived from max_tables / min tables_per_order = 600 / 15 = 40\n    \"big_m\": 40,\n}\n\nSUPPLIERS = [\"A\", \"B\", \"C\"]\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.SUPPLIERS = pyo.Set(initialize=SUPPLIERS)\n\n    # Variables: number of orders per supplier (whole numbers)\n    model.x = pyo.Var(model.SUPPLIERS, within=pyo.NonNegativeIntegers, bounds=(0, d[\"big_m\"]))\n\n    # Binary indicators: 1 if we order from supplier i\n    model.y = pyo.Var(model.SUPPLIERS, within=pyo.Binary)\n\n    # Objective: minimize total ordering cost\n    def obj_rule(m):\n        return sum(d[\"cost\"][i] * m.x[i] for i in m.SUPPLIERS)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Minimum tables constraint\n    def min_tables_rule(m):\n        return sum(d[\"tables_per_order\"][i] * m.x[i] for i in m.SUPPLIERS) >= d[\"min_tables\"]\n    model.min_tables = pyo.Constraint(rule=min_tables_rule)\n\n    # Maximum tables constraint\n    def max_tables_rule(m):\n        return sum(d[\"tables_per_order\"][i] * m.x[i] for i in m.SUPPLIERS) <= d[\"max_tables\"]\n    model.max_tables = pyo.Constraint(rule=max_tables_rule)\n\n    # Link x[i] >= 1  <=>  y[i] = 1  (big-M style)\n    def link_x_upper_rule(m, i):\n        return m.x[i] <= d[\"big_m\"] * m.y[i]\n    model.link_x_upper = pyo.Constraint(model.SUPPLIERS, rule=link_x_upper_rule)\n\n    def link_x_lower_rule(m, i):\n        return m.x[i] >= m.y[i]\n    model.link_x_lower = pyo.Constraint(model.SUPPLIERS, rule=link_x_lower_rule)\n\n    # If order from A (y_A=1), must order at least 30 tables from B.\n    # tables from B = 15 * x_B >= 30  =>  x_B >= 2 when y_A = 1.\n    min_B_orders = d[\"min_tables_from_B_if_A\"] // d[\"tables_per_order\"][\"B\"]\n\n    def a_implies_b_rule(m):\n        return m.x[\"B\"] >= min_B_orders * m.y[\"A\"]\n    model.a_implies_b = pyo.Constraint(rule=a_implies_b_rule)\n\n    # If order from B (y_B=1), must order from C (y_C=1).\n    def b_implies_c_rule(m):\n        return m.y[\"C\"] >= m.y[\"B\"]\n    model.b_implies_c = pyo.Constraint(rule=b_implies_c_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1013,
+      "completion_tokens": 1317
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.82676887512207,
+   "position": 7,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "\"\"\"\nFormulation summary\n===================\nSets / indices:\n    S = {'A','B','C'}  ... suppliers\n\nDecision variables:\n    orders[s]  s in S   domain NonNegativeIntegers   number of orders placed with supplier s\n    use[s]     s in S   domain Binary                1 if any order placed with supplier s\n\nObjective (minimize):\n    Total cost = 120*orders[A] + 110*orders[B] + 100*orders[C]\n\nConstraints:\n    (C1) At least 150 tables:  20*orders[A] + 15*orders[B] + 15*orders[C] >= 150\n    (C2) At most 600 tables:   20*orders[A] + 15*orders[B] + 15*orders[C] <= 600\n    (C3) If order from A (use[A]=1) then must order at least 30 tables from B:\n            15*orders[B] >= 30 * use[A]\n    (C4) If order from B (use[B]=1) then must order from C (use[C]=1):\n            use[B] <= use[C]\n    (C5) Linking: orders[s] <= M * use[s]  (use[s]=1 whenever orders[s] > 0)\n\"\"\"\n\nimport pyomo.environ as pyo\n\nDATA = {\n    \"suppliers\": [\"A\", \"B\", \"C\"],\n    \"cost\": {\"A\": 120, \"B\": 110, \"C\": 100},\n    \"bundle\": {\"A\": 20, \"B\": 15, \"C\": 15},\n    \"min_tables\": 150,\n    \"max_tables\": 600,\n    \"min_tables_from_B_if_A\": 30,\n    \"big_M\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    S = d[\"suppliers\"]\n\n    model = pyo.ConcreteModel()\n    model.S = pyo.Set(initialize=S)\n\n    model.orders = pyo.Var(model.S, within=pyo.NonNegativeIntegers)\n    model.use = pyo.Var(model.S, within=pyo.Binary)\n\n    def obj_rule(m):\n        return sum(d[\"cost\"][s] * m.orders[s] for s in m.S)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    def min_tables_rule(m):\n        return sum(d[\"bundle\"][s] * m.orders[s] for s in m.S) >= d[\"min_tables\"]\n\n    model.min_tables = pyo.Constraint(rule=min_tables_rule)\n\n    def max_tables_rule(m):\n        return sum(d[\"bundle\"][s] * m.orders[s] for s in m.S) <= d[\"max_tables\"]\n\n    model.max_tables = pyo.Constraint(rule=max_tables_rule)\n\n    def b_if_a_rule(m):\n        return d[\"bundle\"][\"B\"] * m.orders[\"B\"] >= d[\"min_tables_from_B_if_A\"] * m.use[\"A\"]\n\n    model.b_if_a = pyo.Constraint(rule=b_if_a_rule)\n\n    def c_if_b_rule(m):\n        return m.use[\"B\"] <= m.use[\"C\"]\n\n    model.c_if_b = pyo.Constraint(rule=c_if_b_rule)\n\n    def link_rule(m, s):\n        return m.orders[s] <= d[\"big_M\"] * m.use[s]\n\n    model.link = pyo.Constraint(model.S, rule=link_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1029,
+      "completion_tokens": 2598
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1641,
+      "completion_tokens": 797
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 24.461019277572632,
+   "position": 8,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"suppliers\": [1, 2, 3],          # 1 = A, 2 = B, 3 = C\n    \"cost\": {1: 120, 2: 110, 3: 100},\n    \"pack\": {1: 20, 2: 15, 3: 15},\n    \"min_tables\": 150,\n    \"max_tables\": 600,\n    \"min_tables_from_B\": 30,          # if A used, order >= 30 tables from B\n    \"pack_B\": 15,                      # tables per B order\n    \"bigM\": 600,                       # upper bound on any x[i]\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # --- Sets ---\n    model.S = pyo.Set(initialize=d[\"suppliers\"])\n\n    # --- Variables ---\n    model.x = pyo.Var(model.S, domain=pyo.NonNegativeIntegers,\n                      bounds=(0, d[\"bigM\"]))   # number of orders\n    model.y = pyo.Var(model.S, domain=pyo.Binary)  # whether supplier used\n\n    # --- Objective: minimize total cost ---\n    model.obj = pyo.Objective(\n        expr=sum(d[\"cost\"][i] * model.x[i] for i in model.S),\n        sense=pyo.minimize,\n    )\n\n    # Total tables (linear in orders)\n    def total_tables(m):\n        return sum(d[\"pack\"][i] * m.x[i] for i in m.S)\n\n    # --- Constraint: at least 150 tables ---\n    def rule_min_tables(m):\n        return total_tables(m) >= d[\"min_tables\"]\n    model.c_min_tables = pyo.Constraint(rule=rule_min_tables)\n\n    # --- Constraint: at most 600 tables ---\n    def rule_max_tables(m):\n        return total_tables(m) <= d[\"max_tables\"]\n    model.c_max_tables = pyo.Constraint(rule=rule_max_tables)\n\n    # --- Link x and y: x[i] >= 1 => y[i] = 1 (big-M) ---\n    def rule_link(m, i):\n        return m.x[i] <= d[\"bigM\"] * m.y[i]\n    model.c_link = pyo.Constraint(model.S, rule=rule_link)\n\n    # --- If order from A, must order >= 30 tables from B ---\n    # 30 tables = 30/15 = 2 orders.  x_B >= 2 * y_A\n    def rule_A_implies_B(m):\n        return m.x[2] >= (d[\"min_tables_from_B\"] // d[\"pack_B\"]) * m.y[1]\n    model.c_A_implies_B = pyo.Constraint(rule=rule_A_implies_B)\n\n    # --- If order from B, must order from C ---\n    # y_B = 1 => x_C >= 1  (equivalently y_B <= y_C)\n    def rule_B_implies_C(m):\n        return m.y[2] <= m.y[3]\n    model.c_B_implies_C = pyo.Constraint(rule=rule_B_implies_C)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1025,
+      "completion_tokens": 1185
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.925860166549683,
+   "position": 9,
+   "recipe_index": 2
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T10:35:38"
+}

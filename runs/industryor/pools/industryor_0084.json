@@ -1,0 +1,268 @@
+{
+ "pid": "industryor_0084",
+ "question": "A candy factory processes raw materials A, B, and C into three different types of candies: A, B, and C. The content of A, B, and C in each type of candy, the cost of raw materials, the monthly limit of each raw material, and the processing fee and selling price of the three types of candies are shown in Table 1-7.\nTable 1-7\n\\begin{tabular}{c|ccc|c|c}\n\\hline Item & A & B & C & Raw Material Cost (\u5143/kg) & Monthly Limit (kg) \\\\\n\\hline A & $\\geqslant 60 \\%$ & $\\geqslant 15 \\%$ & & 2.00 & 2000 \\\\\nB & & & & 1.50 & 2500 \\\\\nC & $\\leqslant 20 \\%$ & $\\leqslant 60 \\%$ & $\\leqslant 50 \\%$ & 1.00 & 1200 \\\\\n\\hline Processing Fee (\u5143/kg) & 0.50 & 0.40 & 0.30 & & \\\\\nSelling Price (\u5143/kg) & 3.40 & 2.85 & 2.25 & & \\\\\n\\hline\n\\end{tabular}\n\nWhat is the monthly production of each type of candy in kg that maximizes the profit of the factory?",
+ "templates": [
+  "Production Planning / Product Mix"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# =============================================================================\n# PROBLEM: Candy factory blending / product-mix optimisation\n#\n# Raw materials: A, B, C  (costs 2.00, 1.50, 1.00 \u5143/kg; limits 2000, 2500, 1200 kg/month)\n# Candy types:   A, B, C  (processing fees 0.50, 0.40, 0.30 \u5143/kg;\n#                          selling prices   3.40, 2.85, 2.25 \u5143/kg)\n#\n# Composition requirements (fraction of each candy's mass):\n#   Candy A: material A >= 60%,  material C <= 20%\n#   Candy B: material A >= 15%,  material C <= 60%\n#   Candy C: material C <= 50%\n#   (all remaining mass is made up by the other materials)\n#\n# DECISION VARIABLES\n#   x[i, j] >= 0 : kg of raw material i used in candy type j   (i,j in {A,B,C})\n#   y[j]    >= 0 : total kg of candy type j produced\n#\n# OBJECTIVE (maximise monthly profit)\n#   profit = sum_j (price_j - proc_j) * y[j]  -  sum_i sum_j cost_i * x[i,j]\n#\n# CONSTRAINTS\n#   (1) Mass balance:  sum_i x[i,j] = y[j]                       for each candy j\n#   (2) Raw material monthly limits: sum_j x[i,j] <= limit_i     for each material i\n#   (3) Candy A: x[A,A] >= 0.60 * y[A]      (A >= 60%)\n#   (4) Candy A: x[C,A] <= 0.20 * y[A]      (C <= 20%)\n#   (5) Candy B: x[A,B] >= 0.15 * y[B]      (A >= 15%)\n#   (6) Candy B: x[C,B] <= 0.60 * y[B]      (C <= 60%)\n#   (7) Candy C: x[C,C] <= 0.50 * y[C]      (C <= 50%)\n# =============================================================================\n\nDATA = {\n    \"materials\": [\"A\", \"B\", \"C\"],\n    \"candies\": [\"A\", \"B\", \"C\"],\n    \"cost\": {\"A\": 2.00, \"B\": 1.50, \"C\": 1.00},\n    \"limit\": {\"A\": 2000.0, \"B\": 2500.0, \"C\": 1200.0},\n    \"proc\": {\"A\": 0.50, \"B\": 0.40, \"C\": 0.30},\n    \"price\": {\"A\": 3.40, \"B\": 2.85, \"C\": 2.25},\n    # minimum fraction of material A required in each candy\n    \"min_A\": {\"A\": 0.60, \"B\": 0.15, \"C\": 0.00},\n    # maximum fraction of material C allowed in each candy\n    \"max_C\": {\"A\": 0.20, \"B\": 0.60, \"C\": 0.50},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.MAT = pyo.Set(initialize=d[\"materials\"])\n    m.CAN = pyo.Set(initialize=d[\"candies\"])\n\n    # x[i, j] : kg of raw material i used in candy type j\n    m.x = pyo.Var(m.MAT, m.CAN, within=pyo.NonNegativeReals)\n\n    # y[j] : total kg of candy type j produced\n    m.y = pyo.Var(m.CAN, within=pyo.NonNegativeReals)\n\n    # (1) Mass balance: total material used in candy j equals candy j output\n    def mass_balance_rule(m, j):\n        return sum(m.x[i, j] for i in m.MAT) == m.y[j]\n    m.mass_balance = pyo.Constraint(m.CAN, rule=mass_balance_rule)\n\n    # (2) Raw material monthly availability limits\n    def material_limit_rule(m, i):\n        return sum(m.x[i, j] for j in m.CAN) <= d[\"limit\"][i]\n    m.material_limit = pyo.Constraint(m.MAT, rule=material_limit_rule)\n\n    # (3) Minimum material A fraction in each candy\n    def min_A_rule(m, j):\n        return m.x[\"A\", j] >= d[\"min_A\"][j] * m.y[j]\n    m.min_A = pyo.Constraint(m.CAN, rule=min_A_rule)\n\n    # (4) Maximum material C fraction in each candy\n    def max_C_rule(m, j):\n        return m.x[\"C\", j] <= d[\"max_C\"][j] * m.y[j]\n    m.max_C = pyo.Constraint(m.CAN, rule=max_C_rule)\n\n    # Objective: maximise profit = revenue (net of processing) - raw material cost\n    def obj_rule(m):\n        revenue = sum((d[\"price\"][j] - d[\"proc\"][j]) * m.y[j] for j in m.CAN)\n        raw_cost = sum(d[\"cost\"][i] * m.x[i, j] for i in m.MAT for j in m.CAN)\n        return revenue - raw_cost\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1111,
+      "completion_tokens": 5174
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "missing_constraints",
+      "missing_objective",
+      "missing_variables",
+      "sandbox_no_model"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1236,
+      "completion_tokens": 1272
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 47.69857907295227,
+   "position": 0,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # ---- Sets ----\n    # Raw materials A, B, C and candy types A, B, C (Table 1-7 rows/columns)\n    \"materials\": [\"A\", \"B\", \"C\"],\n    \"candies\":   [\"A\", \"B\", \"C\"],\n\n    # ---- Raw material cost (\u5143/kg) ---- (Table 1-7 \"Raw Material Cost\")\n    \"cost\": {\"A\": 2.00, \"B\": 1.50, \"C\": 1.00},\n\n    # ---- Monthly limit (kg) ---- (Table 1-7 \"Monthly Limit\")\n    \"limit\": {\"A\": 2000, \"B\": 2500, \"C\": 1200},\n\n    # ---- Processing fee (\u5143/kg) ---- (Table 1-7 \"Processing Fee\")\n    \"fee\": {\"A\": 0.50, \"B\": 0.40, \"C\": 0.30},\n\n    # ---- Selling price (\u5143/kg) ---- (Table 1-7 \"Selling Price\")\n    \"price\": {\"A\": 3.40, \"B\": 2.85, \"C\": 2.25},\n\n    # ---- Composition bounds (fractions of each candy's mass) ----\n    # Candy A: material A >= 60%, material C <= 20%\n    # Candy B: material A >= 15%, material C <= 60%\n    # Candy C: material C <= 50%\n    # Represented as: lower[(candy, material)] and upper[(candy, material)]\n    \"lower\": {\n        (\"A\", \"A\"): 0.60,\n        (\"B\", \"A\"): 0.15,\n    },\n    \"upper\": {\n        (\"A\", \"C\"): 0.20,\n        (\"B\", \"C\"): 0.60,\n        (\"C\", \"C\"): 0.50,\n    },\n\n    # Big-M for any linking constraints (large enough vs. max production scale)\n    \"bigM\": 1.0e6,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # ---------------- Sets ----------------\n    m.MAT = pyo.Set(initialize=d[\"materials\"])   # raw materials\n    m.CAN = pyo.Set(initialize=d[\"candies\"])     # candy types\n\n    # ---------------- Variables ----------------\n    # x[i] = kg of candy i produced monthly\n    m.x = pyo.Var(m.CAN, within=pyo.NonNegativeReals)\n\n    # y[i,j] = kg of raw material j used in candy i\n    m.y = pyo.Var(m.CAN, m.MAT, within=pyo.NonNegativeReals)\n\n    # ---------------- Objective ----------------\n    # Profit = revenue - raw material cost - processing fee  (maximize)\n    def obj_rule(mm):\n        revenue = sum(d[\"price\"][i] * mm.x[i] for i in mm.CAN)\n        mat_cost = sum(d[\"cost\"][j] * mm.y[i, j] for i in mm.CAN for j in mm.MAT)\n        proc_fee = sum(d[\"fee\"][i] * mm.x[i] for i in mm.CAN)\n        return revenue - mat_cost - proc_fee\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # ---------------- Constraints ----------------\n\n    # 1) Mass balance: each candy's total raw material = its production quantity\n    def mass_balance_rule(mm, i):\n        return sum(mm.y[i, j] for j in mm.MAT) == mm.x[i]\n    m.mass_balance = pyo.Constraint(m.CAN, rule=mass_balance_rule)\n\n    # 2) Raw material monthly limits\n    def limit_rule(mm, j):\n        return sum(mm.y[i, j] for i in mm.CAN) <= d[\"limit\"][j]\n    m.mat_limit = pyo.Constraint(m.MAT, rule=limit_rule)\n\n    # 3) Lower composition bounds: y[i,j] >= p * x[i]\n    def lower_rule(mm, i, j):\n        # Only bind where a lower bound is specified\n        p = d[\"lower\"].get((i, j), 0.0)\n        return mm.y[i, j] >= p * mm.x[i]\n    m.lower_bound = pyo.Constraint(m.CAN, m.MAT, rule=lower_rule)\n\n    # 4) Upper composition bounds: y[i,j] <= p * x[i]\n    def upper_rule(mm, i, j):\n        # Default upper bound is 1.0 (100%) if not specified\n        p = d[\"upper\"].get((i, j), 1.0)\n        return mm.y[i, j] <= p * mm.x[i]\n    m.upper_bound = pyo.Constraint(m.CAN, m.MAT, rule=upper_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1095,
+      "completion_tokens": 1555
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.022466421127319,
+   "position": 1,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"raw_materials\": [\"A\", \"B\", \"C\"],\n    \"candies\": [\"A\", \"B\", \"C\"],\n    # Raw material cost (yuan/kg)\n    \"material_cost\": {\"A\": 2.00, \"B\": 1.50, \"C\": 1.00},\n    # Monthly limit (kg)\n    \"material_limit\": {\"A\": 2000, \"B\": 2500, \"C\": 1200},\n    # Processing fee (yuan/kg of candy)\n    \"processing_fee\": {\"A\": 0.50, \"B\": 0.40, \"C\": 0.30},\n    # Selling price (yuan/kg of candy)\n    \"selling_price\": {\"A\": 3.40, \"B\": 2.85, \"C\": 2.25},\n    # Composition constraints: (raw_material, candy, sense, fraction)\n    # sense \"min\" => usage >= fraction * production ; \"max\" => usage <= fraction * production\n    \"composition\": [\n        (\"A\", \"A\", \"min\", 0.60),   # A in candy A >= 60%\n        (\"A\", \"B\", \"min\", 0.15),   # A in candy B >= 15%\n        (\"C\", \"A\", \"max\", 0.20),   # C in candy A <= 20%\n        (\"C\", \"B\", \"max\", 0.60),   # C in candy B <= 60%\n        (\"C\", \"C\", \"max\", 0.50),   # C in candy C <= 50%\n    ],\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.R = pyo.Set(initialize=d[\"raw_materials\"])\n    model.P = pyo.Set(initialize=d[\"candies\"])\n\n    # Decision variables\n    model.production = pyo.Var(model.P, within=pyo.NonNegativeReals)\n    model.usage = pyo.Var(model.R, model.P, within=pyo.NonNegativeReals)\n\n    # Objective: maximize profit\n    def revenue_rule(m):\n        return sum(d[\"selling_price\"][j] * m.production[j] for j in m.P)\n\n    def material_cost_rule(m):\n        return sum(d[\"material_cost\"][i] * m.usage[i, j] for i in m.R for j in m.P)\n\n    def processing_cost_rule(m):\n        return sum(d[\"processing_fee\"][j] * m.production[j] for j in m.P)\n\n    model.obj = pyo.Objective(\n        expr=revenue_rule(model) - material_cost_rule(model) - processing_cost_rule(model),\n        sense=pyo.maximize,\n    )\n\n    # Raw material monthly limit constraints\n    def limit_rule(m, i):\n        return sum(m.usage[i, j] for j in m.P) <= d[\"material_limit\"][i]\n\n    model.material_limit_con = pyo.Constraint(model.R, rule=limit_rule)\n\n    # Mass balance: total raw materials used in candy j equals production of candy j\n    def balance_rule(m, j):\n        return sum(m.usage[i, j] for i in m.R) == m.production[j]\n\n    model.mass_balance = pyo.Constraint(model.P, rule=balance_rule)\n\n    # Composition constraints (linearised)\n    comp_list = d[\"composition\"]\n    model.COMP = pyo.Set(initialize=range(len(comp_list)), ordered=True)\n\n    def comp_rule(m, k):\n        i, j, sense, frac = comp_list[k]\n        if sense == \"min\":\n            return m.usage[i, j] >= frac * m.production[j]\n        else:\n            return m.usage[i, j] <= frac * m.production[j]\n\n    model.composition_con = pyo.Constraint(model.COMP, rule=comp_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1091,
+      "completion_tokens": 1225
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.384702205657959,
+   "position": 2,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # sets\n    \"MAT\": [\"A\", \"B\", \"C\"],\n    \"CANDY\": [\"A\", \"B\", \"C\"],\n\n    # raw-material cost (yuan per kg)\n    \"cost\": {\"A\": 2.00, \"B\": 1.50, \"C\": 1.00},\n\n    # monthly raw-material limit (kg)\n    \"limit\": {\"A\": 2000.0, \"B\": 2500.0, \"C\": 1200.0},\n\n    # processing fee (yuan per kg of candy)\n    \"fee\": {\"A\": 0.50, \"B\": 0.40, \"C\": 0.30},\n\n    # selling price (yuan per kg of candy)\n    \"price\": {\"A\": 3.40, \"B\": 2.85, \"C\": 2.25},\n\n    # allowed raw-material / candy pairs\n    \"pairs\": [\n        (\"A\", \"A\"), (\"B\", \"A\"), (\"C\", \"A\"),   # candy A blend\n        (\"C\", \"B\"),                             # candy B: only upper bound given\n        (\"A\", \"C\"), (\"C\", \"C\"),                 # candy C blend\n    ],\n\n    # content lower bounds: (target candy, material, fraction)\n    \"lower_bounds\": [\n        (\"A\", \"A\", 0.60),\n        (\"A\", \"B\", 0.15),\n    ],\n\n    # content upper bounds: (target candy, material, fraction)\n    \"upper_bounds\": [\n        (\"A\", \"C\", 0.20),\n        (\"B\", \"C\", 0.60),\n        (\"C\", \"C\", 0.50),\n    ],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # ---- sets ----\n    model.MAT = pyo.Set(initialize=d[\"MAT\"], ordered=True)\n    model.CANDY = pyo.Set(initialize=d[\"CANDY\"], ordered=True)\n    model.PAIRS = pyo.Set(initialize=d[\"pairs\"], dimen=2, ordered=True)\n\n    def lb_init(m):\n        return [(c, i) for (c, i, _) in d[\"lower_bounds\"]]\n    model.LB_PAIRS = pyo.Set(initialize=lb_init, dimen=2, ordered=True)\n\n    def ub_init(m):\n        return [(c, i) for (c, i, _) in d[\"upper_bounds\"]]\n    model.UB_PAIRS = pyo.Set(initialize=ub_init, dimen=2, ordered=True)\n\n    # ---- variables ----\n    # kg of candy produced\n    model.x = pyo.Var(model.CANDY, within=pyo.NonNegativeReals)\n    # kg of raw material i blended into candy j (only allowed pairs)\n    model.y = pyo.Var(model.PAIRS, within=pyo.NonNegativeReals)\n\n    # ---- objective ----\n    def obj_expr(m):\n        revenue_fee = sum(\n            (d[\"price\"][j] - d[\"fee\"][j]) * m.x[j] for j in m.CANDY\n        )\n        raw_cost = sum(\n            d[\"cost\"][i] * m.y[i, j] for (i, j) in m.PAIRS\n        )\n        return revenue_fee - raw_cost\n    model.obj = pyo.Objective(expr=obj_expr, sense=pyo.maximize)\n\n    # ---- raw-material monthly limits ----\n    def limit_rule(m, i):\n        return sum(m.y[i, j] for (ii, j) in m.PAIRS if ii == i) <= d[\"limit\"][i]\n    model.limit_con = pyo.Constraint(model.MAT, rule=limit_rule)\n\n    # ---- mass balance: blend adds up to the candy mass ----\n    def balance_rule(m, j):\n        return sum(m.y[i, jj] for (i, jj) in m.PAIRS if jj == j) == m.x[j]\n    model.balance_con = pyo.Constraint(model.CANDY, rule=balance_rule)\n\n    # ---- content lower bounds (percent * total <= content mass) ----\n    def lower_rule(m, j, i):\n        frac = next(f for (c, mat, f) in d[\"lower_bounds\"] if c == j and mat == i)\n        return m.y[i, j] >= frac * m.x[j]\n    model.lower_con = pyo.Constraint(model.LB_PAIRS, rule=lower_rule)\n\n    # ---- content upper bounds (content mass <= percent * total) ----\n    def upper_rule(m, j, i):\n        frac = next(f for (c, mat, f) in d[\"upper_bounds\"] if c == j and mat == i)\n        return m.y[i, j] <= frac * m.x[j]\n    model.upper_con = pyo.Constraint(model.UB_PAIRS, rule=upper_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1097,
+      "completion_tokens": 1679
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.351918697357178,
+   "position": 3,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"candy_types\": [\"A\", \"B\", \"C\"],\n    \"materials\":   [\"A\", \"B\", \"C\"],\n    \"raw_material_cost\": {\"A\": 2.00, \"B\": 1.50, \"C\": 1.00},\n    \"raw_material_limit\": {\"A\": 2000, \"B\": 2500, \"C\": 1200},\n    \"processing_fee\": {\"A\": 0.50, \"B\": 0.40, \"C\": 0.30},\n    \"selling_price\": {\"A\": 3.40, \"B\": 2.85, \"C\": 2.25},\n    \"min_A_in_candyA\": 0.60,\n    \"min_B_in_candyA\": 0.15,\n    \"max_C_in_candyA\": 0.20,\n    \"min_A_in_candyB\": 0.15,\n    \"max_B_in_candyB\": 0.60,\n    \"max_C_in_candyC\": 0.50,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.Types = pyo.Set(initialize=d[\"candy_types\"])\n    model.Mats = pyo.Set(initialize=d[\"materials\"])\n\n    model.x = pyo.Var(model.Types, within=pyo.NonNegativeReals)\n    model.y = pyo.Var(model.Mats, model.Types, within=pyo.NonNegativeReals)\n\n    def balance_rule(m, t):\n        return sum(m.y[i, t] for i in m.Mats) == m.x[t]\n    model.mass_balance = pyo.Constraint(model.Types, rule=balance_rule)\n\n    def limit_rule(m, i):\n        return sum(m.y[i, t] for t in m.Types) <= d[\"raw_material_limit\"][i]\n    model.supply_limit = pyo.Constraint(model.Mats, rule=limit_rule)\n\n    def candyA_minA(m):\n        return m.y[\"A\", \"A\"] >= d[\"min_A_in_candyA\"] * m.x[\"A\"]\n    model.candyA_minA = pyo.Constraint(rule=candyA_minA)\n\n    def candyA_minB(m):\n        return m.y[\"B\", \"A\"] >= d[\"min_B_in_candyA\"] * m.x[\"A\"]\n    model.candyA_minB = pyo.Constraint(rule=candyA_minB)\n\n    def candyA_maxC(m):\n        return m.y[\"C\", \"A\"] <= d[\"max_C_in_candyA\"] * m.x[\"A\"]\n    model.candyA_maxC = pyo.Constraint(rule=candyA_maxC)\n\n    def candyB_minA(m):\n        return m.y[\"A\", \"B\"] >= d[\"min_A_in_candyB\"] * m.x[\"B\"]\n    model.candyB_minA = pyo.Constraint(rule=candyB_minA)\n\n    def candyB_maxB(m):\n        return m.y[\"B\", \"B\"] <= d[\"max_B_in_candyB\"] * m.x[\"B\"]\n    model.candyB_maxB = pyo.Constraint(rule=candyB_maxB)\n\n    def candyC_maxC(m):\n        return m.y[\"C\", \"C\"] <= d[\"max_C_in_candyC\"] * m.x[\"C\"]\n    model.candyC_maxC = pyo.Constraint(rule=candyC_maxC)\n\n    def objective_rule(m):\n        revenue = sum(d[\"selling_price\"][t] * m.x[t] for t in m.Types)\n        fee = sum(d[\"processing_fee\"][t] * m.x[t] for t in m.Types)\n        matcost = sum(d[\"raw_material_cost\"][i] * m.y[i, t]\n                      for i in m.Mats for t in m.Types)\n        return revenue - fee - matcost\n\n    model.obj = pyo.Objective(rule=objective_rule, sense=pyo.maximize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1097,
+      "completion_tokens": 2602
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 9.774915218353271,
+   "position": 4,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Sets\n    \"raw_materials\": ['A', 'B', 'C'],\n    \"candy_types\": ['A', 'B', 'C'],\n\n    # Content fractions (from Table 1-7 columns A/B/C, rows = candy type).\n    # Blank entries mean unconstrained -> 0.0 (no restriction modelled).\n    # Candy A: A >= 60%, B >= 15%\n    \"content\": {\n        'A': {'A': 0.60, 'B': 0.15, 'C': 0.00},\n        # Candy B: no explicit content restrictions given -> 0.0\n        'B': {'A': 0.00, 'B': 0.00, 'C': 0.00},\n        # Candy C: A <= 20%, B <= 60%, C <= 50%\n        'C': {'A': 0.20, 'B': 0.60, 'C': 0.50},\n    },\n\n    # \"Raw Material Cost (\u5143/kg)\" column: A=2.00, B=1.50, C=1.00\n    \"raw_cost\": {'A': 2.00, 'B': 1.50, 'C': 1.00},\n\n    # \"Monthly Limit (kg)\" column: A=2000, B=2500, C=1200\n    \"raw_limit\": {'A': 2000.0, 'B': 2500.0, 'C': 1200.0},\n\n    # \"Processing Fee (\u5143/kg)\" row: candy A=0.50, B=0.40, C=0.30\n    \"proc_fee\": {'A': 0.50, 'B': 0.40, 'C': 0.30},\n\n    # \"Selling Price (\u5143/kg)\" row: candy A=3.40, B=2.85, C=2.25\n    \"price\": {'A': 3.40, 'B': 2.85, 'C': 2.25},\n\n    # Content-requirement bounds for candy A: A >= 60%, B >= 15%\n    \"candyA_min_A\": 0.60,\n    \"candyA_min_B\": 0.15,\n\n    # Content-requirement bounds for candy C: A <= 20%, B <= 60%, C <= 50%\n    \"candyC_max_A\": 0.20,\n    \"candyC_max_B\": 0.60,\n    \"candyC_max_C\": 0.50,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.RM = pyo.Set(initialize=d[\"raw_materials\"])\n    model.CT = pyo.Set(initialize=d[\"candy_types\"])\n\n    # Decision variables: kg of each candy type produced per month\n    model.x = pyo.Var(model.CT, within=pyo.NonNegativeReals)\n\n    # Total amount of each raw material used (kg/month) = sum_ct content[ct][rm] * x[ct]\n    def used_rule(m, rm):\n        return sum(d[\"content\"][ct][rm] * m.x[ct] for ct in m.CT)\n    model.used = pyo.Expression(model.RM, rule=used_rule)\n\n    # Objective: maximize profit = revenue - raw material cost - processing fee\n    def profit_rule(m):\n        return sum(\n            (d[\"price\"][ct]\n             - sum(d[\"content\"][ct][rm] * d[\"raw_cost\"][rm] for rm in m.RM)\n             - d[\"proc_fee\"][ct]) * m.x[ct]\n            for ct in m.CT\n        )\n    model.obj = pyo.Objective(rule=profit_rule, sense=pyo.maximize)\n\n    # Raw material monthly limits\n    def limit_rule(m, rm):\n        return m.used[rm] <= d[\"raw_limit\"][rm]\n    model.raw_limit_con = pyo.Constraint(model.RM, rule=limit_rule)\n\n    # Candy A content requirements: A >= 60%, B >= 15%\n    def candyA_A_rule(m):\n        return d[\"candyA_min_A\"] * m.x['A'] <= m.used['A']\n    model.candyA_A = pyo.Constraint(rule=candyA_A_rule)\n\n    def candyA_B_rule(m):\n        return d[\"candyA_min_B\"] * m.x['A'] <= m.used['B']\n    model.candyA_B = pyo.Constraint(rule=candyA_B_rule)\n\n    # Candy C content requirements: A <= 20%, B <= 60%, C <= 50%\n    def candyC_A_rule(m):\n        return m.used['A'] <= d[\"candyC_max_A\"] * m.x['C']\n    model.candyC_A = pyo.Constraint(rule=candyC_A_rule)\n\n    def candyC_B_rule(m):\n        return m.used['B'] <= d[\"candyC_max_B\"] * m.x['C']\n    model.candyC_B = pyo.Constraint(rule=candyC_B_rule)\n\n    def candyC_C_rule(m):\n        return m.used['C'] <= d[\"candyC_max_C\"] * m.x['C']\n    model.candyC_C = pyo.Constraint(rule=candyC_C_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1095,
+      "completion_tokens": 1678
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.328749895095825,
+   "position": 5,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   x[j]  : kg of candy type j produced per month, j in {A, B, C}\n#           domain: NonNegativeReals (continuous kg)\n#   y[i]  : kg of raw material i purchased/used per month, i in {A, B, C}\n#           domain: NonNegativeReals\n#\n# Objective (maximize): total profit =\n#     sum_j (selling_price[j] - processing_fee[j]) * x[j]\n#     - sum_i raw_material_cost[i] * y[i]\n#\n# Constraints\n#   (1) Raw material monthly limits:            y[i] <= limit[i]        for all i\n#   (2) Material balance per candy type:        sum_i y[i,j] = x[j]     (blending)\n#   (3) Composition lower bounds (A in candy A >= 60%, B in candy A >= 15%,\n#       C in candy B <= 60%, C in candy C <= 50%, C in candy A <= 20%)\n#   (4) Composition upper bounds\n#\n# To keep the model linear we introduce blending variables y[i,j] = kg of raw\n# material i used in candy type j.  Then:\n#     y[i] = sum_j y[i,j]\n#     x[j] = sum_i y[i,j]\n# and composition constraints become linear inequalities on y[i,j] and x[j].\n# ---------------------------------------------------------------------------\n\nDATA = {\n    # raw material costs (yuan/kg)\n    \"raw_cost\": {\"A\": 2.00, \"B\": 1.50, \"C\": 1.00},\n    # monthly limits (kg)\n    \"raw_limit\": {\"A\": 2000.0, \"B\": 2500.0, \"C\": 1200.0},\n    # processing fee (yuan/kg of candy)\n    \"proc_fee\": {\"A\": 0.50, \"B\": 0.40, \"C\": 0.30},\n    # selling price (yuan/kg of candy)\n    \"sell_price\": {\"A\": 3.40, \"B\": 2.85, \"C\": 2.25},\n    # composition bounds: (material, candy) -> (lower, upper) as fractions\n    # None means no bound in that direction.\n    \"comp\": {\n        (\"A\", \"A\"): (0.60, None),\n        (\"B\", \"A\"): (0.15, None),\n        (\"C\", \"A\"): (None, 0.20),\n        (\"C\", \"B\"): (None, 0.60),\n        (\"C\", \"C\"): (None, 0.50),\n    },\n    # big-M for composition constraints (max possible kg of a candy)\n    \"bigM\": 10000.0,\n}\n\nCANDIES = [\"A\", \"B\", \"C\"]\nMATERIALS = [\"A\", \"B\", \"C\"]\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.CANDY = pyo.Set(initialize=CANDIES)\n    m.MATERIAL = pyo.Set(initialize=MATERIALS)\n    m.PAIR = pyo.Set(\n        initialize=[(i, j) for i in MATERIALS for j in CANDIES],\n        dimen=2,\n    )\n\n    # x[j] : kg of candy j produced\n    m.x = pyo.Var(m.CANDY, within=pyo.NonNegativeReals)\n\n    # y[i] : kg of raw material i used\n    m.y = pyo.Var(m.MATERIAL, within=pyo.NonNegativeReals)\n\n    # z[i,j] : kg of raw material i used in candy j\n    m.z = pyo.Var(m.PAIR, within=pyo.NonNegativeReals)\n\n    # (1) raw material monthly limits\n    def raw_limit_rule(m, i):\n        return m.y[i] <= d[\"raw_limit\"][i]\n    m.raw_limit_con = pyo.Constraint(m.MATERIAL, rule=raw_limit_rule)\n\n    # (2a) material balance: y[i] = sum_j z[i,j]\n    def mat_balance_rule(m, i):\n        return m.y[i] == sum(m.z[i, j] for j in m.CANDY)\n    m.mat_balance_con = pyo.Constraint(m.MATERIAL, rule=mat_balance_rule)\n\n    # (2b) candy balance: x[j] = sum_i z[i,j]\n    def candy_balance_rule(m, j):\n        return m.x[j] == sum(m.z[i, j] for i in m.MATERIAL)\n    m.candy_balance_con = pyo.Constraint(m.CANDY, rule=candy_balance_rule)\n\n    # (3) composition lower bounds: z[i,j] >= lb * x[j]\n    def comp_lb_rule(m, i, j):\n        lb = d[\"comp\"].get((i, j), (None, None))[0]\n        if lb is None:\n            return pyo.Constraint.Skip\n        return m.z[i, j] >= lb * m.x[j]\n    m.comp_lb_con = pyo.Constraint(m.PAIR, rule=comp_lb_rule)\n\n    # (4) composition upper bounds: z[i,j] <= ub * x[j]\n    def comp_ub_rule(m, i, j):\n        ub = d[\"comp\"].get((i, j), (None, None))[1]\n        if ub is None:\n            return pyo.Constraint.Skip\n        return m.z[i, j] <= ub * m.x[j]\n    m.comp_ub_con = pyo.Constraint(m.PAIR, rule=comp_ub_rule)\n\n    # objective: maximize profit\n    def obj_rule(m):\n        revenue = sum(\n            (d[\"sell_price\"][j] - d[\"proc_fee\"][j]) * m.x[j] for j in m.CANDY\n        )\n        cost = sum(d[\"raw_cost\"][i] * m.y[i] for i in m.MATERIAL)\n        return revenue - cost\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1111,
+      "completion_tokens": 5659
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1496,
+      "completion_tokens": 1396
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 52.918874979019165,
+   "position": 6,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"materials\": [\"A\", \"B\", \"C\"],\n    \"candies\": [\"A\", \"B\", \"C\"],\n    # raw material cost (yuan/kg)\n    \"material_cost\": {\"A\": 2.00, \"B\": 1.50, \"C\": 1.00},\n    # monthly limit (kg)\n    \"material_limit\": {\"A\": 2000.0, \"B\": 2500.0, \"C\": 1200.0},\n    # processing fee (yuan/kg of candy)\n    \"processing_fee\": {\"A\": 0.50, \"B\": 0.40, \"C\": 0.30},\n    # selling price (yuan/kg of candy)\n    \"selling_price\": {\"A\": 3.40, \"B\": 2.85, \"C\": 2.25},\n    # composition lower bounds: (candy, material) -> fraction\n    \"comp_lower\": {\n        (\"A\", \"A\"): 0.60,\n        (\"A\", \"B\"): 0.15,\n    },\n    # composition upper bounds: (candy, material) -> fraction\n    \"comp_upper\": {\n        (\"A\", \"C\"): 0.20,\n        (\"B\", \"C\"): 0.60,\n        (\"C\", \"C\"): 0.50,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.MATERIALS = pyo.Set(initialize=d[\"materials\"])\n    m.CANDIES = pyo.Set(initialize=d[\"candies\"])\n\n    # kg of each candy produced\n    m.x = pyo.Var(m.CANDIES, within=pyo.NonNegativeReals, bounds=(0, None))\n\n    # kg of raw material k used in candy j\n    m.y = pyo.Var(m.CANDIES, m.MATERIALS, within=pyo.NonNegativeReals, bounds=(0, None))\n\n    # Objective: maximize profit = revenue - material cost - processing fee\n    def obj_rule(m):\n        revenue = sum(d[\"selling_price\"][j] * m.x[j] for j in m.CANDIES)\n        mat_cost = sum(d[\"material_cost\"][k] * m.y[j, k]\n                       for j in m.CANDIES for k in m.MATERIALS)\n        proc_fee = sum(d[\"processing_fee\"][j] * m.x[j] for j in m.CANDIES)\n        return revenue - mat_cost - proc_fee\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Raw material monthly limits\n    def mat_limit_rule(m, k):\n        return sum(m.y[j, k] for j in m.CANDIES) <= d[\"material_limit\"][k]\n    m.mat_limit = pyo.Constraint(m.MATERIALS, rule=mat_limit_rule)\n\n    # Material balance: total material used in candy j equals production of candy j\n    def balance_rule(m, j):\n        return sum(m.y[j, k] for k in m.MATERIALS) == m.x[j]\n    m.balance = pyo.Constraint(m.CANDIES, rule=balance_rule)\n\n    # Composition lower bounds\n    def comp_lower_rule(m, j, k):\n        return m.y[j, k] >= d[\"comp_lower\"][(j, k)] * m.x[j]\n    m.comp_lower = pyo.Constraint(\n        [(j, k) for (j, k) in d[\"comp_lower\"]], rule=comp_lower_rule)\n\n    # Composition upper bounds\n    def comp_upper_rule(m, j, k):\n        return m.y[j, k] <= d[\"comp_upper\"][(j, k)] * m.x[j]\n    m.comp_upper = pyo.Constraint(\n        [(j, k) for (j, k) in d[\"comp_upper\"]], rule=comp_upper_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1091,
+      "completion_tokens": 1344
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.951061248779297,
+   "position": 7,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # raw material data\n    \"materials\": [\"A\", \"B\", \"C\"],\n    \"material_cost\": {\"A\": 2.00, \"B\": 1.50, \"C\": 1.00},\n    \"material_limit\": {\"A\": 2000.0, \"B\": 2500.0, \"C\": 1200.0},\n    # candy data\n    \"candies\": [\"A\", \"B\", \"C\"],\n    \"processing_fee\": {\"A\": 0.50, \"B\": 0.40, \"C\": 0.30},\n    \"selling_price\": {\"A\": 3.40, \"B\": 2.85, \"C\": 2.25},\n    # composition constraints: (material, candy) -> (min_or_max, fraction)\n    # 'min' => y[m,c] >= frac * x[c];  'max' => y[m,c] <= frac * x[c]\n    \"composition\": [\n        (\"A\", \"A\", \"min\", 0.60),   # candy A must contain >= 60% of material A\n        (\"B\", \"A\", \"min\", 0.15),   # candy A must contain >= 15% of material B\n        (\"C\", \"A\", \"max\", 0.20),   # candy A must contain <= 20% of material C\n        (\"C\", \"B\", \"max\", 0.60),   # candy B must contain <= 60% of material C\n        (\"C\", \"C\", \"max\", 0.50),   # candy C must contain <= 50% of material C\n    ],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # --- sets ---\n    model.R = pyo.Set(initialize=d[\"materials\"], doc=\"raw materials\")\n    model.C = pyo.Set(initialize=d[\"candies\"], doc=\"candy types\")\n\n    # --- variables ---\n    # x[c]: kg of candy type c produced per month\n    model.x = pyo.Var(model.C, domain=pyo.NonNegativeReals, bounds=(0, None))\n    # y[r,c]: kg of raw material r allocated to candy type c per month\n    model.y = pyo.Var(model.R, model.C, domain=pyo.NonNegativeReals, bounds=(0, None))\n\n    # --- objective: maximize profit = revenue - material cost - processing fee ---\n    def obj_rule(m):\n        revenue = sum(d[\"selling_price\"][c] * m.x[c] for c in m.C)\n        material_cost = sum(d[\"material_cost\"][r] * m.y[r, c] for r in m.R for c in m.C)\n        processing = sum(d[\"processing_fee\"][c] * m.x[c] for c in m.C)\n        return revenue - material_cost - processing\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # --- constraints ---\n\n    # mass balance: sum_r y[r,c] == x[c] for each candy c\n    def mass_balance_rule(m, c):\n        return sum(m.y[r, c] for r in m.R) == m.x[c]\n\n    model.mass_balance = pyo.Constraint(model.C, rule=mass_balance_rule)\n\n    # raw material monthly limits: sum_c y[r,c] <= limit[r]\n    def limit_rule(m, r):\n        return sum(m.y[r, c] for c in m.C) <= d[\"material_limit\"][r]\n\n    model.material_limit = pyo.Constraint(model.R, rule=limit_rule)\n\n    # composition constraints, split into min and max for clean linear form\n    comp = d[\"composition\"]\n\n    min_index = [(r, c) for (r, c, sense, _f) in comp if sense == \"min\"]\n    max_index = [(r, c) for (r, c, sense, _f) in comp if sense == \"max\"]\n\n    model.comp_min_index = pyo.Set(initialize=min_index, dimen=2)\n    model.comp_max_index = pyo.Set(initialize=max_index, dimen=2)\n\n    frac_lookup = {(r, c): f for (r, c, _s, f) in comp}\n\n    # min fraction: y[r,c] >= frac * x[c]\n    def comp_min_rule(m, r, c):\n        return m.y[r, c] >= frac_lookup[(r, c)] * m.x[c]\n\n    model.comp_min = pyo.Constraint(model.comp_min_index, rule=comp_min_rule)\n\n    # max fraction: y[r,c] <= frac * x[c]\n    def comp_max_rule(m, r, c):\n        return m.y[r, c] <= frac_lookup[(r, c)] * m.x[c]\n\n    model.comp_max = pyo.Constraint(model.comp_max_index, rule=comp_max_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1107,
+      "completion_tokens": 1739
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.147053003311157,
+   "position": 8,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Raw material costs (\u5143/kg) indexed by raw material r\n    \"raw_cost\": {\"A\": 2.00, \"B\": 1.50, \"C\": 1.00},\n    # Monthly raw material limits (kg)\n    \"raw_limit\": {\"A\": 2000, \"B\": 2500, \"C\": 1200},\n    # Candy processing fee (\u5143/kg) indexed by candy type p\n    \"fee\": {\"A\": 0.50, \"B\": 0.40, \"C\": 0.30},\n    # Candy selling price (\u5143/kg) indexed by candy type p\n    \"price\": {\"A\": 3.40, \"B\": 2.85, \"C\": 2.25},\n    # Recipe composition requirements encoded as (r, candy) -> minimum and maximum fraction\n    # min fraction: y[r,p] >= min_frac * x_p ; max fraction: y[r,p] <= max_frac * x_p\n    # Raw materials: A, B, C ; Candies: A, B, C\n    \"recipe_min\": {\n        (\"A\", \"A\"): 0.60,   # Candy A: A >= 60%\n        (\"A\", \"B\"): 0.15,   # Candy B: A >= 15%\n    },\n    \"recipe_max\": {\n        (\"C\", \"A\"): 0.20,   # Candy A: C <= 20%\n        (\"C\", \"B\"): 0.60,   # Candy B: C <= 60%\n        (\"C\", \"C\"): 0.50,   # Candy C: C <= 50%\n    },\n}\n\n# Index sets\nRAW_MATERIALS = [\"A\", \"B\", \"C\"]\nCANDIES = [\"A\", \"B\", \"C\"]\n# Pairs with the raw material / candy relationship\nFLOW_PAIRS = [(r, p) for r in RAW_MATERIALS for p in CANDIES]\nMIN_PAIRS = [(\"A\", \"A\"), (\"A\", \"B\")]\nMAX_PAIRS = [(\"C\", \"A\"), (\"C\", \"B\"), (\"C\", \"C\")]\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ---- Sets ----\n    model.R = pyo.Set(initialize=RAW_MATERIALS, dimen=1, ordered=True)\n    model.P = pyo.Set(initialize=CANDIES, dimen=1, ordered=True)\n    model.RP = pyo.Set(initialize=FLOW_PAIRS, dimen=2, ordered=True)\n    model.MINP = pyo.Set(initialize=MIN_PAIRS, dimen=2, ordered=True)\n    model.MAXP = pyo.Set(initialize=MAX_PAIRS, dimen=2, ordered=True)\n\n    # ---- Variables ----\n    # x[p]: kg of candy type p produced per month\n    model.x = pyo.Var(model.P, within=pyo.NonNegativeReals)\n    # y[r,p]: kg of raw material r used in candy type p per month\n    model.y = pyo.Var(model.RP, within=pyo.NonNegativeReals)\n\n    # ---- Objective: maximize profit (revenue - raw cost - processing fee) ----\n    def obj_rule(m):\n        revenue = sum(d[\"price\"][p] * m.x[p] for p in m.P)\n        raw_cost = sum(d[\"raw_cost\"][r] * m.y[(r, p)] for (r, p) in m.RP)\n        proc_fee = sum(d[\"fee\"][p] * m.x[p] for p in m.P)\n        return revenue - raw_cost - proc_fee\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # ---- Constraints ----\n    # Mass balance: total raw material used in candy p equals amount of candy p\n    def mass_balance_rule(m, p):\n        return sum(m.y[(r, p)] for r in m.R) == m.x[p]\n    model.mass_balance = pyo.Constraint(model.P, rule=mass_balance_rule)\n\n    # Raw material monthly limits: sum over candies of y[r,p] <= limit_r\n    def raw_limit_rule(m, r):\n        return sum(m.y[(r, p)] for p in m.P) <= d[\"raw_limit\"][r]\n    model.raw_limit = pyo.Constraint(model.R, rule=raw_limit_rule)\n\n    # Minimum fraction: y[r,p] >= min_frac * x[p]\n    def min_frac_rule(m, r, p):\n        return m.y[(r, p)] >= d[\"recipe_min\"][(r, p)] * m.x[p]\n    model.min_frac = pyo.Constraint(model.MINP, rule=min_frac_rule)\n\n    # Maximum fraction: y[r,p] <= max_frac * x[p]\n    def max_frac_rule(m, r, p):\n        return m.y[(r, p)] <= d[\"recipe_max\"][(r, p)] * m.x[p]\n    model.max_frac = pyo.Constraint(model.MAXP, rule=max_frac_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1107,
+      "completion_tokens": 1719
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.418676137924194,
+   "position": 9,
+   "recipe_index": 2
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T10:38:29"
+}

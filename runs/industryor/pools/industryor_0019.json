@@ -1,0 +1,334 @@
+{
+ "pid": "industryor_0019",
+ "question": "There are three different products that need to be processed on three machine tools. Each product must be processed first on machine 1, then sequentially on machine 2 and 3. The order of processing the three products should remain the same on each machine. Assume \\( t_{ij} \\) represents the time it takes to process the \\( i \\)th product on the \\( j \\)th machine.\\n\\n**Given:**\\n\\n- \\( t_{11} = 5 \\) minutes, \\( t_{12} = 4 \\) minutes, \\( t_{13} = 3 \\) minutes\\n- \\( t_{21} = 6 \\) minutes, \\( t_{22} = 5 \\) minutes, \\( t_{23} = 4 \\) minutes\\n- \\( t_{31} = 7 \\) minutes, \\( t_{32} = 6 \\) minutes, \\( t_{33} = 5 \\) minutes\n",
+ "templates": [
+  "Production Planning / Product Mix",
+  "Scheduling"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Every numeric constant from the problem lives here.\n# t[i][j] = processing time (minutes) of product i on machine j, 1-indexed\n# ---------------------------------------------------------------------------\nDATA = {\n    \"t\": (\n        (None, 5, 4, 3),   # product 1: machines 1,2,3\n        (None, 6, 5, 4),   # product 2\n        (None, 7, 6, 5),   # product 3\n    ),\n    \"n_products\": 3,\n    \"n_machines\": 3,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"n_products\"]\n    m = d[\"n_machines\"]\n    t = d[\"t\"]\n\n    model = pyo.ConcreteModel()\n\n    # ----- Sets ------------------------------------------------------------\n    model.P = pyo.RangeSet(1, n)   # products (jobs), in fixed processing order\n    model.M = pyo.RangeSet(1, m)   # machines, in fixed routing order\n    model.Mr = pyo.RangeSet(1, m - 1)  # machines except the last\n    model.Pr = pyo.RangeSet(1, n - 1)  # products except the last\n\n    # ----- Variables -------------------------------------------------------\n    # C[i, j] : completion time of product i on machine j\n    model.C = pyo.Var(model.P, model.M, domain=pyo.NonNegativeReals)\n\n    # ----- Objective -------------------------------------------------------\n    # Minimise makespan = completion time of the last job on the last machine\n    model.obj = pyo.Objective(expr=model.C[n, m], sense=pyo.minimize)\n\n    # ----- Constraints -----------------------------------------------------\n\n    # (a) Routing / precedence within each product:\n    #     product i must finish on machine j before it starts on machine j+1.\n    #     C[i, j+1] >= C[i, j] + t[i][j+1]      (>= because it is a *must finish first*)\n    def routing_rule(model, i, j):\n        return model.C[i, j + 1] >= model.C[i, j] + t[i][j + 1]\n\n    model.routing = pyo.Constraint(model.P, model.Mr, rule=routing_rule)\n\n    # (b) Machine capacity in the fixed product order:\n    #     on machine j, product i+1 can only start after product i is finished.\n    #     C[i+1, j] >= C[i, j] + t[i+1][j]      (>= because of no-overlap)\n    def machine_rule(model, i, j):\n        return model.C[i + 1, j] >= model.C[i, j] + t[i + 1][j]\n\n    model.machine_seq = pyo.Constraint(model.Pr, model.M, rule=machine_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1207,
+      "completion_tokens": 1104
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1953,
+      "completion_tokens": 648
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1953,
+      "completion_tokens": 672
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "sandbox_construct_error"
+   ],
+   "seconds": 12.055735111236572,
+   "position": 0,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "\"\"\"\n======================================================================\nPermutation Flow Shop Scheduling - 3 products x 3 machines\n----------------------------------------------------------------\nDecision variables:\n  C[p, m]  in Reals (>= 0)   completion time of product p on machine m\n                             p = 1..3 (products), m = 1..3 (machines)\n  Cmax     in Reals (>= 0)   makespan = completion time of last product\n                             on last machine\n\nObjective (in words):\n  MINIMISE the makespan Cmax, i.e. the total time for all three products\n  to flow through the three machines in the fixed (permutation) order.\n\nConstraints (numbered, with source sentence):\n  (1) First product on first machine: C[1,1] >= t[1,1]\n      \"Each product must be processed first on machine 1\"\n  (2) First product on later machines: C[1,m] >= C[1,m-1] + t[1,m]\n      \"then sequentially on machine 2 and 3\"\n  (3) Later products on first machine: C[p,1] >= C[p-1,1] + t[p,1]\n      \"The order of processing the three products should remain the same\n       on each machine\" (machine 1)\n  (4) Later products on later machines:\n      C[p,m] >= C[p-1,m] + t[p,m]   (same machine, previous product)\n      C[p,m] >= C[p,m-1] + t[p,m]   (same product, previous machine)\n      \"The order of processing the three products should remain the same\n       on each machine\" + sequential machine processing\n  (5) Makespan: Cmax >= C[p,3] for all p\n      \"minimise the total processing time\"\n======================================================================\n\"\"\"\n\nimport pyomo.environ as pyo\n\n# ----------------------------------------------------------------------\n# Every numeric constant from the problem lives here.\n# t[i][j] = processing time of product i on machine j (minutes)\n# ----------------------------------------------------------------------\nDATA = {\n    \"num_products\": 3,\n    \"num_machines\": 3,\n    \"t\": {\n        (1, 1): 5, (1, 2): 4, (1, 3): 3,\n        (2, 1): 6, (2, 2): 5, (2, 3): 4,\n        (3, 1): 7, (3, 2): 6, (3, 3): 5,\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"num_products\"]\n    m = d[\"num_machines\"]\n    t = d[\"t\"]\n\n    model = pyo.ConcreteModel()\n\n    # Index sets\n    model.P = pyo.RangeSet(1, n)   # products\n    model.M = pyo.RangeSet(1, m)   # machines\n\n    # Decision variables\n    model.C = pyo.Var(model.P, model.M, within=pyo.NonNegativeReals)\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n\n    # (1) First product, first machine\n    def rule_c11(mdl):\n        return mdl.C[1, 1] >= t[(1, 1)]\n    model.con_first_product_first_machine = pyo.Constraint(rule=rule_c11)\n\n    # (2) First product, later machines (sequential on machines)\n    def rule_first_product(mdl, j):\n        if j == 1:\n            return pyo.Constraint.Skip\n        return mdl.C[1, j] >= mdl.C[1, j - 1] + t[(1, j)]\n    model.con_first_product_seq = pyo.Constraint(model.M, rule=rule_first_product)\n\n    # (3) Later products, first machine (permutation order on machine 1)\n    def rule_first_machine(mdl, i):\n        if i == 1:\n            return pyo.Constraint.Skip\n        return mdl.C[i, 1] >= mdl.C[i - 1, 1] + t[(i, 1)]\n    model.con_first_machine_order = pyo.Constraint(model.P, rule=rule_first_machine)\n\n    # (4) Later products, later machines\n    def rule_general(mdl, i, j):\n        if i == 1 or j == 1:\n            return pyo.Constraint.Skip\n        return mdl.C[i, j] >= mdl.C[i - 1, j] + t[(i, j)]\n    model.con_same_machine_order = pyo.Constraint(model.P, model.M, rule=rule_general)\n\n    def rule_general_seq(mdl, i, j):\n        if i == 1 or j == 1:\n            return pyo.Constraint.Skip\n        return mdl.C[i, j] >= mdl.C[i, j - 1] + t[(i, j)]\n    model.con_same_product_seq = pyo.Constraint(model.P, model.M, rule=rule_general_seq)\n\n    # (5) Makespan definition\n    def rule_cmax(mdl, i):\n        return mdl.Cmax >= mdl.C[i, m]\n    model.con_cmax = pyo.Constraint(model.P, rule=rule_cmax)\n\n    # Objective\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1211,
+      "completion_tokens": 2085
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1514,
+      "completion_tokens": 1195
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 19.800463438034058,
+   "position": 1,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [1, 2, 3],\n    \"machines\": [1, 2, 3],\n    # proc_time[i][j] = time to process product i on machine j\n    \"proc_time\": {\n        (1, 1): 5, (1, 2): 4, (1, 3): 3,\n        (2, 1): 6, (2, 2): 5, (2, 3): 4,\n        (3, 1): 7, (3, 2): 6, (3, 3): 5,\n    },\n    # upper bound on makespan (sum of all processing times)\n    \"big_M\": 5 + 4 + 3 + 6 + 5 + 4 + 7 + 6 + 5,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = d[\"products\"]\n    machines = d[\"machines\"]\n    t = d[\"proc_time\"]\n    big_m = d[\"big_M\"]\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=products, ordered=True)\n    model.J = pyo.Set(initialize=machines, ordered=True)\n\n    # start time of each product on each machine\n    model.start = pyo.Var(model.I, model.J, within=pyo.NonNegativeReals,\n                          bounds=(0, big_m))\n\n    # makespan\n    model.C_max = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, big_m))\n\n    # Objective: minimize makespan\n    model.obj = pyo.Objective(expr=model.C_max, sense=pyo.minimize)\n\n    # Precedence within a product: machine j+1 starts after machine j finishes\n    def rule_product_precedence(m, i, j):\n        if j == machines[-1]:\n            return pyo.Constraint.Skip\n        return m.start[i, j + 1] >= m.start[i, j] + t[(i, j)]\n\n    model.product_precedence = pyo.Constraint(\n        model.I, model.J, rule=rule_product_precedence)\n\n    # No overlap on each machine: fixed product order 1 -> 2 -> 3\n    def rule_machine_order(m, i, j):\n        if i == products[-1]:\n            return pyo.Constraint.Skip\n        return m.start[i + 1, j] >= m.start[i, j] + t[(i, j)]\n\n    model.machine_order = pyo.Constraint(\n        model.I, model.J, rule=rule_machine_order)\n\n    # Makespan: completion of last machine operation for every product\n    def rule_makespan(m, i):\n        return m.C_max >= m.start[i, machines[-1]] + t[(i, machines[-1])]\n\n    model.makespan_def = pyo.Constraint(model.I, rule=rule_makespan)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1191,
+      "completion_tokens": 1004
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.678282737731934,
+   "position": 2,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_products\": 3,\n    \"num_machines\": 3,\n    \"t\": {\n        (1, 1): 5, (1, 2): 4, (1, 3): 3,\n        (2, 1): 6, (2, 2): 5, (2, 3): 4,\n        (3, 1): 7, (3, 2): 6, (3, 3): 5,\n    },\n    \"big_M\": 1000,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    num_products = d[\"num_products\"]\n    num_machines = d[\"num_machines\"]\n    t = d[\"t\"]\n    M = d[\"big_M\"]\n\n    model.I = pyo.RangeSet(1, num_products)\n    model.J = pyo.RangeSet(1, num_machines)\n\n    # Pairs of distinct products (i < k) for sequencing binaries\n    pairs = [\n        (i, k)\n        for i in range(1, num_products + 1)\n        for k in range(i + 1, num_products + 1)\n    ]\n    model.Pairs = pyo.Set(initialize=pairs, dimen=2)\n\n    # Completion time of product i on machine j\n    model.x = pyo.Var(model.I, model.J, within=pyo.NonNegativeReals)\n\n    # Makespan\n    model.C = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Sequencing binary: 1 if product i precedes product k\n    model.y = pyo.Var(model.Pairs, within=pyo.Binary)\n\n    # Objective: minimize makespan\n    def obj_rule(m):\n        return m.C\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Precedence within a product's own route: machine j after machine j-1\n    def route_rule(m, i, j):\n        if j == 1:\n            return m.x[i, j] >= t[(i, j)]\n        return m.x[i, j] >= m.x[i, j - 1] + t[(i, j)]\n\n    model.route = pyo.Constraint(model.I, model.J, rule=route_rule)\n\n    # Machine capacity: for each pair i<k and each machine j, either i before k or k before i\n    def seq_rule1(m, i, k, j):\n        return m.x[k, j] >= m.x[i, j] + t[(k, j)] - M * (1 - m.y[i, k])\n\n    def seq_rule2(m, i, k, j):\n        return m.x[i, j] >= m.x[k, j] + t[(i, j)] - M * m.y[i, k]\n\n    model.seq1 = pyo.Constraint(model.Pairs, model.J, rule=seq_rule1)\n    model.seq2 = pyo.Constraint(model.Pairs, model.J, rule=seq_rule2)\n\n    # Makespan definition\n    def makespan_rule(m, i):\n        return m.C >= m.x[i, num_machines]\n\n    model.makespan = pyo.Constraint(model.I, rule=makespan_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1207,
+      "completion_tokens": 1071
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.111949443817139,
+   "position": 3,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"I\": [1, 2, 3],\n    \"J\": [1, 2, 3],\n    \"t\": {\n        (1, 1): 5, (1, 2): 4, (1, 3): 3,\n        (2, 1): 6, (2, 2): 5, (2, 3): 4,\n        (3, 1): 7, (3, 2): 6, (3, 3): 5,\n    },\n    \"M\": 45,\n    \"HORIZON\": 45,\n    \"products_before\": [(1, 2), (1, 3), (2, 3)],\n}\n\nPAIRS = [(1, 2), (1, 3), (2, 3)]\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=d[\"I\"])\n    model.J = pyo.Set(initialize=d[\"J\"])\n    model.Jreduce = pyo.Set(initialize=d[\"J\"][:-1])\n    model.P = pyo.Set(initialize=d[\"products_before\"], dimen=2)\n\n    t = d[\"t\"]\n\n    # Decision variables\n    model.s = pyo.Var(\n        model.I, model.J,\n        within=pyo.NonNegativeReals,\n        bounds=(0, d[\"HORIZON\"]),\n    )\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, d[\"HORIZON\"]))\n    model.y = pyo.Var(model.P, within=pyo.Binary)\n\n    # (a) Precedence within each product (machine j+1 after machine j)\n    def rule_prec(m, i, j):\n        return m.s[i, j + 1] >= m.s[i, j] + t[(i, j)]\n    model.prec = pyo.Constraint(model.I, model.Jreduce, rule=rule_prec)\n\n    # (b) Non-overlap with consistent order (big-M either/or)\n    def rule_order_1(m, i, k, j):\n        return m.s[i, j] >= m.s[k, j] + t[(k, j)] - d[\"M\"] * (1 - m.y[i, k])\n\n    def rule_order_2(m, i, k, j):\n        return m.s[k, j] >= m.s[i, j] + t[(i, j)] - d[\"M\"] * m.y[i, k]\n    model.order_1 = pyo.Constraint(model.P, model.J, rule=rule_order_1)\n    model.order_2 = pyo.Constraint(model.P, model.J, rule=rule_order_2)\n\n    # (c) Makespan\n    def rule_makespan(m, i):\n        return m.Cmax >= m.s[i, d[\"J\"][-1]] + t[(i, d[\"J\"][-1])]\n    model.makespan_con = pyo.Constraint(model.I, rule=rule_makespan)\n\n    # Objective\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1197,
+      "completion_tokens": 1183
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.53292989730835,
+   "position": 4,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [1, 2, 3],\n    \"machines\": [1, 2, 3],\n    \"t\": {\n        (1, 1): 5, (1, 2): 4, (1, 3): 3,\n        (2, 1): 6, (2, 2): 5, (2, 3): 4,\n        (3, 1): 7, (3, 2): 6, (3, 3): 5,\n    },\n    \"bigM\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = d[\"products\"]\n    machines = d[\"machines\"]\n    t = d[\"t\"]\n    bigM = d[\"bigM\"]\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=products, ordered=True)\n    model.J = pyo.Set(initialize=machines, ordered=True)\n    # pairs (i,k) with i < k for sequencing binaries\n    model.Pairs = pyo.Set(\n        initialize=[(i, k) for i in products for k in products if i < k],\n        dimen=2,\n    )\n\n    model.start = pyo.Var(model.I, model.J, within=pyo.NonNegativeReals)\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n    model.y = pyo.Var(model.Pairs, within=pyo.Binary)\n\n    # Objective: minimize makespan\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    # Precedence within each product (machine j -> j+1)\n    def rule_precedence(m, i, j):\n        if j < max(machines):\n            return m.start[i, j + 1] >= m.start[i, j] + t[(i, j)]\n        return pyo.Constraint.Skip\n\n    model.precedence = pyo.Constraint(model.I, model.J, rule=rule_precedence)\n\n    # Disjunctive (no-overlap) constraints per machine, same order on all machines\n    def rule_before(m, i, k, j):\n        return m.start[k, j] >= m.start[i, j] + t[(i, j)] - bigM * (1 - m.y[i, k])\n\n    def rule_after(m, i, k, j):\n        return m.start[i, j] >= m.start[k, j] + t[(k, j)] - bigM * m.y[i, k]\n\n    model.before = pyo.Constraint(model.Pairs, model.J, rule=rule_before)\n    model.after = pyo.Constraint(model.Pairs, model.J, rule=rule_after)\n\n    # Makespan: completion of last operation on machine 3\n    def rule_makespan(m, i):\n        return m.Cmax >= m.start[i, max(machines)] + t[(i, max(machines))]\n\n    model.makespan = pyo.Constraint(model.I, rule=rule_makespan)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1191,
+      "completion_tokens": 1132
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.753018856048584,
+   "position": 5,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # t[i][j]: processing time of product i on machine j (minutes)\n    # \"t_11 = 5 minutes, t_12 = 4 minutes, t_13 = 3 minutes\"\n    # \"t_21 = 6 minutes, t_22 = 5 minutes, t_23 = 4 minutes\"\n    # \"t_31 = 7 minutes, t_32 = 6 minutes, t_33 = 5 minutes\"\n    \"t\": {\n        (1, 1): 5, (1, 2): 4, (1, 3): 3,\n        (2, 1): 6, (2, 2): 5, (2, 3): 4,\n        (3, 1): 7, (3, 2): 6, (3, 3): 5,\n    },\n    \"products\": [1, 2, 3],   # \"three different products\"\n    \"machines\": [1, 2, 3],   # \"three machine tools\"\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = d[\"products\"]\n    machines = d[\"machines\"]\n    t = d[\"t\"]\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=products, ordered=True)   # products\n    model.J = pyo.Set(initialize=machines, ordered=True)   # machines\n\n    # s[i,j]: start time of product i on machine j (minutes)\n    model.s = pyo.Var(model.I, model.J, within=pyo.NonNegativeReals)\n\n    # Cmax: makespan\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Objective: minimize makespan\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    # Precedence within each product: machine 1 -> 2 -> 3\n    def prec_rule(m, i, j):\n        # product i finishes machine j before starting machine j+1\n        return m.s[i, j + 1] >= m.s[i, j] + t[(i, j)]\n    model.prec = pyo.Constraint(\n        [(i, j) for i in products for j in machines if j < max(machines)],\n        rule=prec_rule,\n    )\n\n    # Fixed order preserved on each machine: product i before product i+1\n    def order_rule(m, i, j):\n        # product i finishes on machine j before product i+1 starts on machine j\n        return m.s[i + 1, j] >= m.s[i, j] + t[(i, j)]\n    model.order = pyo.Constraint(\n        [(i, j) for i in products if i < max(products) for j in machines],\n        rule=order_rule,\n    )\n\n    # Makespan definition: all products complete machine 3\n    def makespan_rule(m, i):\n        last = max(machines)\n        return m.Cmax >= m.s[i, last] + t[(i, last)]\n    model.makespan = pyo.Constraint(model.I, rule=makespan_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1195,
+      "completion_tokens": 1071
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "disallowed_constraint_list",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2104,
+      "completion_tokens": 737
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.656105756759644,
+   "position": 6,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# =============================================================================\n# PROBLEM: Flow-shop scheduling of 3 products on 3 machines (permutation flow shop)\n#\n# Each product i (i = 1,2,3) must be processed first on machine 1, then on\n# machine 2, then on machine 3.  The processing ORDER of the three products is\n# the SAME on every machine (permutation flow shop).  We must decide the common\n# processing sequence and the start times so as to minimise the makespan\n# (completion time of the last product on the last machine).\n#\n# -----------------------------------------------------------------------------\n# DECISION VARIABLES\n#   y[i,k]  in {0,1}   : 1 if product i is scheduled before product k in the\n#                        common sequence (i != k).  Used to linearise the\n#                        disjunctive \"either i before k or k before i\" logic.\n#   s[i,j]  >= 0       : start time of product i on machine j.\n#   Cmax    >= 0       : makespan (completion time of the last operation).\n#\n# OBJECTIVE (minimise)\n#   minimise Cmax\n#\n# CONSTRAINTS\n#   (1) Precedence within a product (source: \"must be processed first on\n#       machine 1, then sequentially on machine 2 and 3\"):\n#           s[i,2] >= s[i,1] + t[i,1]\n#           s[i,3] >= s[i,2] + t[i,2]\n#   (2) No overlap on each machine, same order on all machines (source:\n#       \"The order of processing the three products should remain the same on\n#       each machine\"): for each machine j and each ordered pair (i,k):\n#           s[k,j] >= s[i,j] + t[i,j] - M*(1 - y[i,k])\n#           s[i,j] >= s[k,j] + t[k,j] - M*y[i,k]\n#   (3) Makespan definition (source: minimise total completion time):\n#           Cmax >= s[i,3] + t[i,3]   for all i\n# =============================================================================\n\nDATA = {\n    # Products and machines (1-based labels as in the problem statement)\n    \"P\": [1, 2, 3],\n    \"M\": [1, 2, 3],\n    # Processing times t[i][j] (minutes)\n    \"t\": {\n        (1, 1): 5, (1, 2): 4, (1, 3): 3,\n        (2, 1): 6, (2, 2): 5, (2, 3): 4,\n        (3, 1): 7, (3, 2): 6, (3, 3): 5,\n    },\n    # Big-M: a safe upper bound on any start time difference.\n    # Sum of all processing times is a valid, safe big-M.\n    \"M_big\": 5 + 4 + 3 + 6 + 5 + 4 + 7 + 6 + 5,  # = 45\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    P = d[\"P\"]\n    M = d[\"M\"]\n    t = d[\"t\"]\n    bigM = d[\"M_big\"]\n\n    model = pyo.ConcreteModel()\n\n    # ---- Sets -------------------------------------------------------------\n    model.P = pyo.Set(initialize=P)\n    model.M = pyo.Set(initialize=M)\n    # Ordered pairs of distinct products (for the disjunctive constraints)\n    model.PP = pyo.Set(\n        initialize=[(i, k) for i in P for k in P if i != k],\n        dimen=2,\n    )\n\n    # ---- Variables --------------------------------------------------------\n    # y[i,k] = 1 if product i precedes product k in the common sequence\n    model.y = pyo.Var(model.PP, within=pyo.Binary)\n\n    # s[i,j] = start time of product i on machine j\n    model.s = pyo.Var(model.P, model.M, within=pyo.NonNegativeReals)\n\n    # Cmax = makespan\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n\n    # ---- Objective --------------------------------------------------------\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    # ---- Constraint (1): precedence within each product -------------------\n    def prec_rule(m, i):\n        return m.s[i, 2] >= m.s[i, 1] + t[(i, 1)]\n\n    model.prec12 = pyo.Constraint(model.P, rule=prec_rule)\n\n    def prec_rule2(m, i):\n        return m.s[i, 3] >= m.s[i, 2] + t[(i, 2)]\n\n    model.prec23 = pyo.Constraint(model.P, rule=prec_rule2)\n\n    # ---- Constraint (2): no overlap on each machine, same order -----------\n    # For each machine j and ordered pair (i,k):\n    #   s[k,j] >= s[i,j] + t[i,j] - M*(1 - y[i,k])\n    def nooverlap_a_rule(m, i, k, j):\n        return m.s[k, j] >= m.s[i, j] + t[(i, j)] - bigM * (1 - m.y[i, k])\n\n    model.nooverlap_a = pyo.Constraint(model.PP, model.M, rule=nooverlap_a_rule)\n\n    #   s[i,j] >= s[k,j] + t[k,j] - M*y[i,k]\n    def nooverlap_b_rule(m, i, k, j):\n        return m.s[i, j] >= m.s[k, j] + t[(k, j)] - bigM * m.y[i, k]\n\n    model.nooverlap_b = pyo.Constraint(model.PP, model.M, rule=nooverlap_b_rule)\n\n    # ---- Constraint (3): makespan definition ------------------------------\n    def makespan_rule(m, i):\n        return m.Cmax >= m.s[i, 3] + t[(i, 3)]\n\n    model.makespan = pyo.Constraint(model.P, rule=makespan_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1211,
+      "completion_tokens": 3580
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "missing_constraints",
+      "missing_objective",
+      "missing_variables",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1262,
+      "completion_tokens": 1417
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 32.6616427898407,
+   "position": 7,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [1, 2, 3],\n    \"machines\": [1, 2, 3],\n    \"machines_minus1\": [1, 2],                 # non-last machines\n    \"consecutive_pairs\": [(1, 2), (2, 3)],     # consecutive products on a machine\n    \"proc_time\": {\n        (1, 1): 5, (1, 2): 4, (1, 3): 3,\n        (2, 1): 6, (2, 2): 5, (2, 3): 4,\n        (3, 1): 7, (3, 2): 6, (3, 3): 5,\n    },\n    \"M\": 100,   # big-M cushion (large bound relative to makespan)\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # ---- Sets ----\n    model.I = pyo.Set(initialize=d[\"products\"], ordered=True)          # products/jobs\n    model.J = pyo.Set(initialize=d[\"machines\"], ordered=True)          # machines\n    model.J_nlast = pyo.Set(initialize=d[\"machines_minus1\"], ordered=True)\n    model.I_cons = pyo.Set(initialize=d[\"consecutive_pairs\"], dimen=2)  # consecutive pairs\n\n    # ---- Variables ----\n    # S[i,j] = start time of product i on machine j (minutes), nonnegative\n    model.S = pyo.Var(model.I, model.J, domain=pyo.NonNegativeReals)\n    # Cmax = makespan (completion of final product on final machine)\n    model.Cmax = pyo.Var(domain=pyo.NonNegativeReals, bounds=(0, d[\"M\"]))\n\n    # ---- Objective ----\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    # ---- Constraint 1: first product starts at time 0 on machine 1 ----\n    def rule_first_start(m):\n        return m.S[1, 1] == 0\n    model.c_first_start = pyo.Constraint(rule=rule_first_start)\n\n    # ---- Constraint 2: precedence within a product across machines ----\n    def rule_prod_prec(m, i, j):\n        return m.S[i, j + 1] >= m.S[i, j] + d[\"proc_time\"][(i, j)]\n    model.c_prod_prec = pyo.Constraint(model.I, model.J_nlast, rule=rule_prod_prec)\n\n    # ---- Constraint 3: no-overlap on a machine for consecutive products ----\n    def rule_mach_no_overlap(m, pair, j):\n        i, i_next = pair\n        return m.S[i_next, j] >= m.S[i, j] + d[\"proc_time\"][(i, j)]\n    model.c_mach_no_overlap = pyo.Constraint(model.I_cons, model.J, rule=rule_mach_no_overlap)\n\n    # ---- Constraint 4: makespan bounds the completion of every final operation ----\n    def rule_makespan(m, i):\n        return m.Cmax >= m.S[i, model.J.last()] + d[\"proc_time\"][(i, model.J.last())]\n    model.c_makespan = pyo.Constraint(model.I, rule=rule_makespan)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1197,
+      "completion_tokens": 1238
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2279,
+      "completion_tokens": 787
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2279,
+      "completion_tokens": 786
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "sandbox_construct_error"
+   ],
+   "seconds": 12.938907861709595,
+   "position": 8,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Processing times t[i][j] (minutes), from the problem statement.\n    \"t\": {\n        (1, 1): 5, (1, 2): 4, (1, 3): 3,   # t11=5, t12=4, t13=3\n        (2, 1): 6, (2, 2): 5, (2, 3): 4,   # t21=6, t22=5, t23=4\n        (3, 1): 7, (3, 2): 6, (3, 3): 5,   # t31=7, t32=6, t33=5\n    },\n    \"products\": [1, 2, 3],   # three products, fixed order\n    \"machines\": [1, 2, 3],   # three machine tools, fixed sequence 1->2->3\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = d[\"products\"]\n    machines = d[\"machines\"]\n    t = d[\"t\"]\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=products, ordered=True)   # products\n    model.J = pyo.Set(initialize=machines, ordered=True)   # machines\n\n    # Start time of product i on machine j\n    model.s = pyo.Var(model.I, model.J, within=pyo.NonNegativeReals)\n    # Makespan\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Objective: minimise makespan\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    # Precedence within a product: machine j -> machine j+1\n    def rule_machine_order(m, i, j):\n        if j == machines[-1]:\n            return pyo.Constraint.Skip\n        return m.s[i, j + 1] >= m.s[i, j] + t[(i, j)]\n    model.machine_order = pyo.Constraint(model.I, model.J, rule=rule_machine_order)\n\n    # Fixed product order on each machine: product i -> product i+1\n    def rule_product_order(m, i, j):\n        if i == products[-1]:\n            return pyo.Constraint.Skip\n        return m.s[i + 1, j] >= m.s[i, j] + t[(i, j)]\n    model.product_order = pyo.Constraint(model.I, model.J, rule=rule_product_order)\n\n    # Makespan definition: completion on last machine\n    def rule_makespan(m, i):\n        return m.Cmax >= m.s[i, machines[-1]] + t[(i, machines[-1])]\n    model.makespan = pyo.Constraint(model.I, rule=rule_makespan)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1195,
+      "completion_tokens": 908
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.304379463195801,
+   "position": 9,
+   "recipe_index": 6
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:51:30"
+}

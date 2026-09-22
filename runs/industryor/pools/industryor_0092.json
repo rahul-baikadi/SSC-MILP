@@ -1,0 +1,291 @@
+{
+ "pid": "industryor_0092",
+ "question": "A factory produces three products, I, II, and III. Each product goes through two processing procedures, A and B. The factory has two types of equipment, A1 and A2, to complete procedure A, and three types of equipment, B1, B2, and B3, to complete procedure B. Product I can be processed on either type of A equipment or any type of B equipment. Product II can be processed on any type of A equipment, but when completing procedure B, it can only be processed on B1 equipment. Product III can only be processed on A2 and B2 equipment. Given the processing time, raw material cost, product selling price, available equipment operating time, and equipment cost at full load for each type of equipment, as shown in Table 1-4, determine the optimal production plan to maximize profit.\n\nTable 1-4\n\\begin{tabular}{|c|c|c|c|c|c|}\n\\hline \\multirow{2}{*}{ Equipment } & \\multicolumn{3}{|c|}{ Product } & \\multirow{2}{*}{ Available Equipment Operating Time } & \\multirow{2}{*}{ Equipment Cost at Full Load (in yuan) } \\\\\n\\cline { 2 - 4 } & I & II & III & & \\\\\n\\hline$A_1$ & 5 & 10 & & 6000 & 300 \\\\\n\\hline$A_2$ & 7 & 9 & 12 & 10000 & 321 \\\\\n\\hline$B_1$ & 6 & 8 & & 4000 & 250 \\\\\n\\hline$B_2$ & 4 & & 11 & 7000 & 783 \\\\\n\\hline$B_3$ & 7 & & & 4000 & 200 \\\\\n\\hline Raw Material Cost (in yuan per unit) & 0.25 & 0.35 & 0.50 & & \\\\\n\\hline Unit Price (in yuan per unit) & 1.25 & 2.00 & 2.80 & & \\\\\n\\hline\n\\end{tabular}",
+ "templates": [
+  "Production Planning / Product Mix"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# All numeric / structural constants of the problem live here.\n# ---------------------------------------------------------------------------\nDATA = {\n    # Products\n    \"P\": [\"I\", \"II\", \"III\"],\n    # Equipment names, grouped by procedure\n    \"A_machines\": [\"A1\", \"A2\"],\n    \"B_machines\": [\"B1\", \"B2\", \"B3\"],\n    # Processing time (hours per unit) for each FEASIBLE (equipment, product) pair.\n    # Blank cells in the table are NOT listed -> infeasible combinations.\n    \"T\": {\n        (\"A1\", \"I\"): 5,  (\"A1\", \"II\"): 10,\n        (\"A2\", \"I\"): 7,  (\"A2\", \"II\"): 9,  (\"A2\", \"III\"): 12,\n        (\"B1\", \"I\"): 6,  (\"B1\", \"II\"): 8,\n        (\"B2\", \"I\"): 4,  (\"B2\", \"III\"): 11,\n        (\"B3\", \"I\"): 7,\n    },\n    # Available machine operating time (hours)\n    \"avail\": {\"A1\": 6000, \"A2\": 10000, \"B1\": 4000, \"B2\": 7000, \"B3\": 4000},\n    # Equipment cost at full load (yuan)\n    \"full_cost\": {\"A1\": 300, \"A2\": 321, \"B1\": 250, \"B2\": 783, \"B3\": 200},\n    # Raw material cost (yuan per unit)\n    \"raw\": {\"I\": 0.25, \"II\": 0.35, \"III\": 0.50},\n    # Selling price (yuan per unit)\n    \"price\": {\"I\": 1.25, \"II\": 2.00, \"III\": 2.80},\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ---------------- Sets -------------------------------------------------\n    model.P = pyo.Set(initialize=d[\"P\"], ordered=True)\n    model.A = pyo.Set(initialize=d[\"A_machines\"], ordered=True)\n    model.B = pyo.Set(initialize=d[\"B_machines\"], ordered=True)\n    model.E = pyo.Set(initialize=d[\"A_machines\"] + d[\"B_machines\"], ordered=True)\n\n    # Feasible (equipment, product) pairs from the table\n    feas = list(d[\"T\"].keys())\n    model.FEAS = pyo.Set(initialize=feas, dimen=2)\n    model.FEAS_SET = set(feas)   # pure-python helper for expression building\n\n    # ---------------- Variables ---------------------------------------------\n    # x[e,p] : units of product p processed on equipment e (only feasible pairs)\n    model.x = pyo.Var(model.FEAS, domain=pyo.NonNegativeReals)\n    # y[p] : total units of product p produced\n    model.y = pyo.Var(model.P, domain=pyo.NonNegativeReals)\n\n    # ---------------- Objective (maximize profit) ----------------------------\n    # Revenue  +  raw material  -  equipment cost (prorated to load fraction)\n    def objrule(m):\n        revenue = pyo.quicksum(d[\"price\"][p] * m.y[p] for p in m.P)\n        material = pyo.quicksum(d[\"raw\"][p] * m.y[p] for p in m.P)\n        eq_cost = pyo.quicksum(\n            (d[\"full_cost\"][e] / d[\"avail\"][e])\n            * d[\"T\"][(e, p)]\n            * m.x[(e, p)]\n            for (e, p) in m.FEAS   # m.FEAS iterates as (e,p) tuples\n        )\n        return revenue - material - eq_cost\n\n    model.obj = pyo.Objective(rule=objrule, sense=pyo.maximize)\n\n    # ---------------- Constraints --------------------------------------------\n    # (1) Procedure-A flow balance: what the A machines produce must equal the\n    #     total output of the product.\n    def flowA_rule(m, p):\n        expr = pyo.quicksum(\n            m.x[(a, p)] for a in m.A if (a, p) in m.FEAS_SET\n        )\n        return expr == m.y[p]\n\n    model.flowA = pyo.Constraint(model.P, rule=flowA_rule)\n\n    # (2) Procedure-B flow balance: same total, through B machines.\n    def flowB_rule(m, p):\n        expr = pyo.quicksum(\n            m.x[(b, p)] for b in m.B if (b, p) in m.FEAS_SET\n        )\n        return expr == m.y[p]\n\n    model.flowB = pyo.Constraint(model.P, rule=flowB_rule)\n\n    # (3) Available operating-time limit for each machine.\n    def hour_rule(m, e):\n        used = pyo.quicksum(\n            d[\"T\"][(e, p)] * m.x[(e, p)]\n            for p in m.P if (e, p) in m.FEAS_SET\n        )\n        return used <= d[\"avail\"][e]\n\n    model.hours = pyo.Constraint(model.E, rule=hour_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1254,
+      "completion_tokens": 4080
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 23.05173087120056,
+   "position": 0,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"P\": [\"I\", \"II\", \"III\"],\n    \"A\": [\"A1\", \"A2\"],\n    \"B\": [\"B1\", \"B2\", \"B3\"],\n    # processing time (hours) on A machines: A[a][p]\n    \"timeA\": {\n        (\"A1\", \"I\"): 5, (\"A1\", \"II\"): 10,\n        (\"A2\", \"I\"): 7, (\"A2\", \"II\"): 9, (\"A2\", \"III\"): 12,\n    },\n    # processing time (hours) on B machines: B[b][p]\n    \"timeB\": {\n        (\"B1\", \"I\"): 6, (\"B1\", \"II\"): 8,\n        (\"B2\", \"I\"): 4, (\"B2\", \"III\"): 11,\n        (\"B3\", \"I\"): 7,\n    },\n    # available operating time per machine\n    \"capA\": {\"A1\": 6000, \"A2\": 10000},\n    \"capB\": {\"B1\": 4000, \"B2\": 7000, \"B3\": 4000},\n    # equipment cost at full load (yuan) -> incurred if machine is used\n    \"costA\": {\"A1\": 300, \"A2\": 321},\n    \"costB\": {\"B1\": 250, \"B2\": 783, \"B3\": 200},\n    # raw material cost per unit\n    \"mat\": {\"I\": 0.25, \"II\": 0.35, \"III\": 0.50},\n    # selling price per unit\n    \"price\": {\"I\": 1.25, \"II\": 2.00, \"III\": 2.80},\n    # big-M upper bound on units (loose bound on production)\n    \"M\": 100000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.RangeSet(0, len(d[\"P\"]) - 1)\n    model.A = pyo.RangeSet(0, len(d[\"A\"]) - 1)\n    model.B = pyo.RangeSet(0, len(d[\"B\"]) - 1)\n\n    pid = {i: d[\"P\"][i] for i in model.P}\n    aid = {i: d[\"A\"][i] for i in model.A}\n    bid = {i: d[\"B\"][i] for i in model.B}\n\n    # allowed (machine, product) pairs\n    pairsA = [(i, j) for i in model.A for j in model.P if (aid[i], pid[j]) in d[\"timeA\"]]\n    pairsB = [(i, j) for i in model.B for j in model.P if (bid[i], pid[j]) in d[\"timeB\"]]\n\n    # decision variables\n    model.x = pyo.Var(model.P, within=pyo.NonNegativeIntegers)\n    model.ya = pyo.Var(pairsA, within=pyo.NonNegativeIntegers)\n    model.yb = pyo.Var(pairsB, within=pyo.NonNegativeIntegers)\n    model.za = pyo.Var(model.A, within=pyo.Binary)\n    model.zb = pyo.Var(model.B, within=pyo.Binary)\n\n    M = d[\"M\"]\n\n    # objective: maximize profit = revenue - raw material cost - equipment full-load cost\n    def obj_rule(m):\n        rev = sum(d[\"price\"][pid[j]] * m.x[j] for j in m.P)\n        mat = sum(d[\"mat\"][pid[j]] * m.x[j] for j in m.P)\n        eq = sum(d[\"costA\"][aid[i]] * m.za[i] for i in m.A) + \\\n             sum(d[\"costB\"][bid[i]] * m.zb[i] for i in m.B)\n        return rev - mat - eq\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # flow balance for procedure A: total A-processing equals production of each product\n    def balA_rule(m, j):\n        return sum(m.ya[i, j] for i in m.A if (i, j) in pairsA) == m.x[j]\n    model.balA = pyo.Constraint(model.P, rule=balA_rule)\n\n    # flow balance for procedure B\n    def balB_rule(m, j):\n        return sum(m.yb[i, j] for i in m.B if (i, j) in pairsB) == m.x[j]\n    model.balB = pyo.Constraint(model.P, rule=balB_rule)\n\n    # A machine time capacity: sum time*units <= available\n    def capA_rule(m, i):\n        return sum(d[\"timeA\"][(aid[i], pid[j])] * m.ya[i, j]\n                   for j in m.P if (i, j) in pairsA) <= d[\"capA\"][aid[i]]\n    model.capA = pyo.Constraint(model.A, rule=capA_rule)\n\n    # B machine time capacity\n    def capB_rule(m, i):\n        return sum(d[\"timeB\"][(bid[i], pid[j])] * m.yb[i, j]\n                   for j in m.P if (i, j) in pairsB) <= d[\"capB\"][bid[i]]\n    model.capB = pyo.Constraint(model.B, rule=capB_rule)\n\n    # big-M linking: use of A machine implies binary on\n    def linkA_rule(m, i, j):\n        return m.ya[i, j] <= M * m.za[i]\n    model.linkA = pyo.Constraint(pairsA, rule=linkA_rule)\n\n    # big-M linking: use of B machine implies binary on\n    def linkB_rule(m, i, j):\n        return m.yb[i, j] <= M * m.zb[i]\n    model.linkB = pyo.Constraint(pairsB, rule=linkB_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1264,
+      "completion_tokens": 1830
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.743762254714966,
+   "position": 1,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"I\", \"II\", \"III\"],\n    \"A_equip\": [\"A1\", \"A2\"],\n    \"B_equip\": [\"B1\", \"B2\", \"B3\"],\n    # time (h per unit) product on A equipment (None = not allowed)\n    \"tA\": {\n        (\"A1\", \"I\"): 5, (\"A1\", \"II\"): 10, (\"A1\", \"III\"): None,\n        (\"A2\", \"I\"): 7, (\"A2\", \"II\"): 9,  (\"A2\", \"III\"): 12,\n    },\n    # time (h per unit) product on B equipment\n    \"tB\": {\n        (\"B1\", \"I\"): 6, (\"B1\", \"II\"): 8, (\"B1\", \"III\"): None,\n        (\"B2\", \"I\"): 4, (\"B2\", \"II\"): None, (\"B2\", \"III\"): 11,\n        (\"B3\", \"I\"): 7, (\"B3\", \"II\"): None, (\"B3\", \"III\"): None,\n    },\n    \"availA\": {\"A1\": 6000, \"A2\": 10000},\n    \"availB\": {\"B1\": 4000, \"B2\": 7000, \"B3\": 4000},\n    # full-load equipment cost (yuan) per machine\n    \"costA\": {\"A1\": 300, \"A2\": 321},\n    \"costB\": {\"B1\": 250, \"B2\": 783, \"B3\": 200},\n    \"rawcost\": {\"I\": 0.25, \"II\": 0.35, \"III\": 0.50},\n    \"price\": {\"I\": 1.25, \"II\": 2.00, \"III\": 2.80},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    m.P = pyo.Set(initialize=d[\"products\"], ordered=True)\n    m.A = pyo.Set(initialize=d[\"A_equip\"], ordered=True)\n    m.B = pyo.Set(initialize=d[\"B_equip\"], ordered=True)\n\n    # feasible (product, machine) assignment sets based on None entries\n    def feasible_A_init(m):\n        return [(p, a) for a in d[\"A_equip\"] for p in d[\"products\"]\n                if d[\"tA\"][(a, p)] is not None]\n\n    def feasible_B_init(m):\n        return [(p, b) for b in d[\"B_equip\"] for p in d[\"products\"]\n                if d[\"tB\"][(b, p)] is not None]\n\n    m.PA = pyo.Set(dimen=2, initialize=feasible_A_init)\n    m.PB = pyo.Set(dimen=2, initialize=feasible_B_init)\n\n    # x[p,a] units of product p with procedure A on machine a\n    # y[p,b] units of product p with procedure B on machine b\n    # z[p]   total units of product p produced\n    m.x = pyo.Var(m.PA, domain=pyo.NonNegativeReals)\n    m.y = pyo.Var(m.PB, domain=pyo.NonNegativeReals)\n    m.z = pyo.Var(m.P, domain=pyo.NonNegativeReals)\n\n    # load fraction of each machine (0..1)\n    m.lA = pyo.Var(m.A, domain=pyo.NonNegativeReals, bounds=(0, 1))\n    m.lB = pyo.Var(m.B, domain=pyo.NonNegativeReals, bounds=(0, 1))\n\n    # --- balance: total units of p = sum over A-machines = sum over B-machines\n    def rule_balA(m, p):\n        # sum_a x[p,a] - z[p] == 0  (procedure A done for all units)\n        return sum(m.x[p, a] for a in m.A if (p, a) in m.PA) - m.z[p] == 0\n\n    def rule_balB(m, p):\n        # sum_b y[p,b] - z[p] == 0  (procedure B done for all units)\n        return sum(m.y[p, b] for b in m.B if (p, b) in m.PB) - m.z[p] == 0\n\n    m.balA = pyo.Constraint(m.P, rule=rule_balA)\n    m.balB = pyo.Constraint(m.P, rule=rule_balB)\n\n    # --- A machine capacity and load definition\n    def rule_capA(m, a):\n        # sum_p tA[a,p]*x[p,a] <= availA[a]\n        return sum(d[\"tA\"][(a, p)] * m.x[p, a]\n                   for p in m.P if (p, a) in m.PA) <= d[\"availA\"][a]\n\n    def rule_loadA(m, a):\n        # availA[a]*lA[a] == sum_p tA[a,p]*x[p,a]  (linear load relation)\n        return d[\"availA\"][a] * m.lA[a] == sum(\n            d[\"tA\"][(a, p)] * m.x[p, a]\n            for p in m.P if (p, a) in m.PA)\n\n    m.capA = pyo.Constraint(m.A, rule=rule_capA)\n    m.loadA = pyo.Constraint(m.A, rule=rule_loadA)\n\n    # --- B machine capacity and load definition\n    def rule_capB(m, b):\n        # sum_p tB[b,p]*y[p,b] <= availB[b]\n        return sum(d[\"tB\"][(b, p)] * m.y[p, b]\n                   for p in m.P if (p, b) in m.PB) <= d[\"availB\"][b]\n\n    def rule_loadB(m, b):\n        # availB[b]*lB[b] == sum_p tB[b,p]*y[p,b]\n        return d[\"availB\"][b] * m.lB[b] == sum(\n            d[\"tB\"][(b, p)] * m.y[p, b]\n            for p in m.P if (p, b) in m.PB)\n\n    m.capB = pyo.Constraint(m.B, rule=rule_capB)\n    m.loadB = pyo.Constraint(m.B, rule=rule_loadB)\n\n    # --- objective: maximize revenue - raw material - equipment operating cost\n    # equipment cost at full load * load fraction\n    revenue = sum(d[\"price\"][p] * m.z[p] for p in m.P)\n    material = sum(d[\"rawcost\"][p] * m.z[p] for p in m.P)\n    equip = (sum(d[\"costA\"][a] * m.lA[a] for a in m.A)\n             + sum(d[\"costB\"][b] * m.lB[b] for b in m.B))\n\n    m.obj = pyo.Objective(expr=revenue - material - equip, sense=pyo.maximize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1264,
+      "completion_tokens": 2100
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.565603733062744,
+   "position": 2,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem, with source comments.\n# ---------------------------------------------------------------------------\nDATA = {\n    # Products\n    \"products\": [\"I\", \"II\", \"III\"],\n    # Procedure-A equipment\n    \"A_machines\": [\"A1\", \"A2\"],\n    # Procedure-B equipment\n    \"B_machines\": [\"B1\", \"B2\", \"B3\"],\n\n    # Table 1-4: processing time of product p on A-machine a (blank -> not allowed)\n    # rows A1: I=5, II=10 ; A2: I=7, II=9, III=12\n    \"timeA\": {\n        (\"I\", \"A1\"): 5, (\"II\", \"A1\"): 10,\n        (\"I\", \"A2\"): 7, (\"II\", \"A2\"): 9, (\"III\", \"A2\"): 12,\n    },\n    # Table 1-4: processing time of product p on B-machine b\n    # rows B1: I=6, II=8 ; B2: I=4, III=11 ; B3: I=7\n    \"timeB\": {\n        (\"I\", \"B1\"): 6, (\"II\", \"B1\"): 8,\n        (\"I\", \"B2\"): 4, (\"III\", \"B2\"): 11,\n        (\"I\", \"B3\"): 7,\n    },\n\n    # Available equipment operating time (hours) per machine\n    \"availA\": {\"A1\": 6000, \"A2\": 10000},\n    \"availB\": {\"B1\": 4000, \"B2\": 7000, \"B3\": 4000},\n\n    # Equipment cost at full load (yuan) -- fixed cost charged if machine is used\n    \"costA\": {\"A1\": 300, \"A2\": 321},\n    \"costB\": {\"B1\": 250, \"B2\": 783, \"B3\": 200},\n\n    # Raw material cost (yuan per unit) for I, II, III\n    \"raw\": {\"I\": 0.25, \"II\": 0.35, \"III\": 0.50},\n\n    # Unit selling price (yuan per unit) for I, II, III\n    \"price\": {\"I\": 1.25, \"II\": 2.00, \"III\": 2.80},\n\n    # Big-M for fixed-cost linking (upper bound on units of any product on a machine)\n    \"bigM\": 100000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    products = d[\"products\"]\n    A_machines = d[\"A_machines\"]\n    B_machines = d[\"B_machines\"]\n\n    # Sparse eligible pairs (only pairs present in the time tables)\n    A_pairs = list(d[\"timeA\"].keys())\n    B_pairs = list(d[\"timeB\"].keys())\n\n    # ------------------------------------------------------------------\n    # Sets\n    # ------------------------------------------------------------------\n    m.P = pyo.Set(initialize=products)\n    m.AM = pyo.Set(initialize=A_machines)\n    m.BM = pyo.Set(initialize=B_machines)\n    m.APairs = pyo.Set(initialize=A_pairs, dimen=2)\n    m.BPairs = pyo.Set(initialize=B_pairs, dimen=2)\n\n    # ------------------------------------------------------------------\n    # Variables\n    # ------------------------------------------------------------------\n    # units of product p processed on A-machine a (integer, >= 0)\n    m.x = pyo.Var(m.APairs, within=pyo.NonNegativeIntegers)\n    # units of product p processed on B-machine b (integer, >= 0)\n    m.y = pyo.Var(m.BPairs, within=pyo.NonNegativeIntegers)\n\n    # binary: 1 if A-machine a is used\n    m.uA = pyo.Var(m.AM, within=pyo.Binary)\n    # binary: 1 if B-machine b is used\n    m.uB = pyo.Var(m.BM, within=pyo.Binary)\n\n    # ------------------------------------------------------------------\n    # Objective: maximize profit = revenue - raw material - equipment cost\n    # ------------------------------------------------------------------\n    revenue = sum(d[\"price\"][p] * m.x[p, a] for (p, a) in A_pairs)\n    raw_cost = sum(d[\"raw\"][p] * m.x[p, a] for (p, a) in A_pairs)\n    equip_cost = (\n        sum(d[\"costA\"][a] * m.uA[a] for a in A_machines)\n        + sum(d[\"costB\"][b] * m.uB[b] for b in B_machines)\n    )\n    m.obj = pyo.Objective(expr=revenue - raw_cost - equip_cost, sense=pyo.maximize)\n\n    # ------------------------------------------------------------------\n    # Constraints\n    # ------------------------------------------------------------------\n    # A-machine time capacity\n    def rule_capA(mm, a):\n        return sum(d[\"timeA\"][p, a] * mm.x[p, a]\n                   for (p, a2) in A_pairs if a2 == a) <= d[\"availA\"][a]\n    m.capA = pyo.Constraint(m.AM, rule=rule_capA)\n\n    # B-machine time capacity\n    def rule_capB(mm, b):\n        return sum(d[\"timeB\"][p, b] * mm.y[p, b]\n                   for (p, b2) in B_pairs if b2 == b) <= d[\"availB\"][b]\n    m.capB = pyo.Constraint(m.BM, rule=rule_capB)\n\n    # Flow balance: total A-processing of product p equals total B-processing\n    def rule_flow(mm, p):\n        a_total = sum(mm.x[p, a] for (pp, a) in A_pairs if pp == p)\n        b_total = sum(mm.y[p, b] for (pp, b) in B_pairs if pp == p)\n        return a_total == b_total\n    m.flow = pyo.Constraint(m.P, rule=rule_flow)\n\n    # Fixed-cost linking: x[p,a] <= bigM * uA[a]\n    def rule_linkA(mm, p, a):\n        return mm.x[p, a] <= d[\"bigM\"] * mm.uA[a]\n    m.linkA = pyo.Constraint(m.APairs, rule=rule_linkA)\n\n    # Fixed-cost linking: y[p,b] <= bigM * uB[b]\n    def rule_linkB(mm, p, b):\n        return mm.y[p, b] <= d[\"bigM\"] * mm.uB[b]\n    m.linkB = pyo.Constraint(m.BPairs, rule=rule_linkB)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1252,
+      "completion_tokens": 2066
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.536981344223022,
+   "position": 3,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"I\", \"II\", \"III\"],\n    \"A_equips\": [\"A1\", \"A2\"],\n    \"B_equips\": [\"B1\", \"B2\", \"B3\"],\n    \"routes\": [\n        (\"I\", \"A1\", \"B1\"), (\"I\", \"A1\", \"B2\"), (\"I\", \"A1\", \"B3\"),\n        (\"I\", \"A2\", \"B1\"), (\"I\", \"A2\", \"B2\"), (\"I\", \"A2\", \"B3\"),\n        (\"II\", \"A1\", \"B1\"), (\"II\", \"A2\", \"B1\"),\n        (\"III\", \"A2\", \"B2\"),\n    ],\n    \"time_A\": {\n        (\"A1\", \"I\"): 5, (\"A1\", \"II\"): 10,\n        (\"A2\", \"I\"): 7, (\"A2\", \"II\"): 9, (\"A2\", \"III\"): 12,\n    },\n    \"time_B\": {\n        (\"B1\", \"I\"): 6, (\"B1\", \"II\"): 8,\n        (\"B2\", \"I\"): 4, (\"B2\", \"III\"): 11,\n        (\"B3\", \"I\"): 7,\n    },\n    \"avail_A\": {\"A1\": 6000, \"A2\": 10000},\n    \"avail_B\": {\"B1\": 4000, \"B2\": 7000, \"B3\": 4000},\n    \"cost_A\": {\"A1\": 300, \"A2\": 321},\n    \"cost_B\": {\"B1\": 250, \"B2\": 783, \"B3\": 200},\n    \"price\": {\"I\": 1.25, \"II\": 2.00, \"III\": 2.80},\n    \"rmc\": {\"I\": 0.25, \"II\": 0.35, \"III\": 0.50},\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.P = pyo.Set(initialize=d[\"products\"])\n    model.A = pyo.Set(initialize=d[\"A_equips\"])\n    model.B = pyo.Set(initialize=d[\"B_equips\"])\n\n    routes = list(d[\"routes\"])\n    model.R = pyo.Set(initialize=routes, dim=3)\n\n    # Activation binaries: 1 if equipment is used at all\n    model.ya = pyo.Var(model.A, domain=pyo.Binary)\n    model.yb = pyo.Var(model.B, domain=pyo.Binary)\n\n    # Flow variables per feasible route (product p on A-equip a and B-equip b)\n    model.x = pyo.Var(model.R, domain=pyo.NonNegativeReals)\n\n    # ------------------------------------------------------------------\n    # A-equipment operating-time limit, and charge full-load cost if used\n    # ------------------------------------------------------------------\n    def rule_A_limit(m, e):\n        expr = sum(\n            d[\"time_A\"][(e, p)] * m.x[p, a, b]\n            for (p, a, b) in routes\n            if a == e\n        )\n        return expr - d[\"avail_A\"][e] * m.ya[e] <= 0\n\n    model.cA = pyo.Constraint(model.A, rule=rule_A_limit)\n\n    # ------------------------------------------------------------------\n    # B-equipment operating-time limit, and charge full-load cost if used\n    # ------------------------------------------------------------------\n    def rule_B_limit(m, e):\n        expr = sum(\n            d[\"time_B\"][(e, p)] * m.x[p, a, b]\n            for (p, a, b) in routes\n            if b == e\n        )\n        return expr - d[\"avail_B\"][e] * m.yb[e] <= 0\n\n    model.cB = pyo.Constraint(model.B, rule=rule_B_limit)\n\n    # ------------------------------------------------------------------\n    # Objective: maximize profit = revenue - raw material - equipment costs\n    # ------------------------------------------------------------------\n    margin = {p: d[\"price\"][p] - d[\"rmc\"][p] for p in d[\"products\"]}\n\n    def rule_obj(m):\n        revenue_margin = sum(\n            margin[p] * m.x[p, a, b] for (p, a, b) in routes\n        )\n        cost_A = sum(d[\"cost_A\"][e] * m.ya[e] for e in d[\"A_equips\"])\n        cost_B = sum(d[\"cost_B\"][e] * m.yb[e] for e in d[\"B_equips\"])\n        return revenue_margin - cost_A - cost_B\n\n    model.obj = pyo.Objective(rule=rule_obj, sense=pyo.maximize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1254,
+      "completion_tokens": 4756
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2529,
+      "completion_tokens": 1086
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2454,
+      "completion_tokens": 1086
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "sandbox_construct_error"
+   ],
+   "seconds": 31.785417556762695,
+   "position": 4,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   x[p, e] : amount of product p processed on equipment e (procedure A or B)\n#             p in {I, II, III}, e in {A1, A2, B1, B2, B3}\n#             domain: NonNegativeReals (continuous production quantities)\n#\n# Objective (maximize): total revenue - raw material cost - equipment cost\n#   Revenue = sum over products of unit price * total quantity produced\n#   Raw material cost = sum over products of material cost * total quantity\n#   Equipment cost = full-load cost * (used time / available time) for each\n#                    equipment, i.e. proportional to operating time used.\n#\n# Constraints:\n#   (1) For each equipment, total processing time used <= available time.\n#   (2) For each product, quantity on A equipment must equal quantity on B\n#       equipment (flow balance through the two procedures).\n#   (3) Product-equipment compatibility: only allowed (product, equipment)\n#       pairs may be used (enforced by restricting the variable index set).\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"products\": [\"I\", \"II\", \"III\"],\n    \"equip_A\": [\"A1\", \"A2\"],\n    \"equip_B\": [\"B1\", \"B2\", \"B3\"],\n    \"equip\": [\"A1\", \"A2\", \"B1\", \"B2\", \"B3\"],\n    # processing time (hours per unit) for allowed (product, equipment) pairs\n    \"time\": {\n        (\"I\", \"A1\"): 5, (\"I\", \"A2\"): 7,\n        (\"II\", \"A1\"): 10, (\"II\", \"A2\"): 9,\n        (\"III\", \"A2\"): 12,\n        (\"I\", \"B1\"): 6, (\"I\", \"B2\"): 4, (\"I\", \"B3\"): 7,\n        (\"II\", \"B1\"): 8,\n        (\"III\", \"B2\"): 11,\n    },\n    # available operating time per equipment\n    \"avail\": {\"A1\": 6000, \"A2\": 10000, \"B1\": 4000, \"B2\": 7000, \"B3\": 4000},\n    # equipment cost at full load (yuan)\n    \"full_cost\": {\"A1\": 300, \"A2\": 321, \"B1\": 250, \"B2\": 783, \"B3\": 200},\n    # raw material cost per unit\n    \"mat_cost\": {\"I\": 0.25, \"II\": 0.35, \"III\": 0.50},\n    # unit selling price\n    \"price\": {\"I\": 1.25, \"II\": 2.00, \"III\": 2.80},\n    # allowed (product, equipment) pairs\n    \"allowed\": [\n        (\"I\", \"A1\"), (\"I\", \"A2\"), (\"I\", \"B1\"), (\"I\", \"B2\"), (\"I\", \"B3\"),\n        (\"II\", \"A1\"), (\"II\", \"A2\"), (\"II\", \"B1\"),\n        (\"III\", \"A2\"), (\"III\", \"B2\"),\n    ],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # index set of allowed (product, equipment) pairs\n    model.PE = pyo.Set(initialize=d[\"allowed\"], dimen=2)\n    model.P = pyo.Set(initialize=d[\"products\"])\n    model.E = pyo.Set(initialize=d[\"equip\"])\n    model.EA = pyo.Set(initialize=d[\"equip_A\"])\n    model.EB = pyo.Set(initialize=d[\"equip_B\"])\n\n    # decision variable: quantity of product p on equipment e\n    model.x = pyo.Var(model.PE, domain=pyo.NonNegativeReals)\n\n    # (1) equipment capacity: total processing time <= available time\n    def cap_rule(m, e):\n        return sum(d[\"time\"][(p, e)] * m.x[p, e]\n                   for (p, ee) in m.PE if ee == e) <= d[\"avail\"][e]\n    model.cap = pyo.Constraint(model.E, rule=cap_rule)\n\n    # (2) flow balance: quantity on A equipment == quantity on B equipment\n    def bal_rule(m, p):\n        a_sum = sum(m.x[p, e] for e in m.EA if (p, e) in m.PE)\n        b_sum = sum(m.x[p, e] for e in m.EB if (p, e) in m.PE)\n        return a_sum == b_sum\n    model.bal = pyo.Constraint(model.P, rule=bal_rule)\n\n    # objective: maximize profit\n    def obj_rule(m):\n        revenue = sum(d[\"price\"][p] * m.x[p, e] for (p, e) in m.PE)\n        material = sum(d[\"mat_cost\"][p] * m.x[p, e] for (p, e) in m.PE)\n        equip_cost = sum(\n            d[\"full_cost\"][e] * d[\"time\"][(p, e)] * m.x[p, e] / d[\"avail\"][e]\n            for (p, e) in m.PE\n        )\n        return revenue - material - equip_cost\n    model.obj = pyo.Objective(expr=obj_rule, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1268,
+      "completion_tokens": 3196
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1208,
+      "completion_tokens": 1249
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 30.87366771697998,
+   "position": 5,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"I\", \"II\", \"III\"],\n    \"A_equip\": [\"A1\", \"A2\"],\n    \"B_equip\": [\"B1\", \"B2\", \"B3\"],\n    # processing time (per unit) on A equipment; None = not allowed\n    \"time_A\": {\n        (\"I\", \"A1\"): 5, (\"I\", \"A2\"): 7,\n        (\"II\", \"A1\"): 10, (\"II\", \"A2\"): 9,\n        (\"III\", \"A1\"): None, (\"III\", \"A2\"): 12,\n    },\n    # processing time (per unit) on B equipment; None = not allowed\n    \"time_B\": {\n        (\"I\", \"B1\"): 6, (\"I\", \"B2\"): 4, (\"I\", \"B3\"): 7,\n        (\"II\", \"B1\"): 8, (\"II\", \"B2\"): None, (\"II\", \"B3\"): None,\n        (\"III\", \"B1\"): None, (\"III\", \"B2\"): 11, (\"III\", \"B3\"): None,\n    },\n    \"avail\": {\"A1\": 6000, \"A2\": 10000, \"B1\": 4000, \"B2\": 7000, \"B3\": 4000},\n    \"full_load_cost\": {\"A1\": 300, \"A2\": 321, \"B1\": 250, \"B2\": 783, \"B3\": 200},\n    \"raw_cost\": {\"I\": 0.25, \"II\": 0.35, \"III\": 0.50},\n    \"price\": {\"I\": 1.25, \"II\": 2.00, \"III\": 2.80},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    products = d[\"products\"]\n    a_equip = d[\"A_equip\"]\n    b_equip = d[\"B_equip\"]\n\n    # feasible (product, equipment) pairs\n    a_pairs = [(p, e) for p in products for e in a_equip\n               if d[\"time_A\"].get((p, e)) is not None]\n    b_pairs = [(p, e) for p in products for e in b_equip\n               if d[\"time_B\"].get((p, e)) is not None]\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=products)\n    model.AE = pyo.Set(initialize=a_equip)\n    model.BE = pyo.Set(initialize=b_equip)\n    model.APairs = pyo.Set(initialize=a_pairs, dimen=2)\n    model.BPairs = pyo.Set(initialize=b_pairs, dimen=2)\n\n    # x[p,e]: units of product p processed on A-equipment e\n    model.x = pyo.Var(model.APairs, domain=pyo.NonNegativeIntegers)\n    # y[p,e]: units of product p processed on B-equipment e\n    model.y = pyo.Var(model.BPairs, domain=pyo.NonNegativeIntegers)\n\n    # ---- Objective: maximize profit ----\n    def revenue_expr(m):\n        return sum(d[\"price\"][p] * m.x[p, e] for (p, e) in a_pairs)\n\n    def raw_cost_expr(m):\n        return sum(d[\"raw_cost\"][p] * m.x[p, e] for (p, e) in a_pairs)\n\n    def equip_cost_expr(m):\n        cost = 0\n        for (p, e) in a_pairs:\n            rate = d[\"full_load_cost\"][e] / d[\"avail\"][e]\n            cost += rate * d[\"time_A\"][(p, e)] * m.x[p, e]\n        for (p, e) in b_pairs:\n            rate = d[\"full_load_cost\"][e] / d[\"avail\"][e]\n            cost += rate * d[\"time_B\"][(p, e)] * m.y[p, e]\n        return cost\n\n    model.obj = pyo.Objective(\n        expr=revenue_expr(model) - raw_cost_expr(model) - equip_cost_expr(model),\n        sense=pyo.maximize,\n    )\n\n    # ---- A-equipment capacity constraints ----\n    def rule_A_cap(m, e):\n        return sum(d[\"time_A\"][(p, e)] * m.x[p, e]\n                   for (p, ee) in a_pairs if ee == e) <= d[\"avail\"][e]\n\n    model.A_cap = pyo.Constraint(model.AE, rule=rule_A_cap)\n\n    # ---- B-equipment capacity constraints ----\n    def rule_B_cap(m, e):\n        return sum(d[\"time_B\"][(p, e)] * m.y[p, e]\n                   for (p, ee) in b_pairs if ee == e) <= d[\"avail\"][e]\n\n    model.B_cap = pyo.Constraint(model.BE, rule=rule_B_cap)\n\n    # ---- Flow balance: each unit passes through A then B ----\n    def rule_balance(m, p):\n        a_total = sum(m.x[p, e] for (pp, e) in a_pairs if pp == p)\n        b_total = sum(m.y[p, e] for (pp, e) in b_pairs if pp == p)\n        return a_total == b_total\n\n    model.balance = pyo.Constraint(model.P, rule=rule_balance)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1248,
+      "completion_tokens": 1693
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.064510345458984,
+   "position": 6,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem statement (Table 1-4)\n# ---------------------------------------------------------------------------\nDATA = {\n    # Products\n    \"products\": [\"I\", \"II\", \"III\"],\n    # A-equipment and B-equipment types\n    \"A_machines\": [\"A1\", \"A2\"],\n    \"B_machines\": [\"B1\", \"B2\", \"B3\"],\n\n    # Allowed (product, A-machine) pairs -- from product/equipment rules\n    # Product I: either A equipment; II: any A; III: only A2\n    \"A_pairs\": [(\"I\", \"A1\"), (\"I\", \"A2\"),\n                (\"II\", \"A1\"), (\"II\", \"A2\"),\n                (\"III\", \"A2\")],\n\n    # Allowed (product, B-machine) pairs\n    # Product I: any B; II: only B1; III: only B2\n    \"B_pairs\": [(\"I\", \"B1\"), (\"I\", \"B2\"), (\"I\", \"B3\"),\n                (\"II\", \"B1\"),\n                (\"III\", \"B2\")],\n\n    # Processing times (Table 1-4). Blank entries are not allowed pairs.\n    # Row A1: I=5, II=10\n    \"timeA\": {\n        (\"I\", \"A1\"): 5, (\"II\", \"A1\"): 10,\n        # Row A2: I=7, II=9, III=12\n        (\"I\", \"A2\"): 7, (\"II\", \"A2\"): 9, (\"III\", \"A2\"): 12,\n    },\n    # Row B1: I=6, II=8\n    # Row B2: I=4, III=11\n    # Row B3: I=7\n    \"timeB\": {\n        (\"I\", \"B1\"): 6, (\"II\", \"B1\"): 8,\n        (\"I\", \"B2\"): 4, (\"III\", \"B2\"): 11,\n        (\"I\", \"B3\"): 7,\n    },\n\n    # Available equipment operating time (Table 1-4)\n    \"availA\": {\"A1\": 6000, \"A2\": 10000},\n    \"availB\": {\"B1\": 4000, \"B2\": 7000, \"B3\": 4000},\n\n    # Equipment cost at full load (yuan) -- charged when equipment is used\n    \"equip_costA\": {\"A1\": 300, \"A2\": 321},\n    \"equip_costB\": {\"B1\": 250, \"B2\": 783, \"B3\": 200},\n\n    # Raw material cost per unit (yuan)\n    \"mat_cost\": {\"I\": 0.25, \"II\": 0.35, \"III\": 0.50},\n\n    # Unit price (yuan per unit)\n    \"price\": {\"I\": 1.25, \"II\": 2.00, \"III\": 2.80},\n\n    # Big-M: an upper bound on any single product's quantity on one machine.\n    # Bounded by the largest available operating time (a product needs >=1 time unit).\n    \"bigM\": 10000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ------------------------- Sets -------------------------\n    model.P = pyo.Set(initialize=d[\"products\"])\n    model.AM = pyo.Set(initialize=d[\"A_machines\"])\n    model.BM = pyo.Set(initialize=d[\"B_machines\"])\n    model.APairs = pyo.Set(initialize=d[\"A_pairs\"], dimen=2)\n    model.BPairs = pyo.Set(initialize=d[\"B_pairs\"], dimen=2)\n\n    # ------------------------ Variables ---------------------\n    # Amount of product p processed through procedure A on A-machine m\n    model.x = pyo.Var(model.APairs, domain=pyo.NonNegativeReals)\n    # Amount of product p processed through procedure B on B-machine m\n    model.y = pyo.Var(model.BPairs, domain=pyo.NonNegativeReals)\n    # Production quantity per product\n    model.q = pyo.Var(model.P, domain=pyo.NonNegativeReals)\n    # Fixed-charge use indicators\n    model.uA = pyo.Var(model.AM, domain=pyo.Binary)\n    model.uB = pyo.Var(model.BM, domain=pyo.Binary)\n\n    # ------------------------ Objective ---------------------\n    # Maximize revenue - raw material cost - equipment fixed cost\n    def obj_rule(m):\n        revenue = sum(d[\"price\"][p] * m.q[p] for p in m.P)\n        matcost = sum(d[\"mat_cost\"][p] * m.q[p] for p in m.P)\n        equipcost = (sum(d[\"equip_costA\"][a] * m.uA[a] for a in m.AM)\n                     + sum(d[\"equip_costB\"][b] * m.uB[b] for b in m.BM))\n        return revenue - matcost - equipcost\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # ----------------------- Constraints --------------------\n\n    # A-machine time capacity\n    def capA_rule(m, a):\n        return sum(d[\"timeA\"][(p, a)] * m.x[p, a]\n                   for (p, aa) in m.APairs if aa == a) <= d[\"availA\"][a]\n    model.capA = pyo.Constraint(model.AM, rule=capA_rule)\n\n    # B-machine time capacity\n    def capB_rule(m, b):\n        return sum(d[\"timeB\"][(p, b)] * m.y[p, b]\n                   for (p, bb) in m.BPairs if bb == b) <= d[\"availB\"][b]\n    model.capB = pyo.Constraint(model.BM, rule=capB_rule)\n\n    # Flow balance: total A-processing of product p equals production q[p]\n    def balA_rule(m, p):\n        return sum(m.x[p, a] for (pp, a) in m.APairs if pp == p) == m.q[p]\n    model.balA = pyo.Constraint(model.P, rule=balA_rule)\n\n    # Flow balance: total B-processing of product p equals production q[p]\n    def balB_rule(m, p):\n        return sum(m.y[p, b] for (pp, b) in m.BPairs if pp == p) == m.q[p]\n    model.balB = pyo.Constraint(model.P, rule=balB_rule)\n\n    # Fixed-charge linking for A-machines\n    def linkA_rule(m, p, a):\n        return m.x[p, a] <= d[\"bigM\"] * m.uA[a]\n    model.linkA = pyo.Constraint(model.APairs, rule=linkA_rule)\n\n    # Fixed-charge linking for B-machines\n    def linkB_rule(m, p, b):\n        return m.y[p, b] <= d[\"bigM\"] * m.uB[b]\n    model.linkB = pyo.Constraint(model.BPairs, rule=linkB_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1252,
+      "completion_tokens": 2150
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.474725484848022,
+   "position": 7,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"I\", \"II\", \"III\"],\n    \"A_equip\": [\"A1\", \"A2\"],\n    \"B_equip\": [\"B1\", \"B2\", \"B3\"],\n    # processing time (minutes per unit) on A-equipment; None = not allowed\n    \"timeA\": {\n        (\"I\", \"A1\"): 5, (\"I\", \"A2\"): 7,\n        (\"II\", \"A1\"): 10, (\"II\", \"A2\"): 9,\n        (\"III\", \"A2\"): 12,\n    },\n    # processing time on B-equipment; None = not allowed\n    \"timeB\": {\n        (\"I\", \"B1\"): 6, (\"I\", \"B2\"): 4, (\"I\", \"B3\"): 7,\n        (\"II\", \"B1\"): 8,\n        (\"III\", \"B2\"): 11,\n    },\n    \"availA\": {\"A1\": 6000, \"A2\": 10000},\n    \"availB\": {\"B1\": 4000, \"B2\": 7000, \"B3\": 4000},\n    \"costA\": {\"A1\": 300, \"A2\": 321},\n    \"costB\": {\"B1\": 250, \"B2\": 783, \"B3\": 200},\n    \"matcost\": {\"I\": 0.25, \"II\": 0.35, \"III\": 0.50},\n    \"price\": {\"I\": 1.25, \"II\": 2.00, \"III\": 2.80},\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    products = d[\"products\"]\n    A_equip = d[\"A_equip\"]\n    B_equip = d[\"B_equip\"]\n\n    # feasible pairs\n    pairsA = list(d[\"timeA\"].keys())\n    pairsB = list(d[\"timeB\"].keys())\n\n    m = pyo.ConcreteModel()\n\n    m.P = pyo.Set(initialize=products)\n    m.A = pyo.Set(initialize=A_equip)\n    m.B = pyo.Set(initialize=B_equip)\n    m.PA = pyo.Set(initialize=pairsA, dimen=2)\n    m.PB = pyo.Set(initialize=pairsB, dimen=2)\n\n    # production quantity of each product\n    m.production = pyo.Var(m.P, within=pyo.NonNegativeReals)\n\n    # amount routed to each feasible (product, equipment) pair\n    m.useA = pyo.Var(m.PA, within=pyo.NonNegativeReals)\n    m.useB = pyo.Var(m.PB, within=pyo.NonNegativeReals)\n\n    # fraction of full load on each equipment (0..1)\n    m.loadA = pyo.Var(m.A, within=pyo.NonNegativeReals, bounds=(0, 1))\n    m.loadB = pyo.Var(m.B, within=pyo.NonNegativeReals, bounds=(0, 1))\n\n    # objective: maximize profit\n    def obj_rule(mm):\n        revenue = sum(d[\"price\"][p] * mm.production[p] for p in mm.P)\n        material = sum(d[\"matcost\"][p] * mm.production[p] for p in mm.P)\n        equip = sum(d[\"costA\"][a] * mm.loadA[a] for a in mm.A) \\\n              + sum(d[\"costB\"][b] * mm.loadB[b] for b in mm.B)\n        return revenue - material - equip\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # flow balance for procedure A\n    def balanceA_rule(mm, p):\n        return sum(mm.useA[p, a] for a in mm.A if (p, a) in pairsA) == mm.production[p]\n    m.balanceA = pyo.Constraint(m.P, rule=balanceA_rule)\n\n    # flow balance for procedure B\n    def balanceB_rule(mm, p):\n        return sum(mm.useB[p, b] for b in mm.B if (p, b) in pairsB) == mm.production[p]\n    m.balanceB = pyo.Constraint(m.P, rule=balanceB_rule)\n\n    # A-equipment capacity (load-scaled)\n    def capA_rule(mm, a):\n        return sum(d[\"timeA\"][p, a] * mm.useA[p, a]\n                   for p in mm.P if (p, a) in pairsA) \\\n               <= d[\"availA\"][a] * mm.loadA[a]\n    m.capA = pyo.Constraint(m.A, rule=capA_rule)\n\n    # B-equipment capacity (load-scaled)\n    def capB_rule(mm, b):\n        return sum(d[\"timeB\"][p, b] * mm.useB[p, b]\n                   for p in mm.P if (p, b) in pairsB) \\\n               <= d[\"availB\"][b] * mm.loadB[b]\n    m.capB = pyo.Constraint(m.B, rule=capB_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1248,
+      "completion_tokens": 1742
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.37374472618103,
+   "position": 8,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Structured formulation\n# ---------------------------------------------------------------------------\n# Decision variables\n#   x[p]  : number of units of product p produced (p in {I, II, III})\n#           domain: NonNegativeReals (continuous production quantities)\n#\n# Objective (maximize profit)\n#   profit = sum_p (price_p - material_cost_p) * x[p]\n#          - sum_e (equipment_cost_e / available_time_e) * (time used on e)\n#   Since equipment cost is charged \"at full load\", we model the cost of\n#   operating equipment e as proportional to the fraction of its available\n#   time that is used, i.e. cost_e * (used_time_e / available_time_e).\n#   used_time_e = sum_p time[e,p] * x[p]\n#\n# Constraints\n#   (1) For each equipment e: sum_p time[e,p] * x[p] <= available_time_e\n#       (equipment operating time cannot exceed availability)\n#   (2) Routing restrictions are encoded by setting time[e,p] = 0 for\n#       infeasible (equipment, product) pairs, so those products never\n#       consume that equipment.\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"products\": [\"I\", \"II\", \"III\"],\n    \"equipment\": [\"A1\", \"A2\", \"B1\", \"B2\", \"B3\"],\n    # processing time (hours per unit) for each (equipment, product) pair;\n    # 0 means the product cannot be processed on that equipment\n    \"time\": {\n        (\"A1\", \"I\"): 5,   (\"A1\", \"II\"): 10, (\"A1\", \"III\"): 0,\n        (\"A2\", \"I\"): 7,   (\"A2\", \"II\"): 9,  (\"A2\", \"III\"): 12,\n        (\"B1\", \"I\"): 6,   (\"B1\", \"II\"): 8,  (\"B1\", \"III\"): 0,\n        (\"B2\", \"I\"): 4,   (\"B2\", \"II\"): 0,  (\"B2\", \"III\"): 11,\n        (\"B3\", \"I\"): 7,   (\"B3\", \"II\"): 0,  (\"B3\", \"III\"): 0,\n    },\n    # available operating time (hours) for each equipment\n    \"available_time\": {\n        \"A1\": 6000, \"A2\": 10000, \"B1\": 4000, \"B2\": 7000, \"B3\": 4000,\n    },\n    # equipment cost at full load (yuan)\n    \"equipment_cost\": {\n        \"A1\": 300, \"A2\": 321, \"B1\": 250, \"B2\": 783, \"B3\": 200,\n    },\n    # raw material cost (yuan per unit)\n    \"material_cost\": {\"I\": 0.25, \"II\": 0.35, \"III\": 0.50},\n    # unit selling price (yuan per unit)\n    \"price\": {\"I\": 1.25, \"II\": 2.00, \"III\": 2.80},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=d[\"products\"])\n    model.E = pyo.Set(initialize=d[\"equipment\"])\n\n    # x[p] : units of product p produced\n    model.x = pyo.Var(model.P, within=pyo.NonNegativeReals)\n\n    # time_used[e] : total operating time consumed on equipment e\n    model.time_used = pyo.Var(model.E, within=pyo.NonNegativeReals)\n\n    # (1) equipment operating time cannot exceed availability\n    def avail_rule(m, e):\n        return m.time_used[e] <= d[\"available_time\"][e]\n    model.avail = pyo.Constraint(model.E, rule=avail_rule)\n\n    # definition of time_used[e] from production quantities\n    def time_def_rule(m, e):\n        return m.time_used[e] == sum(\n            d[\"time\"][(e, p)] * m.x[p] for p in m.P\n        )\n    model.time_def = pyo.Constraint(model.E, rule=time_def_rule)\n\n    # objective: maximize revenue - material cost - equipment cost\n    def obj_rule(m):\n        revenue = sum(d[\"price\"][p] * m.x[p] for p in m.P)\n        material = sum(d[\"material_cost\"][p] * m.x[p] for p in m.P)\n        equip_cost = sum(\n            (d[\"equipment_cost\"][e] / d[\"available_time\"][e]) * m.time_used[e]\n            for e in m.E\n        )\n        return revenue - material - equip_cost\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1268,
+      "completion_tokens": 2069
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3258,
+      "completion_tokens": 1133
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 22.168153524398804,
+   "position": 9,
+   "recipe_index": 4
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T10:39:45"
+}

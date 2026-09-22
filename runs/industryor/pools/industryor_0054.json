@@ -1,0 +1,317 @@
+{
+ "pid": "industryor_0054",
+ "question": "Jiali Company needs to recruit personnel from three different majors to work in the branch offices located in Donghai City and Nanjiang City. The demand for personnel from different majors in these two branch offices is shown in Table 4-3. After statistical analysis of the applicants, the company divides them into 6 categories, and Table 4-4 lists the majors that each category of personnel is competent in, the majors they prefer to prioritize, and the cities they prefer to work in. The company considers personnel arrangements based on the following three priorities:\n$p_1$: All three types of required personnel are satisfied;\n$p_2$: Among the recruited personnel, 8000 people satisfy their preferred majors;\n$p_3$: Among the recruited personnel, 8000 people satisfy their preferred cities.\nBased on this, establish a mathematical model for goal programming.\n\nTable 4-3\n\\begin{tabular}{c|c|c}\n\\hline Branch Location & Major & Demand \\\\\n\\hline \\multirow{3}{*}{Donghai City} & 1 & 1000 \\\\\n& 2 & 2000 \\\\\n\\hline \\multirow{4}{*}{Nanjiang City} & 3 & 1500 \\\\\n& 1 & 2000 \\\\\n& 2 & 1000 \\\\\n& 3 & 1000 \\\\\n\\hline\n\\end{tabular}\n\nTable 4-4\n\\begin{tabular}{c|c|c|c|c}\n\\hline Category & Personnel & Competent Majors & Preferred Majors & Preferred Cities \\\\\n\\hline 1 & 1500 & 1,2 & 1 & Donghai \\\\\n2 & 1500 & 2,3 & 2 & Donghai \\\\\n3 & 1500 & 1,3 & 1 & Nanjiang \\\\\n4 & 1500 & 1,3 & 3 & Nanjiang \\\\\n5 & 1500 & 2,3 & 3 & Donghai \\\\\n6 & 1500 & 3 & 3 & Nanjiang \\\\\n\\hline\n\\end{tabular}",
+ "templates": [
+  "Vehicle Routing / TSP",
+  "Facility Location",
+  "Transportation"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Locations: 1 = Donghai, 2 = Nanjiang ; Majors: 1, 2, 3\n    \"loc_names\": {1: \"Donghai\", 2: \"Nanjiang\"},\n    \"major_names\": {1: \"Major1\", 2: \"Major2\", 3: \"Major3\"},\n\n    # Table 4-3: demand[(location, major)] = required people\n    \"demand\": {\n        (1, 1): 1000, (1, 2): 2000, (1, 3): 0,\n        (2, 1): 2000, (2, 2): 1000, (2, 3): 1000,\n    },\n\n    # Table 4-4: category supply, competent majors, preferred major, preferred city\n    \"categories\": [1, 2, 3, 4, 5, 6],\n    \"supply\": {1: 1500, 2: 1500, 3: 1500, 4: 1500, 5: 1500, 6: 1500},\n    \"competent\": {\n        1: [1, 2],\n        2: [2, 3],\n        3: [1, 3],\n        4: [1, 3],\n        5: [2, 3],\n        6: [3],\n    },\n    \"pref_major\": {1: 1, 2: 2, 3: 1, 4: 3, 5: 3, 6: 3},\n    \"pref_city\": {1: 1, 2: 1, 3: 2, 4: 2, 5: 1, 6: 2},\n\n    # Goal targets\n    \"target_p2\": 8000,\n    \"target_p3\": 8000,\n\n    # Priority weights: p1 >> p2 >> p3\n    \"W1\": 1_000_000,\n    \"W2\": 1_000,\n    \"W3\": 1,\n\n    # Big-M for competence zeroing (max possible assignment per cell)\n    \"bigM\": 1500 * 6,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ---------------- Sets ----------------\n    model.C = pyo.Set(initialize=d[\"categories\"], ordered=True)   # categories\n    model.M = pyo.Set(initialize=[1, 2, 3], ordered=True)        # majors\n    model.L = pyo.Set(initialize=[1, 2], ordered=True)           # locations\n\n    # Allowed (category, location, major) triples where category is competent in major\n    def allowed_init(m):\n        triples = []\n        for c in d[\"categories\"]:\n            for l in d[\"loc_names\"]:\n                for maj in d[\"competent\"][c]:\n                    triples.append((c, l, maj))\n        return triples\n    model.A = pyo.Set(dimen=3, initialize=allowed_init)\n\n    # ---------------- Variables ----------------\n    # x[c,l,m] = people of category c placed at location l in major m\n    def x_bounds(m, c, l, maj):\n        return (0, d[\"supply\"][c])\n    model.x = pyo.Var(model.A, domain=pyo.NonNegativeIntegers, bounds=x_bounds)\n\n    # Deviation variables for goal programming\n    # p1: exact demand match -> penalise both shortfall and excess\n    model.d1m = pyo.Var(domain=pyo.NonNegativeReals)\n    model.d1p = pyo.Var(domain=pyo.NonNegativeReals)\n    # p2: at least 8000 satisfy preferred major -> only shortfall matters\n    model.d2m = pyo.Var(domain=pyo.NonNegativeReals)\n    model.d2p = pyo.Var(domain=pyo.NonNegativeReals)\n    # p3: at least 8000 satisfy preferred city -> only shortfall matters\n    model.d3m = pyo.Var(domain=pyo.NonNegativeReals)\n    model.d3p = pyo.Var(domain=pyo.NonNegativeReals)\n\n    # ---------------- Objective ----------------\n    # Minimise weighted sum of deviations, p1 highest priority.\n    model.obj = pyo.Objective(\n        expr=(\n            d[\"W1\"] * (model.d1m + model.d1p)\n            + d[\"W2\"] * model.d2m\n            + d[\"W3\"] * model.d3m\n        ),\n        sense=pyo.minimize,\n    )\n\n    # ---------------- Constraints ----------------\n\n    # Category supply: total placed from each category <= available (1500)\n    def supply_rule(m, c):\n        return sum(m.x[c, l, maj] for (cc, l, maj) in m.A if cc == c) <= d[\"supply\"][c]\n    model.supply_con = pyo.Constraint(model.C, rule=supply_rule)\n\n    # p1: demand satisfaction at each (location, major)\n    # sum_c x[c,l,maj] + d1m - d1p = demand[(l,maj)]\n    def demand_rule(m, l, maj):\n        lhs = sum(m.x[c, l, maj] for (cc, ll, mm) in m.A\n                  if ll == l and mm == maj for c in [cc])\n        return lhs + m.d1m - m.d1p == d[\"demand\"][(l, maj)]\n    model.demand_con = pyo.Constraint(model.L, model.M, rule=demand_rule)\n\n    # p2: number of people assigned to their preferred major + d2m - d2p = 8000\n    def pref_major_rule(m):\n        total = 0\n        for (c, l, maj) in m.A:\n            if maj == d[\"pref_major\"][c]:\n                total = total + m.x[c, l, maj]\n        return total + m.d2m - m.d2p == d[\"target_p2\"]\n    model.pref_major_con = pyo.Constraint(rule=pref_major_rule)\n\n    # p3: number of people assigned to their preferred city + d3m - d3p = 8000\n    def pref_city_rule(m):\n        total = 0\n        for (c, l, maj) in m.A:\n            if l == d[\"pref_city\"][c]:\n                total = total + m.x[c, l, maj]\n        return total + m.d3m - m.d3p == d[\"target_p3\"]\n    model.pref_city_con = pyo.Constraint(rule=pref_city_rule)\n\n    return model\n\n\nif __name__ == \"__main__\":\n    m = build_model()\n    m.pprint()\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1639,
+      "completion_tokens": 2313
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 9.592318058013916,
+   "position": 0,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# =============================================================================\n# GOAL PROGRAMMING MODEL \u2014 Jiali Company personnel recruitment\n# =============================================================================\n#\n# DECISION VARIABLES\n#   x[c]  : number of people recruited from category c            (c = 1..6)\n#           domain: NonNegativeIntegers, bounds (0, size_c)\n#   y[c]  : number of people from category c assigned to their\n#           PREFERRED major                                      (c = 1..6)\n#           domain: NonNegativeIntegers, bounds (0, size_c)\n#   z[c]  : number of people from category c assigned to their\n#           PREFERRED city                                       (c = 1..6)\n#           domain: NonNegativeIntegers, bounds (0, size_c)\n#\n#   d1[k] : shortfall (under-achievement) of major-demand goal k   (k = 1..6)\n#   d2    : shortfall of the \"8000 preferred-major\" goal\n#   d3    : shortfall of the \"8000 preferred-city\" goal\n#           domain: NonNegativeReals\n#\n# OBJECTIVE (lexicographic goal programming, weighted sum with\n#            pre-emptive weights P1 >> P2 >> P3)\n#   minimise  P1 * sum_k d1[k]  +  P2 * d2  +  P3 * d3\n#\n# CONSTRAINTS\n#   (1) Major-demand goals (Table 4-3), one per (city, major) pair:\n#         Donghai major 1 : x1 + x3 + x4 + d1[1] >= 1000\n#         Donghai major 2 : x1 + x2 + x5 + d1[2] >= 2000\n#         Donghai major 3 : x2 + x4 + x5 + x6 + d1[3] >= 1500\n#         Nanjiang major 1: x3 + x4 + d1[4] >= 2000\n#         Nanjiang major 2: x2 + x5 + d1[5] >= 1000\n#         Nanjiang major 3: x2 + x4 + x5 + x6 + d1[6] >= 1000\n#   (2) Preferred-major goal:  sum_c y[c] + d2 >= 8000\n#   (3) Preferred-city  goal:  sum_c z[c] + d3 >= 8000\n#   (4) Linking: y[c] <= x[c],  z[c] <= x[c]\n#   (5) Competence: y[c] can only be positive if the preferred major\n#       is among the competent majors (enforced by data).\n# =============================================================================\n\nDATA = {\n    # Table 4-3 : demand per (city, major)\n    \"demand\": {\n        (\"Donghai\", 1): 1000,\n        (\"Donghai\", 2): 2000,\n        (\"Donghai\", 3): 1500,\n        (\"Nanjiang\", 1): 2000,\n        (\"Nanjiang\", 2): 1000,\n        (\"Nanjiang\", 3): 1000,\n    },\n    # Ordered list of (city, major) goal pairs -> index k = 1..6\n    \"goal_pairs\": [\n        (\"Donghai\", 1),\n        (\"Donghai\", 2),\n        (\"Donghai\", 3),\n        (\"Nanjiang\", 1),\n        (\"Nanjiang\", 2),\n        (\"Nanjiang\", 3),\n    ],\n    # Table 4-4 : category data\n    #   size, competent majors, preferred major, preferred city\n    \"categories\": {\n        1: {\"size\": 1500, \"competent\": (1, 2), \"pref_major\": 1, \"pref_city\": \"Donghai\"},\n        2: {\"size\": 1500, \"competent\": (2, 3), \"pref_major\": 2, \"pref_city\": \"Donghai\"},\n        3: {\"size\": 1500, \"competent\": (1, 3), \"pref_major\": 1, \"pref_city\": \"Nanjiang\"},\n        4: {\"size\": 1500, \"competent\": (1, 3), \"pref_major\": 3, \"pref_city\": \"Nanjiang\"},\n        5: {\"size\": 1500, \"competent\": (2, 3), \"pref_major\": 3, \"pref_city\": \"Donghai\"},\n        6: {\"size\": 1500, \"competent\": (3,), \"pref_major\": 3, \"pref_city\": \"Nanjiang\"},\n    },\n    # Goal targets\n    \"pref_major_target\": 8000,\n    \"pref_city_target\": 8000,\n    # Pre-emptive priority weights (P1 >> P2 >> P3)\n    \"P1\": 1000000,\n    \"P2\": 1000,\n    \"P3\": 1,\n    # Big-M for linking (max category size)\n    \"bigM\": 1500,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    cats = d[\"categories\"]\n    demand = d[\"demand\"]\n    goal_pairs = d[\"goal_pairs\"]\n\n    # ------------------------------------------------------------------ sets\n    model.C = pyo.RangeSet(1, 6)                 # categories\n    model.K = pyo.RangeSet(1, len(goal_pairs))   # major-demand goals\n\n    # -------------------------------------------------------------- variables\n    model.x = pyo.Var(\n        model.C,\n        domain=pyo.NonNegativeIntegers,\n        bounds=lambda m, c: (0, cats[c][\"size\"]),\n    )\n    model.y = pyo.Var(\n        model.C,\n        domain=pyo.NonNegativeIntegers,\n        bounds=lambda m, c: (0, cats[c][\"size\"]),\n    )\n    model.z = pyo.Var(\n        model.C,\n        domain=pyo.NonNegativeIntegers,\n        bounds=lambda m, c: (0, cats[c][\"size\"]),\n    )\n\n    model.d1 = pyo.Var(model.K, domain=pyo.NonNegativeReals)\n    model.d2 = pyo.Var(domain=pyo.NonNegativeReals)\n    model.d3 = pyo.Var(domain=pyo.NonNegativeReals)\n\n    # ------------------------------------------------------------- objective\n    def obj_rule(m):\n        return (\n            d[\"P1\"] * sum(m.d1[k] for k in m.K)\n            + d[\"P2\"] * m.d2\n            + d[\"P3\"] * m.d3\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ----------------------------------------------------------- constraints\n    # (1) Major-demand goals: one per (city, major) pair.\n    def demand_rule(m, k):\n        city, major = goal_pairs[k - 1]\n        contributors = [c for c in cats if major in cats[c][\"competent\"]]\n        lhs = sum(m.x[c] for c in contributors)\n        return lhs + m.d1[k] >= demand[(city, major)]\n\n    model.demand_con = pyo.Constraint(model.K, rule=demand_rule)\n\n    # (2) Preferred-major goal\n    def pref_major_rule(m):\n        return sum(m.y[c] for c in m.C) + m.d2 >= d[\"pref_major_target\"]\n\n    model.pref_major_con = pyo.Constraint(rule=pref_major_rule)\n\n    # (3) Preferred-city goal\n    def pref_city_rule(m):\n        return sum(m.z[c] for c in m.C) + m.d3 >= d[\"pref_city_target\"]\n\n    model.pref_city_con = pyo.Constraint(rule=pref_city_rule)\n\n    # (4) Linking: y[c] <= x[c] and z[c] <= x[c]\n    def link_y_rule(m, c):\n        return m.y[c] <= m.x[c]\n\n    def link_z_rule(m, c):\n        return m.z[c] <= m.x[c]\n\n    model.link_y_con = pyo.Constraint(model.C, rule=link_y_rule)\n    model.link_z_con = pyo.Constraint(model.C, rule=link_z_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1643,
+      "completion_tokens": 1517
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1792,
+      "completion_tokens": 1945
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3698,
+      "completion_tokens": 1898
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 24.766161680221558,
+   "position": 1,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # ---- Table 4-3: Demand (major, location) -------------------------\n    # location: 1 = Donghai City, 2 = Nanjiang City ; major: 1,2,3\n    # \"Donghai City: Major 1 -> 1000 ; Major 2 -> 2000\"\n    # \"Nanjiang City: Major 1 -> 2000 ; Major 2 -> 1000 ; Major 3 -> 1000\"\n    \"demand\": {\n        (1, 1): 1000,   # Donghai, major 1\n        (2, 1): 2000,   # Donghai, major 2\n        (1, 2): 2000,   # Nanjiang, major 1\n        (2, 2): 1000,   # Nanjiang, major 2\n        (3, 2): 1000,   # Nanjiang, major 3\n    },\n    # ---- Table 4-4: Category sizes -----------------------------------\n    # each category = 1500 personnel\n    \"cat_size\": {1: 1500, 2: 1500, 3: 1500, 4: 1500, 5: 1500, 6: 1500},\n    # ---- Table 4-4: competent majors per category --------------------\n    \"competent\": {\n        1: [1, 2],\n        2: [2, 3],\n        3: [1, 3],\n        4: [1, 3],\n        5: [2, 3],\n        6: [3],\n    },\n    # ---- Table 4-4: preferred major per category ---------------------\n    \"pref_major\": {1: 1, 2: 2, 3: 1, 4: 3, 5: 3, 6: 3},\n    # ---- Table 4-4: preferred city per category ----------------------\n    # Donghai -> 1, Nanjiang -> 2\n    \"pref_city\": {1: 1, 2: 1, 3: 2, 4: 2, 5: 1, 6: 2},\n    # ---- priority p2 / p3 target: \"8000 people satisfy preferred ...\"\n    \"goal_target\": 8000,\n    # ---- lexicographic priority weights (P1 >> P2 >> P3) -------------\n    \"P1\": 1_000_000,\n    \"P2\": 1_000,\n    \"P3\": 1,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # ---------------- Sets -------------------------------------------\n    m.C = pyo.Set(initialize=list(d[\"cat_size\"].keys()))          # categories\n    m.M = pyo.Set(initialize=[1, 2, 3])                           # majors\n    m.L = pyo.Set(initialize=[1, 2])                              # locations\n\n    # allowed (category, major, location) triples -> competent majors only\n    allowed = [\n        (c, maj, loc)\n        for c in d[\"competent\"]\n        for maj in d[\"competent\"][c]\n        for loc in [1, 2]\n    ]\n    m.ALLOWED = pyo.Set(initialize=allowed, dimen=3)\n\n    # demand pairs (major, location) that actually appear\n    m.DEM = pyo.Set(initialize=list(d[\"demand\"].keys()), dimen=2)\n\n    # ---------------- Variables --------------------------------------\n    # x[c, maj, loc] : people of category c assigned to major maj, location loc\n    m.x = pyo.Var(m.ALLOWED, domain=pyo.NonNegativeIntegers)\n\n    # goal-deviation variables\n    m.u = pyo.Var(m.DEM, domain=pyo.NonNegativeReals)   # under demand (p1)\n    m.v = pyo.Var(m.DEM, domain=pyo.NonNegativeReals)   # over  demand (p1)\n    m.s_pref = pyo.Var(domain=pyo.NonNegativeReals)     # shortfall preferred major (p2)\n    m.s_city = pyo.Var(domain=pyo.NonNegativeReals)     # shortfall preferred city  (p3)\n\n    # ---------------- Constraints ------------------------------------\n    # (a) Demand satisfaction per (major, location)\n    def demand_rule(mm, maj, loc):\n        supply = sum(\n            mm.x[c, maj, loc]\n            for c in mm.C\n            if (c, maj, loc) in mm.ALLOWED\n        )\n        return supply + mm.u[maj, loc] - mm.v[maj, loc] == d[\"demand\"][(maj, loc)]\n    m.demand_con = pyo.Constraint(m.DEM, rule=demand_rule)\n\n    # (b) Every person of each category is recruited exactly once\n    def cat_rule(mm, c):\n        return sum(\n            mm.x[c, maj, loc]\n            for maj in d[\"competent\"][c]\n            for loc in [1, 2]\n        ) == d[\"cat_size\"][c]\n    m.cat_con = pyo.Constraint(m.C, rule=cat_rule)\n\n    # (c) preferred-major goal\n    def pref_major_rule(mm):\n        total_pref = sum(\n            mm.x[c, maj, loc]\n            for (c, maj, loc) in mm.ALLOWED\n            if maj == d[\"pref_major\"][c]\n        )\n        return total_pref + mm.s_pref >= d[\"goal_target\"]\n    m.pref_major_con = pyo.Constraint(rule=pref_major_rule)\n\n    # (d) preferred-city goal\n    def pref_city_rule(mm):\n        total_city = sum(\n            mm.x[c, maj, loc]\n            for (c, maj, loc) in mm.ALLOWED\n            if loc == d[\"pref_city\"][c]\n        )\n        return total_city + mm.s_city >= d[\"goal_target\"]\n    m.pref_city_con = pyo.Constraint(rule=pref_city_rule)\n\n    # ---------------- Objective (lexicographic via weights) ----------\n    m.obj = pyo.Objective(\n        expr=(\n            d[\"P1\"] * sum(m.u[maj, loc] for (maj, loc) in m.DEM)\n            + d[\"P2\"] * m.s_pref\n            + d[\"P3\"] * m.s_city\n        ),\n        sense=pyo.minimize,\n    )\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1627,
+      "completion_tokens": 2025
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.123972654342651,
+   "position": 2,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ----------------------------------------------------------------------\n# DATA: every numeric constant from the problem, with source annotation\n# ----------------------------------------------------------------------\nDATA = {\n    # Table 4-4: each category has 1500 applicants\n    \"cat_size\": 1500,                                    # \"1500\" per category in Table 4-4\n\n    # Table 4-3: demand per major (summed over the two branches)\n    #   Donghai: major1=1000, major2=2000\n    #   Nanjiang: major1=2000, major2=1000, major3=1000\n    \"demand\": {1: 1000 + 2000, 2: 2000 + 1000, 3: 1500 + 1000},  # major1=3000, major2=3000, major3=2500\n\n    # Table 4-3: per-branch, per-major demand (for reference / branch capacity)\n    \"branch_demand\": {\n        (\"Donghai\", 1): 1000, (\"Donghai\", 2): 2000,\n        (\"Nanjiang\", 1): 2000, (\"Nanjiang\", 2): 1000, (\"Nanjiang\", 3): 1000,\n    },\n\n    # Table 4-4: competent majors per category\n    \"competent\": {\n        1: [1, 2],\n        2: [2, 3],\n        3: [1, 3],\n        4: [1, 3],\n        5: [2, 3],\n        6: [3],\n    },\n\n    # Table 4-4: preferred major per category\n    \"pref_major\": {1: 1, 2: 2, 3: 1, 4: 3, 5: 3, 6: 3},\n\n    # Table 4-4: preferred city per category\n    \"pref_city\": {1: \"Donghai\", 2: \"Donghai\", 3: \"Nanjiang\",\n                  4: \"Nanjiang\", 5: \"Donghai\", 6: \"Nanjiang\"},\n\n    # Priority p2 target: 8000 people satisfy preferred majors\n    \"target_pref_major\": 8000,\n\n    # Priority p3 target: 8000 people satisfy preferred cities\n    \"target_pref_city\": 8000,\n\n    # Lexicographic weights for goal programming (p1 >> p2 >> p3)\n    \"weight_p1\": 10000,\n    \"weight_p2\": 100,\n    \"weight_p3\": 1,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    categories = sorted(d[\"competent\"].keys())          # [1..6]\n    majors = sorted(d[\"demand\"].keys())                 # [1,2,3]\n    locations = [\"Donghai\", \"Nanjiang\"]\n    branch_pairs = list(d[\"branch_demand\"].keys())      # (location, major) with positive demand\n\n    m = pyo.ConcreteModel()\n\n    # ---------------- Sets ----------------\n    m.C = pyo.Set(initialize=categories, ordered=True)\n    m.M = pyo.Set(initialize=majors, ordered=True)\n    m.L = pyo.Set(initialize=locations, ordered=True)\n\n    # Feasible (category, location, major) triples: major must be competent\n    def feasible_triples_init():\n        triples = []\n        for c in categories:\n            for l in locations:\n                for mj in d[\"competent\"][c]:\n                    triples.append((c, l, mj))\n        return triples\n\n    m.CLM = pyo.Set(dimen=3, initialize=feasible_triples_init())\n\n    # Preferred-major triples (m is the category's preferred major)\n    def pref_major_triples_init():\n        triples = []\n        for c in categories:\n            pm = d[\"pref_major\"][c]\n            for l in locations:\n                if (c, l, pm) in m.CLM:\n                    triples.append((c, l, pm))\n        return triples\n\n    m.CLM_PM = pyo.Set(dimen=3, initialize=pref_major_triples_init())\n\n    # Preferred-city triples (l is the category's preferred city)\n    def pref_city_triples_init():\n        triples = []\n        for c in categories:\n            pc = d[\"pref_city\"][c]\n            for mj in d[\"competent\"][c]:\n                if (c, pc, mj) in m.CLM:\n                    triples.append((c, pc, mj))\n        return triples\n\n    m.CLM_PC = pyo.Set(dimen=3, initialize=pref_city_triples_init())\n\n    # ---------------- Variables ----------------\n    # x: people from category c assigned to location l, major mj\n    m.x = pyo.Var(m.CLM, within=pyo.NonNegativeIntegers,\n                  bounds=(0, d[\"cat_size\"]))\n\n    # y: binary indicator that (c,l,mj) satisfies preferred major of c\n    m.y = pyo.Var(m.CLM_PM, within=pyo.Binary)\n\n    # z: binary indicator that (c,l,mj) satisfies preferred city of c\n    m.z = pyo.Var(m.CLM_PC, within=pyo.Binary)\n\n    # Goal-programming deviation variables (p1: per major; p2, p3: single)\n    m.u1 = pyo.Var(m.M, within=pyo.NonNegativeReals)   # under-achievement of major demand\n    m.v1 = pyo.Var(m.M, within=pyo.NonNegativeReals)   # over-achievement of major demand\n    m.u2 = pyo.Var(within=pyo.NonNegativeReals)        # under-achievement of preferred-major target\n    m.v2 = pyo.Var(within=pyo.NonNegativeReals)        # over-achievement of preferred-major target\n    m.u3 = pyo.Var(within=pyo.NonNegativeReals)        # under-achievement of preferred-city target\n    m.v3 = pyo.Var(within=pyo.NonNegativeReals)        # over-achievement of preferred-city target\n\n    # ---------------- Objective (weighted lexicographic) ----------------\n    m.obj = pyo.Objective(\n        expr=(\n            d[\"weight_p1\"] * sum(m.u1[mj] for mj in m.M)\n            + d[\"weight_p2\"] * m.u2\n            + d[\"weight_p3\"] * m.u3\n        ),\n        sense=pyo.minimize,\n    )\n\n    # ---------------- Constraints ----------------\n\n    # (a) Every category fully assigned\n    def assign_rule(m, c):\n        return sum(m.x[c, l, mj] for (cc, l, mj) in m.CLM if cc == c) == d[\"cat_size\"]\n\n    m.assign = pyo.Constraint(m.C, rule=assign_rule)\n\n    # (c) Major demand met (with p1 deviations)\n    def demand_rule(m, mj):\n        return (sum(m.x[c, l, mm] for (c, l, mm) in m.CLM if mm == mj)\n                + m.u1[mj] - m.v1[mj]) == d[\"demand\"][mj]\n\n    m.demand = pyo.Constraint(m.M, rule=demand_rule)\n\n    # (d) Linking for preferred-major indicator: x <= cat_size * y\n    def link_pm_rule(m, c, l, mj):\n        return m.x[c, l, mj] <= d[\"cat_size\"] * m.y[c, l, mj]\n\n    m.link_pm = pyo.Constraint(m.CLM_PM, rule=link_pm_rule)\n\n    # (e) Preferred-major target (p2)\n    def target_pm_rule(m):\n        return (sum(m.x[c, l, mj] for (c, l, mj) in m.CLM_PM)\n                + m.u2 - m.v2) == d[\"target_pref_major\"]\n\n    m.target_pm = pyo.Constraint(rule=target_pm_rule)\n\n    # (f) Linking for preferred-city indicator: x <= cat_size * z\n    def link_pc_rule(m, c, l, mj):\n        return m.x[c, l, mj] <= d[\"cat_size\"] * m.z[c, l, mj]\n\n    m.link_pc = pyo.Constraint(m.CLM_PC, rule=link_pc_rule)\n\n    # (g) Preferred-city target (p3)\n    def target_pc_rule(m):\n        return (sum(m.x[c, l, mj] for (c, l, mj) in m.CLM_PC)\n                + m.u3 - m.v3) == d[\"target_pref_city\"]\n\n    m.target_pc = pyo.Constraint(rule=target_pc_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1627,
+      "completion_tokens": 2711
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 9.737466096878052,
+   "position": 3,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# -------------------------------------------------------------------\n# DATA: every numeric constant from the problem text\n# -------------------------------------------------------------------\nDATA = {\n    # categories: 1..6 (table 4-4)\n    \"categories\": [1, 2, 3, 4, 5, 6],\n    # majors: 1,2,3\n    \"majors\": [1, 2, 3],\n    # cities: 'DH' = Donghai, 'NJ' = Nanjiang\n    \"cities\": [\"DH\", \"NJ\"],\n\n    # Table 4-4: available persons per category\n    \"avail\": {1: 1500, 2: 1500, 3: 1500, 4: 1500, 5: 1500, 6: 1500},\n\n    # Table 4-4: competent majors per category (indicator)\n    \"comp\": {\n        1: {1: 1, 2: 1, 3: 0},\n        2: {1: 0, 2: 1, 3: 1},\n        3: {1: 1, 2: 0, 3: 1},\n        4: {1: 1, 2: 0, 3: 1},\n        5: {1: 0, 2: 1, 3: 1},\n        6: {1: 0, 2: 0, 3: 1},\n    },\n\n    # Table 4-4: preferred (prioritised) major per category\n    \"prefM\": {1: 1, 2: 2, 3: 1, 4: 3, 5: 3, 6: 3},\n\n    # Table 4-4: preferred city per category\n    \"prefK\": {1: \"DH\", 2: \"DH\", 3: \"NJ\", 4: \"NJ\", 5: \"DH\", 6: \"NJ\"},\n\n    # Table 4-3: demand per (city, major)\n    \"demand\": {\n        (\"DH\", 1): 1000,\n        (\"DH\", 2): 2000,\n        (\"DH\", 3): 0,\n        (\"NJ\", 1): 2000,\n        (\"NJ\", 2): 1000,\n        (\"NJ\", 3): 1500,\n    },\n\n    # Goal-programming targets and priority weights\n    \"targetP2\": 8000,      # preferred-major people target\n    \"targetP3\": 8000,      # preferred-city  people target\n    \"W1\": 1.0e6,           # p1 domination\n    \"W2\": 1.0e3,           # p2\n    \"W3\": 1.0,             # p3\n    \"bigM\": 9000,          # total recruit pool upper bound for big-M\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.C = pyo.Set(initialize=d[\"categories\"], ordered=True)\n    m.M = pyo.Set(initialize=d[\"majors\"], ordered=True)\n    m.K = pyo.Set(initialize=d[\"cities\"], ordered=True)\n\n    # ------------- Decision variables ---------------------------------\n    # x[c,m,k] = number of category-c people assigned to (major m, city k)\n    def xbnd(host, c, mj, k):\n        return (0, d[\"avail\"][c]) if d[\"comp\"][c][mj] == 1 else (0, 0)\n\n    m.x = pyo.Var(m.C, m.M, m.K, within=pyo.NonNegativeIntegers, bounds=xbnd)\n\n    # deviation variables (shortfalls) for the three goals\n    m.u1 = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, None))\n    m.u2 = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, None))\n    m.u3 = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, None))\n\n    # surplus variables to keep goal equations as equalities\n    m.v1 = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, None))\n    m.v2 = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, None))\n    m.v3 = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, None))\n\n    # ------------- Constraints ----------------------------------------\n\n    # (a) Demand satisfaction per (city, major): sum over competent categories\n    #     plus shortfall u1 (aggregated) must meet demand.\n    def demand_rule(host, k, mj):\n        used = [c for c in d[\"categories\"] if d[\"comp\"][c][mj] == 1]\n        lhs = sum(host.x[c, mj, k] for c in used)\n        return lhs + host.u1 >= d[\"demand\"][(k, mj)]\n\n    m.demand_con = pyo.Constraint(m.K, m.M, rule=demand_rule)\n\n    # (b) Category availability: total assigned <= available persons\n    def total_avail_rule(host, c):\n        return sum(host.x[c, mj, k] for mj in d[\"majors\"] for k in d[\"cities\"]) <= d[\"avail\"][c]\n\n    m.total_avail = pyo.Constraint(m.C, rule=total_avail_rule)\n\n    # (c) Goal p2: preferred-major people count + v2 - u2 = targetP2\n    #     A person of category c assigned to their preferred major counts.\n    def pref_major_expr(host):\n        return sum(\n            host.x[c, d[\"prefM\"][c], k]\n            for c in d[\"categories\"]\n            for k in d[\"cities\"]\n            if d[\"comp\"][c][d[\"prefM\"][c]] == 1\n        )\n\n    def p2_rule(host):\n        return pref_major_expr(host) + host.v2 - host.u2 == d[\"targetP2\"]\n\n    m.goal_p2 = pyo.Constraint(rule=p2_rule)\n\n    # (d) Goal p3: preferred-city people count + v3 - u3 = targetP3\n    def pref_city_expr(host):\n        return sum(\n            host.x[c, mj, d[\"prefK\"][c]]\n            for c in d[\"categories\"]\n            for mj in d[\"majors\"]\n            if d[\"comp\"][c][mj] == 1\n        )\n\n    def p3_rule(host):\n        return pref_city_expr(host) + host.v3 - host.u3 == d[\"targetP3\"]\n\n    m.goal_p3 = pyo.Constraint(rule=p3_rule)\n\n    # ------------- Objective ------------------------------------------\n    # Lexicographic priority p1 >> p2 >> p3 via weighted sum of shortfalls\n    def obj_rule(host):\n        return d[\"W1\"] * host.u1 + d[\"W2\"] * host.u2 + d[\"W3\"] * host.u3\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1629,
+      "completion_tokens": 2387
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3938,
+      "completion_tokens": 1659
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 16.440486192703247,
+   "position": 4,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"categories\": [1, 2, 3, 4, 5, 6],\n    \"majors\": [1, 2, 3],\n    \"locations\": [\"Donghai\", \"Nanjiang\"],\n    \"personnel\": {1: 1500, 2: 1500, 3: 1500, 4: 1500, 5: 1500, 6: 1500},\n    \"competent\": {\n        1: [1, 2],\n        2: [2, 3],\n        3: [1, 3],\n        4: [1, 3],\n        5: [2, 3],\n        6: [3],\n    },\n    \"preferred_major\": {1: 1, 2: 2, 3: 1, 4: 3, 5: 3, 6: 3},\n    \"preferred_city\": {\n        1: \"Donghai\",\n        2: \"Donghai\",\n        3: \"Nanjiang\",\n        4: \"Nanjiang\",\n        5: \"Donghai\",\n        6: \"Nanjiang\",\n    },\n    \"demand\": {\n        (\"Donghai\", 1): 1000,\n        (\"Donghai\", 2): 2000,\n        (\"Donghai\", 3): 0,\n        (\"Nanjiang\", 1): 2000,\n        (\"Nanjiang\", 2): 1000,\n        (\"Nanjiang\", 3): 1000,\n    },\n    \"major_goal\": 8000,\n    \"city_goal\": 8000,\n    \"weight_p1\": 1_000_000,\n    \"weight_p2\": 1_000,\n    \"weight_p3\": 1,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.C = pyo.Set(initialize=d[\"categories\"], ordered=True)\n    model.M = pyo.Set(initialize=d[\"majors\"], ordered=True)\n    model.L = pyo.Set(initialize=d[\"locations\"], ordered=True)\n\n    # assign[c, m, l]: number of category-c recruits placed in major m at location l\n    model.assign = pyo.Var(\n        model.C, model.M, model.L,\n        domain=pyo.NonNegativeIntegers,\n        bounds=(0, None),\n    )\n\n    # goal-deviation (under-achievement) variables\n    model.dev_p1 = pyo.Var(domain=pyo.NonNegativeReals, bounds=(0, None))\n    model.dev_p2 = pyo.Var(domain=pyo.NonNegativeReals, bounds=(0, None))\n    model.dev_p3 = pyo.Var(domain=pyo.NonNegativeReals, bounds=(0, None))\n\n    # ---- Objective: weighted lexicographic goal programming ----\n    model.obj = pyo.Objective(\n        expr=(\n            d[\"weight_p1\"] * model.dev_p1\n            + d[\"weight_p2\"] * model.dev_p2\n            + d[\"weight_p3\"] * model.dev_p3\n        ),\n        sense=pyo.minimize,\n    )\n\n    # ---- Constraint 1: allocate all personnel of each category ----\n    def alloc_rule(m, c):\n        return sum(m.assign[c, mm, ll] for mm in m.M for ll in m.L) == d[\"personnel\"][c]\n    model.alloc = pyo.Constraint(model.C, rule=alloc_rule)\n\n    # ---- Constraint 2: only competent majors allowed ----\n    def competent_rule(m, c, mm, ll):\n        if mm in d[\"competent\"][c]:\n            return pyo.Constraint.Skip\n        return m.assign[c, mm, ll] == 0\n    model.competent = pyo.Constraint(model.C, model.M, model.L, rule=competent_rule)\n\n    # ---- Constraint 3 (p1): meet demand for each (location, major) ----\n    def demand_rule(m, ll, mm):\n        return (\n            sum(m.assign[c, mm, ll] for c in m.C) + m.dev_p1\n            >= d[\"demand\"][(ll, mm)]\n        )\n    model.demand = pyo.Constraint(model.L, model.M, rule=demand_rule)\n\n    # ---- Constraint 4 (p2): preferred-major satisfaction goal ----\n    def pref_major_rule(m):\n        return (\n            sum(\n                m.assign[c, mm, ll]\n                for c in m.C\n                for mm in m.M\n                for ll in m.L\n                if mm == d[\"preferred_major\"][c]\n            )\n            + m.dev_p2\n            >= d[\"major_goal\"]\n        )\n    model.pref_major = pyo.Constraint(rule=pref_major_rule)\n\n    # ---- Constraint 5 (p3): preferred-city satisfaction goal ----\n    def pref_city_rule(m):\n        return (\n            sum(\n                m.assign[c, mm, ll]\n                for c in m.C\n                for mm in m.M\n                for ll in m.L\n                if ll == d[\"preferred_city\"][c]\n            )\n            + m.dev_p3\n            >= d[\"city_goal\"]\n        )\n    model.pref_city = pyo.Constraint(rule=pref_city_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1623,
+      "completion_tokens": 1654
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.448261976242065,
+   "position": 5,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # categories, majors, locations\n    \"categories\": [1, 2, 3, 4, 5, 6],\n    \"majors\": [1, 2, 3],\n    \"locations\": [\"Donghai\", \"Nanjiang\"],\n\n    # Table 4-3: demand[(location, major)] = number required\n    \"demand\": {\n        (\"Donghai\", 1): 1000,\n        (\"Donghai\", 2): 2000,\n        (\"Donghai\", 3): 0,       # not listed -> zero demand\n        (\"Nanjiang\", 1): 2000,\n        (\"Nanjiang\", 2): 1000,\n        (\"Nanjiang\", 3): 1000,\n    },\n\n    # Table 4-4: category sizes\n    \"size\": {1: 1500, 2: 1500, 3: 1500, 4: 1500, 5: 1500, 6: 1500},\n\n    # Competent majors per category\n    \"competent\": {\n        1: [1, 2],\n        2: [2, 3],\n        3: [1, 3],\n        4: [1, 3],\n        5: [2, 3],\n        6: [3],\n    },\n\n    # Preferred major per category\n    \"pref_major\": {1: 1, 2: 2, 3: 1, 4: 3, 5: 3, 6: 3},\n\n    # Preferred city per category\n    \"pref_city\": {\n        1: \"Donghai\",\n        2: \"Donghai\",\n        3: \"Nanjiang\",\n        4: \"Nanjiang\",\n        5: \"Donghai\",\n        6: \"Nanjiang\",\n    },\n\n    # Goal targets\n    \"target_pref_major\": 8000,\n    \"target_pref_city\": 8000,\n\n    # Priority weights (lexicographic: P1 >> P2 >> P3)\n    \"P1\": 1_000_000,\n    \"P2\": 1_000,\n    \"P3\": 1,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.C = pyo.Set(initialize=d[\"categories\"])\n    model.M = pyo.Set(initialize=d[\"majors\"])\n    model.L = pyo.Set(initialize=d[\"locations\"])\n    # demand pairs actually required (positive demand)\n    model.LM = pyo.Set(\n        initialize=[(l, m) for l in d[\"locations\"] for m in d[\"majors\"]],\n        dimen=2,\n    )\n\n    # Decision variable: people from category c assigned to location l, major m\n    model.x = pyo.Var(\n        model.C, model.L, model.M,\n        within=pyo.NonNegativeIntegers,\n    )\n\n    # Deviation variables (under-achievement of each goal)\n    model.u1 = pyo.Var(within=pyo.NonNegativeReals)\n    model.u2 = pyo.Var(within=pyo.NonNegativeReals)\n    model.u3 = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Objective: weighted sum of goal deviations\n    def obj_rule(m):\n        return d[\"P1\"] * m.u1 + d[\"P2\"] * m.u2 + d[\"P3\"] * m.u3\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # (a) Category supply limit\n    def supply_rule(m, c):\n        return sum(m.x[c, l, mm] for l in m.L for mm in m.M) <= d[\"size\"][c]\n    model.supply = pyo.Constraint(model.C, rule=supply_rule)\n\n    # (b) Competence: forbid assignment to non-competent majors\n    def competent_rule(m, c, l, mm):\n        if mm in d[\"competent\"][c]:\n            return pyo.Constraint.Skip\n        return m.x[c, l, mm] == 0\n    model.competent = pyo.Constraint(model.C, model.L, model.M, rule=competent_rule)\n\n    # (c) Goal 1: meet each (location, major) demand (with deviation u1)\n    def demand_rule(m, l, mm):\n        assigned = sum(m.x[c, l, mm] for c in m.C)\n        return assigned + m.u1 >= d[\"demand\"][(l, mm)]\n    model.demand = pyo.Constraint(model.LM, rule=demand_rule)\n\n    # (d) Goal 2: 8000 people get preferred major (with deviation u2)\n    def pref_major_rule(m):\n        total = sum(\n            m.x[c, l, mm]\n            for c in m.C for l in m.L for mm in m.M\n            if mm == d[\"pref_major\"][c]\n        )\n        return total + m.u2 >= d[\"target_pref_major\"]\n    model.pref_major = pyo.Constraint(rule=pref_major_rule)\n\n    # (e) Goal 3: 8000 people get preferred city (with deviation u3)\n    def pref_city_rule(m):\n        total = sum(\n            m.x[c, l, mm]\n            for c in m.C for l in m.L for mm in m.M\n            if l == d[\"pref_city\"][c]\n        )\n        return total + m.u3 >= d[\"target_pref_city\"]\n    model.pref_city = pyo.Constraint(rule=pref_city_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1623,
+      "completion_tokens": 1720
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.882807493209839,
+   "position": 6,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ----- Data ---------------------------------------------------------------\nDATA = {\n    \"categories\": [1, 2, 3, 4, 5, 6],\n    \"majors\": [1, 2, 3],\n    \"cities\": [\"Donghai\", \"Nanjiang\"],\n\n    \"supply\": {1: 1500, 2: 1500, 3: 1500, 4: 1500, 5: 1500, 6: 1500},\n\n    # Table 4-3: demand[(city, major)]\n    \"demand\": {\n        (\"Donghai\", 1): 1000, (\"Donghai\", 2): 2000, (\"Donghai\", 3): 0,\n        (\"Nanjiang\", 1): 2000, (\"Nanjiang\", 2): 1000, (\"Nanjiang\", 3): 1000,\n    },\n\n    # competent (category, major) pairs\n    \"competent\": {\n        1: [1, 2], 2: [2, 3], 3: [1, 3],\n        4: [1, 3], 5: [2, 3], 6: [3],\n    },\n    # preferred major\n    \"preferred_major\": {1: 1, 2: 2, 3: 1, 4: 3, 5: 3, 6: 3},\n    # preferred city\n    \"preferred_city\": {\n        1: \"Donghai\", 2: \"Donghai\", 3: \"Nanjiang\",\n        4: \"Nanjiang\", 5: \"Donghai\", 6: \"Nanjiang\",\n    },\n\n    # goals\n    \"target_satisfied_major\": 8000,\n    \"target_satisfied_city\": 8000,\n\n    # priority weights (lexicographic-style big weights)\n    \"w1\": 1_000_000,\n    \"w2\": 1_000,\n    \"w3\": 1,\n\n    # big-M for indicator linking\n    \"bigM\": 1_000_000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # ---------------- sets ----------------\n    m.C = pyo.Set(initialize=d[\"categories\"])                    # categories\n    m.J = pyo.Set(initialize=d[\"majors\"])                        # majors\n    m.K = pyo.Set(initialize=d[\"cities\"])                        # cities\n\n    # (category, major, city) triples where the category is competent in the major\n    m.CJd = pyo.Set(\n        within=m.C * m.J * m.K,\n        initialize=([(c, j, \"Donghai\") for c in d[\"categories\"]\n                     for j in d[\"competent\"][c]] +\n                    [(c, j, \"Nanjiang\") for c in d[\"categories\"]\n                     for j in d[\"competent\"][c]])\n    )\n\n    # ---------------- variables ----------------\n    m.x = pyo.Var(m.CJd, domain=pyo.NonNegativeIntegers)         # people allocated\n\n    # --- deviation variables (goal programming) ---\n    m.dp1 = pyo.Var(domain=pyo.NonNegativeReals)\n    m.dm1 = pyo.Var(domain=pyo.NonNegativeReals)\n\n    m.dp2 = pyo.Var(domain=pyo.NonNegativeReals)\n    m.dm2 = pyo.Var(domain=pyo.NonNegativeReals)\n\n    m.dp3 = pyo.Var(domain=pyo.NonNegativeReals)\n    m.dm3 = pyo.Var(domain=pyo.NonNegativeReals)\n\n    # --- binary indicator: assigned people whose major = preferred major ---\n    pref = d[\"preferred_major\"]\n    m.B2idx = pyo.Set(\n        within=m.CJd,\n        initialize=[(c, j, k) for (c, j, k) in m.CJd if j == pref[c]]\n    )\n    m.b2 = pyo.Var(m.B2idx, domain=pyo.Binary)\n\n    # --- binary indicator for preferred city ---\n    m.B3idx = pyo.Set(\n        within=m.CJd,\n        initialize=[(c, j, k) for (c, j, k) in m.CJd\n                    if k == d[\"preferred_city\"][c]]\n    )\n    m.b3 = pyo.Var(m.B3idx, domain=pyo.Binary)\n\n    M = d[\"bigM\"]\n\n    # bounds on x so b2 / b3 linearisation is valid (0 <= x <= supply)\n    for (c, j, k) in m.CJd:\n        m.x[c, j, k].setub(d[\"supply\"][c])\n\n    # ---------------- objective ----------------\n    def obj_rule(mm):\n        return (d[\"w1\"] * mm.dm1\n                + d[\"w2\"] * (mm.dp2 + mm.dm2)\n                + d[\"w3\"] * (mm.dp3 + mm.dm3))\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---------------- demand constraints + priority 1 ----------------\n    def rule_demand(mm, k, j):\n        alloc = sum(mm.x[c1, j, k] for (c1, jj, kk) in mm.CJd\n                    if jj == j and kk == k)\n        return alloc + mm.dm1 >= d[\"demand\"][(k, j)]\n    m.demand_link = pyo.Constraint(m.K, m.J, rule=rule_demand)\n\n    # ---------------- preferred major indicator (priority 2) ----------------\n    def rule_b2_lo(mm, c, j, k):\n        return mm.x[c, j, k] <= M * mm.b2[c, j, k]\n    m.b2_link = pyo.Constraint(m.B2idx, rule=rule_b2_lo)\n\n    # ------------------- preferred city indicator (priority 3) ----------------\n    def rule_b3_lo(mm, c, j, k):\n        return mm.x[c, j, k] <= M * mm.b3[c, j, k]\n    m.b3_link = pyo.Constraint(m.B3idx, rule=rule_b3_lo)\n\n    # ---- count of people satisfied on preferred major (goal p2) ----\n    def rule_goal2(mm):\n        headcount_major = sum(mm.x[c, j, k] for (c, j, k) in mm.CJd\n                              if j == pref[c])\n        return headcount_major + mm.dm2 - mm.dp2 == d[\"target_satisfied_major\"]\n    m.goal2 = pyo.Constraint(rule=rule_goal2)\n\n    # ---- count of people satisfied on preferred city (goal p3) ----\n    def rule_goal3(mm):\n        headcount_city = sum(mm.x[c, j, k] for (c, j, k) in mm.CJd\n                             if k == d[\"preferred_city\"][c])\n        return headcount_city + mm.dm3 - mm.dp3 == d[\"target_satisfied_city\"]\n    m.goal3 = pyo.Constraint(rule=rule_goal3)\n\n    # ---------------- supply per category ----------------\n    def rule_cat_supply(mm, c):\n        return sum(mm.x[c, j, k] for (cc, j, k) in mm.CJd if cc == c) \\\n               <= d[\"supply\"][c]\n    m.cat_supply = pyo.Constraint(m.C, rule=rule_cat_supply)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1629,
+      "completion_tokens": 2490
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3569,
+      "completion_tokens": 1747
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3317,
+      "completion_tokens": 1747
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "possible_nonlinearity"
+   ],
+   "seconds": 24.80012583732605,
+   "position": 7,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Goal-programming model for Jiali Company personnel recruitment\n# ---------------------------------------------------------------------------\n# Decision variables\n#   x[c]  : number of people recruited from category c            (integer >= 0)\n#   y[c]  : number of people from category c assigned to their\n#           preferred major (satisfied-major count)              (integer >= 0)\n#   z[c]  : number of people from category c assigned to their\n#           preferred city (satisfied-city count)                (integer >= 0)\n#   d1[k] : under-achievement of demand for (city, major) k       (integer >= 0)\n#   d2    : shortfall vs. 8000 preferred-major satisfied          (integer >= 0)\n#   d3    : shortfall vs. 8000 preferred-city satisfied           (integer >= 0)\n#\n# Objective (lexicographic goal programming, weighted sum):\n#   min  W1 * sum_k d1[k]  +  W2 * d2  +  W3 * d3\n#\n# Constraints\n#   (1) x[c] <= available[c]                       for all c\n#   (2) y[c] <= x[c]                               for all c\n#   (3) z[c] <= x[c]                               for all c\n#   (4) sum_{c competent in (city,major)} x[c] + d1[k] >= demand[k]\n#   (5) sum_c y[c] + d2 >= 8000\n#   (6) sum_c z[c] + d3 >= 8000\n# ---------------------------------------------------------------------------\n\nDATA = {\n    # categories 1..6\n    \"categories\": [1, 2, 3, 4, 5, 6],\n    # available personnel per category\n    \"available\": {1: 1500, 2: 1500, 3: 1500, 4: 1500, 5: 1500, 6: 1500},\n    # competent majors per category\n    \"competent\": {\n        1: [1, 2],\n        2: [2, 3],\n        3: [1, 3],\n        4: [1, 3],\n        5: [2, 3],\n        6: [3],\n    },\n    # preferred major per category\n    \"pref_major\": {1: 1, 2: 2, 3: 1, 4: 3, 5: 3, 6: 3},\n    # preferred city per category\n    \"pref_city\": {1: \"Donghai\", 2: \"Donghai\", 3: \"Nanjiang\",\n                  4: \"Nanjiang\", 5: \"Donghai\", 6: \"Nanjiang\"},\n    # demand keys: (city, major)\n    \"demand\": {\n        (\"Donghai\", 1): 1000,\n        (\"Donghai\", 2): 2000,\n        (\"Donghai\", 3): 1500,\n        (\"Nanjiang\", 1): 2000,\n        (\"Nanjiang\", 2): 1000,\n        (\"Nanjiang\", 3): 1000,\n    },\n    # goal targets\n    \"target_major\": 8000,\n    \"target_city\": 8000,\n    # priority weights (p1 >> p2 >> p3)\n    \"W1\": 1000000,\n    \"W2\": 1000,\n    \"W3\": 1,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # ---- sets -------------------------------------------------------------\n    model.C = pyo.Set(initialize=d[\"categories\"], ordered=True)\n    model.K = pyo.Set(\n        initialize=list(d[\"demand\"].keys()),\n        dimen=2,\n        ordered=True,\n    )\n\n    # ---- variables --------------------------------------------------------\n    model.x = pyo.Var(model.C, domain=pyo.NonNegativeIntegers)\n    model.y = pyo.Var(model.C, domain=pyo.NonNegativeIntegers)\n    model.z = pyo.Var(model.C, domain=pyo.NonNegativeIntegers)\n    model.d1 = pyo.Var(model.K, domain=pyo.NonNegativeIntegers)\n    model.d2 = pyo.Var(domain=pyo.NonNegativeIntegers)\n    model.d3 = pyo.Var(domain=pyo.NonNegativeIntegers)\n\n    # ---- constraints ------------------------------------------------------\n\n    # (1) cannot recruit more than available\n    def avail_rule(m, c):\n        return m.x[c] <= d[\"available\"][c]\n    model.avail_con = pyo.Constraint(model.C, rule=avail_rule)\n\n    # (2) satisfied-major count cannot exceed recruited\n    def major_rule(m, c):\n        return m.y[c] <= m.x[c]\n    model.major_con = pyo.Constraint(model.C, rule=major_rule)\n\n    # (3) satisfied-city count cannot exceed recruited\n    def city_rule(m, c):\n        return m.z[c] <= m.x[c]\n    model.city_con = pyo.Constraint(model.C, rule=city_rule)\n\n    # (4) demand satisfaction with under-achievement slack\n    def demand_rule(m, city, major):\n        total = sum(\n            m.x[c]\n            for c in d[\"categories\"]\n            if major in d[\"competent\"][c]\n        )\n        return total + m.d1[city, major] >= d[\"demand\"][city, major]\n    model.demand_con = pyo.Constraint(model.K, rule=demand_rule)\n\n    # (5) preferred-major goal\n    def goal_major_rule(m):\n        return sum(m.y[c] for c in m.C) + m.d2 >= d[\"target_major\"]\n    model.goal_major_con = pyo.Constraint(rule=goal_major_rule)\n\n    # (6) preferred-city goal\n    def goal_city_rule(m):\n        return sum(m.z[c] for c in m.C) + m.d3 >= d[\"target_city\"]\n    model.goal_city_con = pyo.Constraint(rule=goal_city_rule)\n\n    # ---- objective --------------------------------------------------------\n    def obj_rule(m):\n        return (\n            d[\"W1\"] * sum(m.d1[k] for k in m.K)\n            + d[\"W2\"] * m.d2\n            + d[\"W3\"] * m.d3\n        )\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1643,
+      "completion_tokens": 843
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1598,
+      "completion_tokens": 1483
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 13.107216358184814,
+   "position": 8,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"categories\": [1, 2, 3, 4, 5, 6],\n    \"cities\": [\"Donghai\", \"Nanjiang\"],\n    \"majors\": [1, 2, 3],\n    \"avail\": {1: 1500, 2: 1500, 3: 1500, 4: 1500, 5: 1500, 6: 1500},\n    # competent majors per category (Table 4-4)\n    \"competent\": {\n        1: [1, 2],\n        2: [2, 3],\n        3: [1, 3],\n        4: [1, 3],\n        5: [2, 3],\n        6: [3],\n    },\n    # preferred major per category (Table 4-4)\n    \"pref_major\": {1: 1, 2: 2, 3: 1, 4: 3, 5: 3, 6: 3},\n    # preferred city per category (Table 4-4)\n    \"pref_city\": {1: \"Donghai\", 2: \"Donghai\", 3: \"Nanjiang\",\n                  4: \"Nanjiang\", 5: \"Donghai\", 6: \"Nanjiang\"},\n    # demand per (city, major) (Table 4-3)\n    \"demand\": {\n        (\"Donghai\", 1): 1000, (\"Donghai\", 2): 2000,\n        (\"Nanjiang\", 1): 2000, (\"Nanjiang\", 2): 1000, (\"Nanjiang\", 3): 1000,\n    },\n    # goal targets\n    \"target_pref_major\": 8000,\n    \"target_pref_city\": 8000,\n    # preemptive weights (p1 >> p2 >> p3)\n    \"W1\": 10 ** 6,\n    \"W2\": 10 ** 3,\n    \"W3\": 1,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.C = pyo.Set(initialize=d[\"categories\"], ordered=True)\n    m.L = pyo.Set(initialize=d[\"cities\"], ordered=True)\n    m.M = pyo.Set(initialize=d[\"majors\"], ordered=True)\n    m.D = pyo.Set(initialize=list(d[\"demand\"].keys()), dimen=2)\n\n    # x[c,l,m]: personnel of category c assigned to city l, major m\n    m.x = pyo.Var(m.C, m.L, m.M, within=pyo.NonNegativeIntegers)\n\n    # deviation (under-achievement) variables\n    m.d1 = pyo.Var(m.D, within=pyo.NonNegativeReals)\n    m.d2 = pyo.Var(within=pyo.NonNegativeReals)\n    m.d3 = pyo.Var(within=pyo.NonNegativeReals)\n\n    # competence table for lookup\n    competent = d[\"competent\"]\n\n    # (a) competence: forbid assigning a non-competent major\n    def rule_incomp(mdl, c, l, mm):\n        if mm not in competent[c]:\n            return mdl.x[c, l, mm] == 0\n        return pyo.Constraint.Skip\n\n    m.incomp = pyo.Constraint(m.C, m.L, m.M, rule=rule_incomp)\n\n    # (b) each category fully recruited\n    def rule_avail(mdl, c):\n        return sum(mdl.x[c, l, mm] for l in mdl.L for mm in mdl.M) == d[\"avail\"][c]\n\n    m.avail = pyo.Constraint(m.C, rule=rule_avail)\n\n    # (c) demand satisfaction with under-achievement d1 (>= direction)\n    def rule_demand(mdl, l, mm):\n        return sum(mdl.x[c, l, mm] for c in mdl.C) + mdl.d1[l, mm] >= d[\"demand\"][(l, mm)]\n\n    m.demand = pyo.Constraint(m.D, rule=rule_demand)\n\n    # (d) preferred-major goal (>= 8000) with under-achievement d2\n    def rule_pref_major(mdl):\n        return (sum(mdl.x[c, l, d[\"pref_major\"][c]]\n                    for c in mdl.C for l in mdl.L) + mdl.d2\n                >= d[\"target_pref_major\"])\n\n    m.pref_major = pyo.Constraint(rule=rule_pref_major)\n\n    # (e) preferred-city goal (>= 8000) with under-achievement d3\n    def rule_pref_city(mdl):\n        return (sum(mdl.x[c, d[\"pref_city\"][c], mm]\n                    for c in mdl.C for mm in mdl.M) + mdl.d3\n                >= d[\"target_pref_city\"])\n\n    m.pref_city = pyo.Constraint(rule=rule_pref_city)\n\n    # objective: minimised weighted sum of goal deviations\n    m.obj = pyo.Objective(\n        expr=(d[\"W1\"] * sum(m.d1[l, mm] for (l, mm) in m.D)\n              + d[\"W2\"] * m.d2\n              + d[\"W3\"] * m.d3),\n        sense=pyo.minimize,\n    )\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1639,
+      "completion_tokens": 1683
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.867330551147461,
+   "position": 9,
+   "recipe_index": 7
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:58:14"
+}

@@ -1,0 +1,266 @@
+{
+ "pid": "optmath_0073",
+ "question": "Minimize the total completion time of six jobs processed on three machines, where each job must be assigned to exactly one of six schedule positions and each position must have exactly one job. The processing times for each job on each machine are as follows: Job 0 takes 5, 5, and 7 hours on Machines 0, 1, and 2 respectively; Job 1 takes 5, 9, and 10 hours; Job 2 takes 6, 7, and 10 hours; Job 3 takes 8, 7, and 9 hours; Job 4 takes 9, 5, and 9 hours; and Job 5 takes 8, 8, and 7 hours. Each job must start on Machine 1 only after completing on Machine 0, and on Machine 2 only after completing on Machine 1. Additionally, the start time of a job in a later position must be at least the start time of the job in the previous position plus its processing time on the same machine. The objective is to minimize the total completion time, which includes the start time of the last job on the last machine plus its processing time. All start times must be non-negative, and job assignments to positions are binary (either assigned or not). The specific coefficients for the objective function are 5, 6, 10, 7, 8, and 8 for JobSchedule[0,5], JobSchedule[1,5], JobSchedule[2,5], JobSchedule[3,5], JobSchedule[4,5], and JobSchedule[5,5] respectively, with an additional term StartTime[5,3]. The constraints include ensuring one job per schedule position, one schedule position per job, machine precedence, and job precedence, with exact coefficients as detailed in the LP data.",
+ "templates": [
+  "Scheduling",
+  "Assignment"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   x[j, k] in {0,1}  : 1 if job j is assigned to schedule position k\n#   s[k, m] >= 0      : start time of the job in position k on machine m\n#   Cmax    >= 0      : completion time of the last job on the last machine\n#\n# Objective (minimize):\n#   total completion time = start time of the last job on the last machine\n#                           plus its processing time on that machine\n#   modelled as Cmax, with Cmax >= s[last, last_machine] + p[last, last_machine]\n#\n# Constraints:\n#   1. Each schedule position has exactly one job.\n#   2. Each job is assigned to exactly one schedule position.\n#   3. Machine precedence: a job starts on machine m+1 only after finishing\n#      on machine m (start[k,m+1] >= start[k,m] + processing time on m).\n#   4. Job precedence: the job in a later position starts on a machine at least\n#      after the previous position's job finishes on that machine.\n#   5. Cmax definition: Cmax >= start[last, last_machine] + p[last, last_machine].\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"num_jobs\": 6,\n    \"num_machines\": 3,\n    \"num_positions\": 6,\n    \"processing\": {\n        (0, 0): 5, (0, 1): 5, (0, 2): 7,\n        (1, 0): 5, (1, 1): 9, (1, 2): 10,\n        (2, 0): 6, (2, 1): 7, (2, 2): 10,\n        (3, 0): 8, (3, 1): 7, (3, 2): 9,\n        (4, 0): 9, (4, 1): 5, (4, 2): 9,\n        (5, 0): 8, (5, 1): 8, (5, 2): 7,\n    },\n    \"big_M\": 1000,\n    \"last_position\": 5,\n    \"last_machine\": 2,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    jobs = list(range(d[\"num_jobs\"]))\n    machines = list(range(d[\"num_machines\"]))\n    positions = list(range(d[\"num_positions\"]))\n    p = d[\"processing\"]\n    M = d[\"big_M\"]\n    last_pos = d[\"last_position\"]\n    last_mach = d[\"last_machine\"]\n\n    model = pyo.ConcreteModel()\n\n    model.J = pyo.Set(initialize=jobs)\n    model.M = pyo.Set(initialize=machines)\n    model.K = pyo.Set(initialize=positions)\n\n    model.x = pyo.Var(model.J, model.K, within=pyo.Binary)\n    model.s = pyo.Var(model.K, model.M, within=pyo.NonNegativeReals)\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Objective: minimize total completion time\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    # 1. Each position has exactly one job\n    def pos_rule(m, k):\n        return sum(m.x[j, k] for j in m.J) == 1\n    model.pos_assign = pyo.Constraint(model.K, rule=pos_rule)\n\n    # 2. Each job assigned to exactly one position\n    def job_rule(m, j):\n        return sum(m.x[j, k] for k in m.K) == 1\n    model.job_assign = pyo.Constraint(model.J, rule=job_rule)\n\n    # 3. Machine precedence: start[k,m+1] >= start[k,m] + p[job in k, m]\n    #    Linearised with big-M using assignment variables.\n    def mach_prec_rule(m, k, mm):\n        if mm == 0:\n            return pyo.Constraint.Skip\n        return m.s[k, mm] >= m.s[k, mm - 1] + sum(\n            p[(j, mm - 1)] * m.x[j, k] for j in m.J\n        )\n    model.mach_prec = pyo.Constraint(model.K, model.M, rule=mach_prec_rule)\n\n    # 4. Job precedence across positions on the same machine:\n    #    start[k+1, m] >= start[k, m] + p[job in k, m]\n    def job_prec_rule(m, k, mm):\n        if k == last_pos:\n            return pyo.Constraint.Skip\n        return m.s[k + 1, mm] >= m.s[k, mm] + sum(\n            p[(j, mm)] * m.x[j, k] for j in m.J\n        )\n    model.job_prec = pyo.Constraint(model.K, model.M, rule=job_prec_rule)\n\n    # 5. Cmax definition\n    def cmax_rule(m):\n        return m.Cmax >= m.s[last_pos, last_mach] + sum(\n            p[(j, last_mach)] * m.x[j, last_pos] for j in m.J\n        )\n    model.cmax_def = pyo.Constraint(rule=cmax_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1410,
+      "completion_tokens": 2229
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2473,
+      "completion_tokens": 1237
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 23.38618230819702,
+   "position": 0,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"jobs\": [0, 1, 2, 3, 4, 5],\n    \"machines\": [0, 1, 2],\n    \"positions\": [0, 1, 2, 3, 4, 5],\n    \"last_position\": 5,\n    \"last_machine\": 2,\n    # processing times p[job][machine]\n    \"proc\": {\n        0: {0: 5, 1: 5, 2: 7},\n        1: {0: 5, 1: 9, 2: 10},\n        2: {0: 6, 1: 7, 2: 10},\n        3: {0: 8, 1: 7, 2: 9},\n        4: {0: 9, 1: 5, 2: 9},\n        5: {0: 8, 1: 8, 2: 7},\n    },\n    # objective coefficients for jobs in the last position\n    \"obj_coef\": {0: 5, 1: 6, 2: 10, 3: 7, 4: 8, 5: 8},\n    # big-M for machine precedence (larger than any start-time deviation)\n    \"bigM\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    J = d[\"jobs\"]\n    M = d[\"machines\"]\n    P = d[\"positions\"]\n    last_p = d[\"last_position\"]\n    last_m = d[\"last_machine\"]\n    proc = d[\"proc\"]\n    obj_coef = d[\"obj_coef\"]\n    bigM = d[\"bigM\"]\n\n    model = pyo.ConcreteModel()\n\n    model.J = pyo.Set(initialize=J)\n    model.M = pyo.Set(initialize=M)\n    model.P = pyo.Set(initialize=P)\n\n    # x[j,p] = 1 if job j assigned to position p\n    model.x = pyo.Var(model.J, model.P, within=pyo.Binary)\n\n    # s[p,m] = start time of the job in position p on machine m\n    model.s = pyo.Var(model.P, model.M, within=pyo.NonNegativeReals)\n\n    # Objective: sum_j obj_coef[j]*x[j,last_p] + s[last_p, last_m]\n    def obj_rule(m):\n        return (sum(obj_coef[j] * m.x[j, last_p] for j in m.J)\n                + m.s[last_p, last_m])\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each position gets exactly one job\n    def one_job_per_pos_rule(m, p):\n        return sum(m.x[j, p] for j in m.J) == 1\n    model.one_job_per_pos = pyo.Constraint(model.P, rule=one_job_per_pos_rule)\n\n    # Each job gets exactly one position\n    def one_pos_per_job_rule(m, j):\n        return sum(m.x[j, p] for p in m.P) == 1\n    model.one_pos_per_job = pyo.Constraint(model.J, rule=one_pos_per_job_rule)\n\n    # Machine precedence within a job: s[p,1] >= s[p,0] + proc(job,0) when job is in pos p\n    # Linearize: s[p,1] >= s[p,0] + sum_j proc[j][0]*x[j,p]\n    def mm_prec_01_rule(m, p):\n        return m.s[p, 1] >= m.s[p, 0] + sum(proc[j][0] * m.x[j, p] for j in m.J)\n    model.mm_prec_01 = pyo.Constraint(model.P, rule=mm_prec_01_rule)\n\n    # s[p,2] >= s[p,1] + sum_j proc[j][1]*x[j,p]\n    def mm_prec_12_rule(m, p):\n        return m.s[p, 2] >= m.s[p, 1] + sum(proc[j][1] * m.x[j, p] for j in m.J)\n    model.mm_prec_12 = pyo.Constraint(model.P, rule=mm_prec_12_rule)\n\n    # Job precedence on each machine: position p+1 starts after position p finishes\n    # s[p+1,m] >= s[p,m] + sum_j proc[j][m]*x[j,p]\n    def job_prec_rule(m, p, mach):\n        if p == last_p:\n            return pyo.Constraint.Skip\n        return m.s[p + 1, mach] >= m.s[p, mach] + sum(proc[j][mach] * m.x[j, p] for j in m.J)\n    model.job_prec = pyo.Constraint(model.P, model.M, rule=job_prec_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1406,
+      "completion_tokens": 1636
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.243707656860352,
+   "position": 1,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_jobs\": 6,\n    \"num_machines\": 3,\n    \"num_positions\": 6,\n    # processing time p[job][machine]\n    \"proc\": {\n        0: {0: 5, 1: 5, 2: 7},\n        1: {0: 5, 1: 9, 2: 10},\n        2: {0: 6, 1: 7, 2: 10},\n        3: {0: 8, 1: 7, 2: 9},\n        4: {0: 9, 1: 5, 2: 9},\n        5: {0: 8, 1: 8, 2: 7},\n    },\n    # objective coefficients for last-position completion (p[job][last machine])\n    \"obj_coeff\": {0: 5, 1: 6, 2: 10, 3: 7, 4: 8, 5: 8},\n    \"last_machine\": 2,\n    \"last_position\": 5,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    jobs = list(range(d[\"num_jobs\"]))\n    machines = list(range(d[\"num_machines\"]))\n    positions = list(range(d[\"num_positions\"]))\n\n    m = pyo.ConcreteModel()\n\n    m.J = pyo.Set(initialize=jobs)\n    m.M = pyo.Set(initialize=machines)\n    m.K = pyo.Set(initialize=positions)\n\n    # assignment of job j to position k\n    m.assign = pyo.Var(m.J, m.K, within=pyo.Binary)\n\n    # start time of the job in position k on machine mm\n    m.start = pyo.Var(m.K, m.M, within=pyo.NonNegativeReals)\n\n    # objective: completion time of last position on last machine\n    def obj_rule(m):\n        last_k = d[\"last_position\"]\n        last_mm = d[\"last_machine\"]\n        return m.start[last_k, last_mm] + sum(\n            d[\"obj_coeff\"][j] * m.assign[j, last_k] for j in m.J\n        )\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # one job per position\n    def one_job_per_position_rule(m, k):\n        return sum(m.assign[j, k] for j in m.J) == 1\n\n    m.one_job_per_position = pyo.Constraint(m.K, rule=one_job_per_position_rule)\n\n    # one position per job\n    def one_position_per_job_rule(m, j):\n        return sum(m.assign[j, k] for k in m.K) == 1\n\n    m.one_position_per_job = pyo.Constraint(m.J, rule=one_position_per_job_rule)\n\n    # machine precedence: start on machine mm+1 >= start on mm + proc time\n    def machine_precedence_rule(m, k, mm):\n        if mm == d[\"num_machines\"] - 1:\n            return pyo.Constraint.Skip\n        return m.start[k, mm + 1] >= m.start[k, mm] + sum(\n            d[\"proc\"][j][mm] * m.assign[j, k] for j in m.J\n        )\n\n    m.machine_precedence = pyo.Constraint(m.K, m.M, rule=machine_precedence_rule)\n\n    # position precedence on each machine:\n    # start of position k+1 >= start of position k + proc time of job in position k\n    def position_precedence_rule(m, k, mm):\n        if k == d[\"num_positions\"] - 1:\n            return pyo.Constraint.Skip\n        return m.start[k + 1, mm] >= m.start[k, mm] + sum(\n            d[\"proc\"][j][mm] * m.assign[j, k] for j in m.J\n        )\n\n    m.position_precedence = pyo.Constraint(m.K, m.M, rule=position_precedence_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1390,
+      "completion_tokens": 1303
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.759570598602295,
+   "position": 2,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA\n# ---------------------------------------------------------------------------\nDATA = {\n    \"num_jobs\": 6,\n    \"num_machines\": 3,\n    \"num_positions\": 6,\n    # processing[j][m] = processing time of job j on machine m\n    \"processing\": {\n        (0, 0): 5, (0, 1): 5, (0, 2): 7,\n        (1, 0): 5, (1, 1): 9, (1, 2): 10,\n        (2, 0): 6, (2, 1): 7, (2, 2): 10,\n        (3, 0): 8, (3, 1): 7, (3, 2): 9,\n        (4, 0): 9, (4, 1): 5, (4, 2): 9,\n        (5, 0): 8, (5, 1): 8, (5, 2): 7,\n    },\n    # objective coefficients for the last-position assignment variables\n    \"obj_coeff\": {0: 5, 1: 6, 2: 10, 3: 7, 4: 8, 5: 8},\n    # big-M for precedence constraints\n    \"big_m\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    J = list(range(d[\"num_jobs\"]))\n    M = list(range(d[\"num_machines\"]))\n    K = list(range(d[\"num_positions\"]))\n    p = d[\"processing\"]\n    Mbig = d[\"big_m\"]\n\n    model = pyo.ConcreteModel()\n\n    # ------------------------------------------------------------------\n    # Sets\n    # ------------------------------------------------------------------\n    model.J = pyo.Set(initialize=J)\n    model.M = pyo.Set(initialize=M)\n    model.K = pyo.Set(initialize=K)\n\n    # ------------------------------------------------------------------\n    # Decision variables\n    # ------------------------------------------------------------------\n    # x[j,k] = 1 if job j is assigned to schedule position k\n    model.x = pyo.Var(model.J, model.K, within=pyo.Binary)\n\n    # s[k,m] = start time of the job in position k on machine m\n    model.s = pyo.Var(model.K, model.M, within=pyo.NonNegativeReals)\n\n    # ------------------------------------------------------------------\n    # Constraints\n    # ------------------------------------------------------------------\n    # (1) Each position has exactly one job\n    def one_job_per_position_rule(m, k):\n        return sum(m.x[j, k] for j in m.J) == 1\n    model.one_job_per_position = pyo.Constraint(model.K, rule=one_job_per_position_rule)\n\n    # (2) Each job is assigned to exactly one position\n    def one_position_per_job_rule(m, j):\n        return sum(m.x[j, k] for k in m.K) == 1\n    model.one_position_per_job = pyo.Constraint(model.J, rule=one_position_per_job_rule)\n\n    # (3) Machine precedence within a job:\n    #     start on machine m+1 >= start on machine m + processing on machine m\n    #     The processing time depends on which job occupies position k.\n    def machine_precedence_rule(m, k, mm):\n        if mm == 0:\n            return pyo.Constraint.Skip\n        proc_prev = sum(p[(j, mm - 1)] * m.x[j, k] for j in m.J)\n        return m.s[k, mm] >= m.s[k, mm - 1] + proc_prev\n    model.machine_precedence = pyo.Constraint(\n        model.K, model.M, rule=machine_precedence_rule\n    )\n\n    # (4) Job precedence across positions on the same machine:\n    #     start of position k+1 on machine m >= start of position k on machine m\n    #     + processing time of the job in position k on machine m\n    def position_precedence_rule(m, k, mm):\n        if k == 0:\n            return pyo.Constraint.Skip\n        proc_prev = sum(p[(j, mm)] * m.x[j, k - 1] for j in m.J)\n        return m.s[k, mm] >= m.s[k - 1, mm] + proc_prev\n    model.position_precedence = pyo.Constraint(\n        model.K, model.M, rule=position_precedence_rule\n    )\n\n    # ------------------------------------------------------------------\n    # Objective: minimize total completion time\n    #   = sum_j obj_coeff[j] * x[j, last_position] + s[last_position, last_machine]\n    # ------------------------------------------------------------------\n    last_k = max(K)\n    last_m = max(M)\n\n    def obj_rule(m):\n        assign_term = sum(d[\"obj_coeff\"][j] * m.x[j, last_k] for j in m.J)\n        return assign_term + m.s[last_k, last_m]\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1410,
+      "completion_tokens": 3186
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1896,
+      "completion_tokens": 1149
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 29.47019338607788,
+   "position": 3,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_jobs\": 6,\n    \"num_machines\": 3,\n    \"num_positions\": 6,\n    \"jobs\": [0, 1, 2, 3, 4, 5],\n    \"machines\": [0, 1, 2],\n    \"positions\": [0, 1, 2, 3, 4, 5],\n    # processing time p[job][machine]\n    \"proc\": {\n        0: {0: 5, 1: 5, 2: 7},\n        1: {0: 5, 1: 9, 2: 10},\n        2: {0: 6, 1: 7, 2: 10},\n        3: {0: 8, 1: 7, 2: 9},\n        4: {0: 9, 1: 5, 2: 9},\n        5: {0: 8, 1: 8, 2: 7},\n    },\n    # objective coefficients on assign[j, last_position] (machine-2 times)\n    \"obj_coeff_last_pos\": {0: 5, 1: 6, 2: 10, 3: 7, 4: 8, 5: 8},\n    \"last_position\": 5,\n    \"last_machine\": 2,\n    \"big_m\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    jobs = d[\"jobs\"]\n    machines = d[\"machines\"]\n    positions = d[\"positions\"]\n    proc = d[\"proc\"]\n    last_pos = d[\"last_position\"]\n    last_mach = d[\"last_machine\"]\n\n    model = pyo.ConcreteModel()\n\n    model.J = pyo.Set(initialize=jobs)\n    model.M = pyo.Set(initialize=machines)\n    model.K = pyo.Set(initialize=positions)\n\n    # assign[j,k] = 1 if job j occupies position k\n    model.assign = pyo.Var(model.J, model.K, within=pyo.Binary)\n\n    # start[k,m] = start time of the job in position k on machine m\n    model.start = pyo.Var(model.K, model.M, within=pyo.NonNegativeReals)\n\n    # completion time of the whole schedule\n    model.completion = pyo.Var(within=pyo.NonNegativeReals)\n\n    # --- Objective: minimize total completion time ---\n    def obj_rule(m):\n        return m.start[last_pos, last_mach] + sum(\n            d[\"obj_coeff_last_pos\"][j] * m.assign[j, last_pos] for j in m.J\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --- One job per position ---\n    def one_job_per_position_rule(m, k):\n        return sum(m.assign[j, k] for j in m.J) == 1\n\n    model.one_job_per_position = pyo.Constraint(model.K, rule=one_job_per_position_rule)\n\n    # --- One position per job ---\n    def one_position_per_job_rule(m, j):\n        return sum(m.assign[j, k] for k in m.K) == 1\n\n    model.one_position_per_job = pyo.Constraint(model.J, rule=one_position_per_job_rule)\n\n    # --- Machine precedence within a position: machine 1 after machine 0 ---\n    def prec_m0_m1_rule(m, k):\n        return m.start[k, 1] >= m.start[k, 0] + sum(\n            proc[j][0] * m.assign[j, k] for j in m.J\n        )\n\n    model.prec_m0_m1 = pyo.Constraint(model.K, rule=prec_m0_m1_rule)\n\n    # --- Machine precedence within a position: machine 2 after machine 1 ---\n    def prec_m1_m2_rule(m, k):\n        return m.start[k, 2] >= m.start[k, 1] + sum(\n            proc[j][1] * m.assign[j, k] for j in m.J\n        )\n\n    model.prec_m1_m2 = pyo.Constraint(model.K, rule=prec_m1_m2_rule)\n\n    # --- Job (position) precedence on machine 0 ---\n    def job_prec_m0_rule(m, k):\n        if k == 0:\n            return pyo.Constraint.Skip\n        return m.start[k, 0] >= m.start[k - 1, 0] + sum(\n            proc[j][0] * m.assign[j, k - 1] for j in m.J\n        )\n\n    model.job_prec_m0 = pyo.Constraint(model.K, rule=job_prec_m0_rule)\n\n    # --- Job (position) precedence on machine 1 ---\n    def job_prec_m1_rule(m, k):\n        if k == 0:\n            return pyo.Constraint.Skip\n        return m.start[k, 1] >= m.start[k - 1, 1] + sum(\n            proc[j][1] * m.assign[j, k - 1] for j in m.J\n        )\n\n    model.job_prec_m1 = pyo.Constraint(model.K, rule=job_prec_m1_rule)\n\n    # --- Job (position) precedence on machine 2 ---\n    def job_prec_m2_rule(m, k):\n        if k == 0:\n            return pyo.Constraint.Skip\n        return m.start[k, 2] >= m.start[k - 1, 2] + sum(\n            proc[j][2] * m.assign[j, k - 1] for j in m.J\n        )\n\n    model.job_prec_m2 = pyo.Constraint(model.K, rule=job_prec_m2_rule)\n\n    # --- Completion definition ---\n    def completion_rule(m):\n        return m.completion >= m.start[last_pos, last_mach] + sum(\n            proc[j][last_mach] * m.assign[j, last_pos] for j in m.J\n        )\n\n    model.completion_def = pyo.Constraint(rule=completion_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1390,
+      "completion_tokens": 1850
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.121076822280884,
+   "position": 4,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"Job 0 takes 5, 5, and 7 hours on Machines 0, 1, 2\"\n    \"proc\": {\n        0: {0: 5, 1: 5, 2: 7},\n        1: {0: 5, 1: 9, 2: 10},\n        2: {0: 6, 1: 7, 2: 10},\n        3: {0: 8, 1: 7, 2: 9},\n        4: {0: 9, 1: 5, 2: 9},\n        5: {0: 8, 1: 8, 2: 7},\n    },\n    # \"specific coefficients for the objective function are 5, 6, 10, 7, 8, and 8\"\n    \"obj_coef\": {0: 5, 1: 6, 2: 10, 3: 7, 4: 8, 5: 8},\n    \"num_jobs\": 6,        # \"six jobs\"\n    \"num_machines\": 3,    # \"three machines\"\n    \"num_positions\": 6,   # \"six schedule positions\"\n    \"last_position\": 5,   # \"JobSchedule[j,5]\" / \"StartTime[5,3]\"\n    \"last_machine\": 2,    # machine index 2 (third machine)\n    \"big_M\": 1000,        # big-M for precedence linearisation\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    J = list(range(d[\"num_jobs\"]))\n    M = list(range(d[\"num_machines\"]))\n    P = list(range(d[\"num_positions\"]))\n    last_p = d[\"last_position\"]\n    last_m = d[\"last_machine\"]\n    Mbig = d[\"big_M\"]\n    proc = d[\"proc\"]\n    coef = d[\"obj_coef\"]\n\n    model = pyo.ConcreteModel()\n\n    model.J = pyo.Set(initialize=J)\n    model.M = pyo.Set(initialize=M)\n    model.P = pyo.Set(initialize=P)\n\n    # Binary assignment: job j assigned to schedule position p\n    model.JobSchedule = pyo.Var(model.J, model.P, within=pyo.Binary)\n\n    # Start time of the job in position p on machine m (non-negative)\n    model.StartTime = pyo.Var(model.P, model.M, within=pyo.NonNegativeReals)\n\n    # Objective: weighted last-position assignments + start of last job on last machine\n    def obj_rule(m):\n        expr = sum(coef[j] * m.JobSchedule[j, last_p] for j in m.J)\n        expr += m.StartTime[last_p, last_m]\n        return expr\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # (a) Each position gets exactly one job\n    def one_job_per_position_rule(m, p):\n        return sum(m.JobSchedule[j, p] for j in m.J) == 1\n\n    model.one_job_per_position = pyo.Constraint(model.P, rule=one_job_per_position_rule)\n\n    # (b) Each job assigned to exactly one position\n    def one_position_per_job_rule(m, j):\n        return sum(m.JobSchedule[j, p] for p in m.P) == 1\n\n    model.one_position_per_job = pyo.Constraint(model.J, rule=one_position_per_job_rule)\n\n    # (c) Machine precedence: Machine 1 after Machine 0, Machine 2 after Machine 1\n    def machine_precedence_rule(m, p, j):\n        return (\n            m.StartTime[p, 1] >= m.StartTime[p, 0] + proc[j][0]\n            - Mbig * (1 - m.JobSchedule[j, p])\n        )\n\n    model.machine_prec_01 = pyo.Constraint(model.P, model.J, rule=machine_precedence_rule)\n\n    def machine_precedence_12_rule(m, p, j):\n        return (\n            m.StartTime[p, 2] >= m.StartTime[p, 1] + proc[j][1]\n            - Mbig * (1 - m.JobSchedule[j, p])\n        )\n\n    model.machine_prec_12 = pyo.Constraint(model.P, model.J, rule=machine_precedence_12_rule)\n\n    # (d) Job/position precedence: start of later position >= start of previous + its proc time\n    def position_precedence_rule(m, p, mm, j):\n        if p == 0:\n            return pyo.Constraint.Skip\n        return (\n            m.StartTime[p, mm] >= m.StartTime[p - 1, mm] + proc[j][mm]\n            - Mbig * (1 - m.JobSchedule[j, p])\n        )\n\n    model.position_prec = pyo.Constraint(model.P, model.M, model.J, rule=position_precedence_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1394,
+      "completion_tokens": 1358
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.904454946517944,
+   "position": 5,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_jobs\": 6,\n    \"num_machines\": 3,\n    \"num_positions\": 6,\n    \"p\": [\n        [5, 5, 7],\n        [5, 9, 10],\n        [6, 7, 10],\n        [8, 7, 9],\n        [9, 5, 9],\n        [8, 8, 7],\n    ],\n    \"last_pos\": 5,\n    \"last_mach\": 2,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    J = range(d[\"num_jobs\"])\n    M = range(d[\"num_machines\"])\n    P = range(d[\"num_positions\"])\n    p = d[\"p\"]\n    last_pos = d[\"last_pos\"]\n    last_mach = d[\"last_mach\"]\n\n    model = pyo.ConcreteModel()\n    model.J = pyo.RangeSet(0, d[\"num_jobs\"] - 1)\n    model.M = pyo.RangeSet(0, d[\"num_machines\"] - 1)\n    model.P = pyo.RangeSet(0, d[\"num_positions\"] - 1)\n\n    # x[j,k] = 1 if job j is scheduled in position k\n    model.x = pyo.Var(model.J, model.P, within=pyo.Binary)\n    # s[k,m] = start time of the job in position k on machine m\n    model.s = pyo.Var(model.P, model.M, within=pyo.NonNegativeReals)\n\n    # Objective: minimize total completion time = s[last_pos,last_mach]\n    # + processing time of the job placed last on the last machine.\n    model.obj = pyo.Objective(\n        expr=model.s[last_pos, last_mach]\n        + sum(p[j][last_mach] * model.x[j, last_pos] for j in J),\n        sense=pyo.minimize,\n    )\n\n    # (1) Each position has exactly one job.\n    def one_job_per_position_rule(m, k):\n        return sum(m.x[j, k] for j in J) == 1\n\n    model.one_job_per_position = pyo.Constraint(\n        model.P, rule=one_job_per_position_rule\n    )\n\n    # (2) Each job is assigned to exactly one position.\n    def one_position_per_job_rule(m, j):\n        return sum(m.x[j, k] for k in P) == 1\n\n    model.one_position_per_job = pyo.Constraint(\n        model.J, rule=one_position_per_job_rule\n    )\n\n    # (3) Machine precedence: job in position k must start on machine m+1\n    # only after finishing on machine m (finish time >= start + p).\n    def machine_precedence_rule(m, k, mm):\n        if mm == d[\"num_machines\"] - 1:\n            raise IndexError\n        return m.s[k, mm + 1] >= m.s[k, mm] + sum(\n            p[j][mm] * m.x[j, k] for j in J\n        )\n\n    model.machine_precedence = pyo.Constraint(\n        model.P,\n        pyo.RangeSet(0, d[\"num_machines\"] - 2),\n        rule=machine_precedence_rule,\n    )\n\n    # (4) Job precedence on the same machine: position k starts at least\n    # when position k-1 finishes on that machine.\n    def job_precedence_rule(m, k, mm):\n        return m.s[k, mm] >= m.s[k - 1, mm] + sum(\n            p[j][mm] * m.x[j, k - 1] for j in J\n        )\n\n    model.job_precedence = pyo.Constraint(\n        pyo.RangeSet(1, d[\"num_positions\"] - 1),\n        model.M,\n        rule=job_precedence_rule,\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1406,
+      "completion_tokens": 1351
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.912468433380127,
+   "position": 6,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA - every numeric constant from the problem statement\n# ---------------------------------------------------------------------------\nDATA = {\n    # \"six jobs\" -> Job 0..5 ; \"three machines\" -> Machine 0..2 ; \"six schedule positions\"\n    \"num_jobs\": 6,\n    \"num_machines\": 3,\n    \"num_positions\": 6,\n\n    # Processing times: p[job][machine]\n    # \"Job 0 takes 5, 5, and 7 hours on Machines 0, 1, and 2 respectively\"\n    # \"Job 1 takes 5, 9, and 10 hours\"\n    # \"Job 2 takes 6, 7, and 10 hours\"\n    # \"Job 3 takes 8, 7, and 9 hours\"\n    # \"Job 4 takes 9, 5, and 9 hours\"\n    # \"Job 5 takes 8, 8, and 7 hours\"\n    \"proc\": {\n        0: {0: 5, 1: 5, 2: 7},\n        1: {0: 5, 1: 9, 2: 10},\n        2: {0: 6, 1: 7, 2: 10},\n        3: {0: 8, 1: 7, 2: 9},\n        4: {0: 9, 1: 5, 2: 9},\n        5: {0: 8, 1: 8, 2: 7},\n    },\n\n    # Objective coefficients for JobSchedule[j, last_position]:\n    # \"coefficients ... 5, 6, 10, 7, 8, and 8 for JobSchedule[0,5] ... JobSchedule[5,5]\"\n    # (these equal each job's machine-2 processing time)\n    \"obj_coef\": {0: 5, 1: 6, 2: 10, 3: 7, 4: 8, 5: 8},\n\n    # \"StartTime[5,3]\" term -> start of last position (index 5) on last machine (index 2)\n    \"last_position\": 5,\n    \"last_machine\": 2,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    jobs = list(range(d[\"num_jobs\"]))\n    machines = list(range(d[\"num_machines\"]))\n    positions = list(range(d[\"num_positions\"]))\n    last_pos = d[\"last_position\"]\n    last_mach = d[\"last_machine\"]\n\n    model = pyo.ConcreteModel()\n\n    model.J = pyo.Set(initialize=jobs, ordered=True)\n    model.M = pyo.Set(initialize=machines, ordered=True)\n    model.K = pyo.Set(initialize=positions, ordered=True)\n\n    # Assignment variable: job j to position k\n    model.x = pyo.Var(model.J, model.K, within=pyo.Binary)\n\n    # Start time of the job in position k on machine m\n    model.s = pyo.Var(model.K, model.M, within=pyo.NonNegativeReals)\n\n    # Completion time (makespan-like) of last position on last machine\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n\n    # ------------------------------------------------------------------\n    # Objective: minimize total completion time\n    # ------------------------------------------------------------------\n    def obj_rule(m):\n        expr = m.s[last_pos, last_mach]\n        for j in m.J:\n            expr += d[\"obj_coef\"][j] * m.x[j, last_pos]\n        return expr\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ------------------------------------------------------------------\n    # Constraint: one job per schedule position\n    # ------------------------------------------------------------------\n    def one_job_per_position_rule(m, k):\n        return sum(m.x[j, k] for j in m.J) == 1\n\n    model.one_job_per_position = pyo.Constraint(\n        model.K, rule=one_job_per_position_rule\n    )\n\n    # ------------------------------------------------------------------\n    # Constraint: one schedule position per job\n    # ------------------------------------------------------------------\n    def one_position_per_job_rule(m, j):\n        return sum(m.x[j, k] for k in m.K) == 1\n\n    model.one_position_per_job = pyo.Constraint(\n        model.J, rule=one_position_per_job_rule\n    )\n\n    # ------------------------------------------------------------------\n    # Machine precedence within a job (for the job occupying position k):\n    #   s[k,1] >= s[k,0] + p(job on k, 0)\n    #   s[k,2] >= s[k,1] + p(job on k, 1)\n    # ------------------------------------------------------------------\n    def machine_prec_rule(m, k, mm):\n        # mm is the machine index for the *successor* machine (1 or 2)\n        prev = mm - 1\n        # processing time of the job in position k on the previous machine\n        proc_prev = sum(d[\"proc\"][j][prev] * m.x[j, k] for j in m.J)\n        return m.s[k, mm] >= m.s[k, prev] + proc_prev\n\n    model.machine_prec = pyo.Constraint(\n        model.K,\n        [mm for mm in machines if mm >= 1],\n        rule=machine_prec_rule,\n    )\n\n    # ------------------------------------------------------------------\n    # Sequence precedence on each machine:\n    #   s[k+1,m] >= s[k,m] + p(job on k, m)\n    # ------------------------------------------------------------------\n    def seq_prec_rule(m, k, mm):\n        proc_k = sum(d[\"proc\"][j][mm] * m.x[j, k] for j in m.J)\n        return m.s[k + 1, mm] >= m.s[k, mm] + proc_k\n\n    model.seq_prec = pyo.Constraint(\n        [k for k in positions if k < last_pos],\n        model.M,\n        rule=seq_prec_rule,\n    )\n\n    # ------------------------------------------------------------------\n    # Cmax ties to last position on last machine\n    # ------------------------------------------------------------------\n    def cmax_rule(m):\n        proc_last = sum(d[\"proc\"][j][last_mach] * m.x[j, last_pos] for j in m.J)\n        return m.Cmax >= m.s[last_pos, last_mach] + proc_last\n\n    model.cmax_def = pyo.Constraint(rule=cmax_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1394,
+      "completion_tokens": 1885
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.668861389160156,
+   "position": 7,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"jobs\": [0, 1, 2, 3, 4, 5],\n    \"machines\": [0, 1, 2],           # real machines\n    \"positions\": [0, 1, 2, 3, 4, 5],\n    \"terminal_machine\": 3,           # completion index used by StartTime[5,3]\n    \"last_position\": 5,\n    # processing time per job on each real machine\n    \"proc\": {\n        0: {0: 5, 1: 5, 2: 7},\n        1: {0: 5, 1: 9, 2: 10},\n        2: {0: 6, 1: 7, 2: 10},\n        3: {0: 8, 1: 7, 2: 9},\n        4: {0: 9, 1: 5, 2: 9},\n        5: {0: 8, 1: 8, 2: 7},\n    },\n    # objective coefficients for JobSchedule[j, 5]\n    \"obj_coef\": {0: 5, 1: 6, 2: 10, 3: 7, 4: 8, 5: 8},\n    \"big_penalty_coef\": 0,  # reserved; assignment big-M not needed here\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    m.J = pyo.Set(initialize=d[\"jobs\"])\n    m.M = pyo.Set(initialize=d[\"machines\"])\n    # machine set extended with the terminal machine 3\n    m.Mterm = pyo.Set(initialize=list(d[\"machines\"]) + [d[\"terminal_machine\"]])\n    m.P = pyo.Set(initialize=d[\"positions\"])\n\n    # Assignment binary\n    m.x = pyo.Var(m.J, m.P, within=pyo.Binary)\n\n    # Start times for each position on each machine (incl terminal machine)\n    m.start = pyo.Var(m.P, m.Mterm, within=pyo.NonNegativeReals)\n\n    # ---- Objective: total completion time ----\n    def obj_rule(mm):\n        coef_term = sum(d[\"obj_coef\"][j] * mm.x[j, d[\"last_position\"]] for j in mm.J)\n        return coef_term + mm.start[d[\"last_position\"], d[\"terminal_machine\"]]\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # each position has exactly one job\n    def one_job_per_pos_rule(mm, p):\n        return sum(mm.x[j, p] for j in mm.J) == 1\n    m.one_job_per_pos = pyo.Constraint(m.P, rule=one_job_per_pos_rule)\n\n    # each job assigned to exactly one position\n    def one_pos_per_job_rule(mm, j):\n        return sum(mm.x[j, p] for p in mm.P) == 1\n    m.one_pos_per_job = pyo.Constraint(m.J, rule=one_pos_per_job_rule)\n\n    # machine precedence: start[p,1] >= start[p,0] + proc0 ; start[p,2] >= start[p,1] + proc1\n    def machine_prec_1_rule(mm, p):\n        proc0 = sum(d[\"proc\"][j][0] * mm.x[j, p] for j in mm.J)\n        return mm.start[p, 1] >= mm.start[p, 0] + proc0\n    m.machine_prec_1 = pyo.Constraint(m.P, rule=machine_prec_1_rule)\n\n    def machine_prec_2_rule(mm, p):\n        proc1 = sum(d[\"proc\"][j][1] * mm.x[j, p] for j in mm.J)\n        return mm.start[p, 2] >= mm.start[p, 1] + proc1\n    m.machine_prec_2 = pyo.Constraint(m.P, rule=machine_prec_2_rule)\n\n    # terminal completion: start[p,3] >= start[p,2] + proc2\n    def term_prec_rule(mm, p):\n        proc2 = sum(d[\"proc\"][j][2] * mm.x[j, p] for j in mm.J)\n        return mm.start[p, d[\"terminal_machine\"]] >= mm.start[p, 2] + proc2\n    m.term_prec = pyo.Constraint(m.P, rule=term_prec_rule)\n\n    # position precedence on each machine:\n    # start[p+1,m] >= start[p,m] + work on machine m for the job in position p\n    pos_pairs = [(p, p + 1) for p in d[\"positions\"] if p < d[\"last_position\"]]\n\n    def job_prec_0_rule(mm, p):\n        proc0 = sum(d[\"proc\"][j][0] * mm.x[j, p] for j in mm.J)\n        return mm.start[p + 1, 0] >= mm.start[p, 0] + proc0\n    m.job_prec_0 = pyo.Constraint(\n        [p for p in d[\"positions\"] if p < d[\"last_position\"]], rule=job_prec_0_rule\n    )\n\n    def job_prec_1_rule(mm, p):\n        proc1 = sum(d[\"proc\"][j][1] * mm.x[j, p] for j in mm.J)\n        return mm.start[p + 1, 1] >= mm.start[p, 1] + proc1\n    m.job_prec_1 = pyo.Constraint(\n        [p for p in d[\"positions\"] if p < d[\"last_position\"]], rule=job_prec_1_rule\n    )\n\n    def job_prec_2_rule(mm, p):\n        proc2 = sum(d[\"proc\"][j][2] * mm.x[j, p] for j in mm.J)\n        return mm.start[p + 1, 2] >= mm.start[p, 2] + proc2\n    m.job_prec_2 = pyo.Constraint(\n        [p for p in d[\"positions\"] if p < d[\"last_position\"]], rule=job_prec_2_rule\n    )\n\n    def job_prec_3_rule(mm, p):\n        proc3 = sum(d[\"proc\"][j][2] * mm.x[j, p] for j in mm.J)\n        return mm.start[p + 1, d[\"terminal_machine\"]] >= (\n            mm.start[p, d[\"terminal_machine\"]] + proc3\n        )\n    m.job_prec_term = pyo.Constraint(\n        [p for p in d[\"positions\"] if p < d[\"last_position\"]], rule=job_prec_3_rule\n    )\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1396,
+      "completion_tokens": 2091
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.240928649902344,
+   "position": 8,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"jobs\": [0, 1, 2, 3, 4, 5],\n    \"positions\": [0, 1, 2, 3, 4, 5],\n    \"machines\": [0, 1, 2, 3],          # 0,1,2 processing; 3 = completion stage\n    \"processing\": {\n        0: {0: 5, 1: 5, 2: 7},\n        1: {0: 5, 1: 9, 2: 10},\n        2: {0: 6, 1: 7, 2: 10},\n        3: {0: 8, 1: 7, 2: 9},\n        4: {0: 9, 1: 5, 2: 9},\n        5: {0: 8, 1: 8, 2: 7},\n    },\n    \"obj_coef\": {0: 5, 1: 6, 2: 10, 3: 7, 4: 8, 5: 8},\n    \"num_positions\": 6,\n    \"num_machines\": 3,\n    \"makespan_pos\": 5,          # index 5 (last position)\n    \"big_m\": 1_000,\n    \"last_pos\": 5,              # previous position index p for cost term\n    \"completion_stage\": 3,      # index in machines for completion variable\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    jobs = d[\"jobs\"]\n    positions = d[\"positions\"]\n    machines = d[\"machines\"]\n    proc_machines = [0, 1, 2]\n    cstage = d[\"completion_stage\"]\n    n_pos = d[\"num_positions\"]\n    big_m = d[\"big_m\"]\n    last_p = d[\"makespan_pos\"]          # 5 = final slot in the costs / objective expression\n\n    model = pyo.ConcreteModel()\n\n    model.J = pyo.Set(initialize=jobs)\n    model.P = pyo.Set(initialize=positions)\n    model.M = pyo.Set(initialize=machines)\n\n    # Binary assignment variable\n    model.JobSchedule = pyo.Var(model.J, model.P, within=pyo.Binary)\n\n    # Start-time variables: position, machine-stage\n    model.StartTime = pyo.Var(model.P, model.M, within=pyo.NonNegativeReals)\n\n    # Objective: minimize completion-time proxy for the last position + assignments costs\n    comp_term = sum(\n        d[\"obj_coef\"][j] * model.JobSchedule[j, last_p] for j in model.J\n    )\n\n    def obj_rule(m):\n        return comp_term + m.StartTime[last_p, cstage]\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # (a) Each job assigned to exactly one position\n    def job_assign_rule(m, j):\n        return sum(m.JobSchedule[j, p] for p in m.P) == 1\n\n    model.job_assign = pyo.Constraint(model.J, rule=job_assign_rule)\n\n    # (b) Each position gets exactly one job\n    def pos_assign_rule(m, p):\n        return sum(m.JobSchedule[j, p] for j in m.J) == 1\n\n    model.pos_assign = pyo.Constraint(model.P, rule=pos_assign_rule)\n\n    # (c) Machine precedence inside a position (wait on same job across stages)\n    def machine_prev_01(m, p):\n        return m.StartTime[p, 1] >= (\n            m.StartTime[p, 0]\n            + sum(d[\"processing\"][j][0] * m.JobSchedule[j, p] for j in m.J)\n        )\n\n    def machine_prev_12(m, p):\n        return m.StartTime[p, 2] >= (\n            m.StartTime[p, 1]\n            + sum(d[\"processing\"][j][1] * m.JobSchedule[j, p] for j in m.J)\n        )\n\n    def completion_link(m, p):\n        return m.StartTime[p, cstage] >= (\n            m.StartTime[p, 2]\n            + sum(d[\"processing\"][j][2] * m.JobSchedule[j, p] for j in m.J)\n        )\n\n    model.machine_prev_01 = pyo.Constraint(model.P, rule=machine_prev_01)\n    model.machine_prev_12 = pyo.Constraint(model.P, rule=machine_prev_12)\n    model.completion_link = pyo.Constraint(model.P, rule=completion_link)\n\n    # (d) Job precedence across positions on the same machine\n    pos_list = sorted(positions)\n\n    def seq_rule_m0(m, p):\n        if p == n_pos - 1:\n            return pyo.Constraint.Skip\n        return m.StartTime[p + 1, 0] >= (\n            m.StartTime[p, 0]\n            + sum(d[\"processing\"][j][0] * m.JobSchedule[j, p] for j in m.J)\n        )\n\n    def seq_rule_m1(m, p):\n        if p == n_pos - 1:\n            return pyo.Constraint.Skip\n        return m.StartTime[p + 1, 1] >= (\n            m.StartTime[p, 1]\n            + sum(d[\"processing\"][j][1] * m.JobSchedule[j, p] for j in m.J)\n        )\n\n    def seq_rule_m2(m, p):\n        if p == n_pos - 1:\n            return pyo.Constraint.Skip\n        return m.StartTime[p + 1, 2] >= (\n            m.StartTime[p, 2]\n            + sum(d[\"processing\"][j][2] * m.JobSchedule[j, p] for j in m.J)\n        )\n\n    model.seq_m0 = pyo.Constraint(pos_list, rule=seq_rule_m0)\n    model.seq_m1 = pyo.Constraint(pos_list, rule=seq_rule_m1)\n    model.seq_m2 = pyo.Constraint(pos_list, rule=seq_rule_m2)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1396,
+      "completion_tokens": 2214
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 9.33875846862793,
+   "position": 9,
+   "recipe_index": 8
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T10:35:19"
+}

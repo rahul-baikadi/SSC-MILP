@@ -1,0 +1,317 @@
+{
+ "pid": "optibench_0100",
+ "question": "We have a piece of cardboard that is 50 cm by 20 cm and we are going to cut out the corners and fold up the sides to form a box. Determine the height of the box that will give a maximum volume.",
+ "templates": [
+  "Bin Packing / Cutting Stock"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"cardboard that is 50 cm by 20 cm\"\n    \"length_cm\": 50.0,\n    \"width_cm\": 20.0,\n    # \"cut out the corners and fold up the sides\" -> height = corner square side\n    # maximum possible cut is half of the shorter side (20 cm)\n    \"max_height_cm\": 10.0,\n    # discretisation resolution for the linearised selection model\n    \"num_candidates\": 200,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    length = d[\"length_cm\"]\n    width = d[\"width_cm\"]\n    h_max = d[\"max_height_cm\"]\n    n = d[\"num_candidates\"]\n\n    # candidate heights: evenly spaced strictly inside (0, h_max)\n    step = h_max / (n + 1)\n    heights = [step * (k + 1) for k in range(n)]\n\n    model = pyo.ConcreteModel()\n\n    model.K = pyo.RangeSet(0, n - 1)\n\n    # binary selector: y[k] = 1 if candidate height k is chosen\n    model.y = pyo.Var(model.K, within=pyo.Binary)\n\n    # height actually selected (for reporting), expressed linearly\n    model.height = pyo.Var(within=pyo.NonNegativeReals, bounds=(0.0, h_max))\n\n    def _height_link(m, k):\n        return m.height >= heights[k] * m.y[k]\n\n    model.height_link = pyo.Constraint(model.K, rule=_height_link)\n\n    def _pick_one(m):\n        return sum(m.y[k] for k in m.K) == 1\n\n    model.pick_one = pyo.Constraint(rule=_pick_one)\n\n    def _volume_coeff(k):\n        h = heights[k]\n        return (length - 2.0 * h) * (width - 2.0 * h) * h\n\n    def _obj_rule(m):\n        return sum(_volume_coeff(k) * m.y[k] for k in m.K)\n\n    model.obj = pyo.Objective(rule=_obj_rule, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 868,
+      "completion_tokens": 767
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.9204583168029785,
+   "position": 0,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"length\": 50.0,          # cm, long side of cardboard\n    \"width\": 20.0,           # cm, short side of cardboard\n    \"corners_per_side\": 2,   # two corner squares removed per side\n    # piecewise-linear breakpoints for the height h\n    \"breakpoints\": [0.0, 2.0, 4.0, 6.0, 8.0, 10.0],\n}\n\n\ndef _volume(h, length, width, corners):\n    \"\"\"Box volume for a given cut height (used only to build PWL breakpoint values).\"\"\"\n    return (length - corners * h) * (width - corners * h) * h\n\n\ndef build_model(data=None):\n    d = data or DATA\n    length = d[\"length\"]\n    width = d[\"width\"]\n    corners = d[\"corners_per_side\"]\n    bps = d[\"breakpoints\"]\n    h_max = min(length, width) / corners\n\n    model = pyo.ConcreteModel()\n\n    # --- Sets: indices of the piecewise-linear segments ---\n    model.SEG = pyo.RangeSet(0, len(bps) - 1)\n\n    # --- Variables ---\n    # convex-combination weights over the breakpoints (SOS2-style)\n    model.lam = pyo.Var(model.SEG, within=pyo.NonNegativeReals, bounds=(0.0, 1.0))\n    # reported height of the box\n    model.height = pyo.Var(within=pyo.NonNegativeReals, bounds=(0.0, h_max))\n    # reported maximum volume\n    model.volume = pyo.Var(within=pyo.NonNegativeReals)\n\n    # --- Constraints ---\n    # weights must form a convex combination\n    def rule_weights_sum(m):\n        return sum(m.lam[i] for i in m.SEG) == 1.0\n    model.weights_sum = pyo.Constraint(rule=rule_weights_sum)\n\n    # height equals the convex combination of breakpoints\n    def rule_height_def(m):\n        return m.height == sum(m.lam[i] * bps[i] for i in m.SEG)\n    model.height_def = pyo.Constraint(rule=rule_height_def)\n\n    # volume equals the convex combination of the exact volumes at the breakpoints\n    def rule_volume_def(m):\n        return m.volume == sum(\n            m.lam[i] * _volume(bps[i], length, width, corners) for i in m.SEG\n        )\n    model.volume_def = pyo.Constraint(rule=rule_volume_def)\n\n    # at most two adjacent weights may be positive (piecewise-linear, not convex hull)\n    def rule_adjacency(m, i):\n        if i >= len(bps) - 2:\n            return pyo.Constraint.Skip\n        return m.lam[i] + m.lam[i + 2] <= 1.0\n    model.adjacency = pyo.Constraint(model.SEG, rule=rule_adjacency)\n\n    # --- Objective ---\n    model.obj = pyo.Objective(expr=model.volume, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 864,
+      "completion_tokens": 1062
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.816518306732178,
+   "position": 1,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"length_cm\": 50.0,        # cardboard length\n    \"width_cm\": 20.0,         # cardboard width\n    \"folds_per_side\": 2,      # each side loses two corner cuts (2*x)\n    \"height_min_cm\": 0.0,     # lower bound on cut height\n    \"height_max_cm\": 10.0,    # upper bound = half the shorter side (20/2)\n    \"n_grid\": 20001,          # discretisation points for the height\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    L = d[\"length_cm\"]\n    W = d[\"width_cm\"]\n    K = d[\"folds_per_side\"]\n    h_lo = d[\"height_min_cm\"]\n    h_hi = d[\"height_max_cm\"]\n    n = d[\"n_grid\"]\n\n    model = pyo.ConcreteModel()\n\n    # Set: candidate cut heights on a uniform grid, index i = 0..n-1\n    model.I = pyo.RangeSet(0, n - 1)\n\n    # Data table: cut height h_hat[i] and its resulting volume vol_hat[i]\n    step = (h_hi - h_lo) / (n - 1)\n    heights = [h_lo + step * i for i in range(n)]\n    volumes = [max(0.0, (L - K * h) * (W - K * h) * h) for h in heights]\n\n    model.h_hat = pyo.Param(model.I, initialize={i: heights[i] for i in model.I}, within=pyo.Reals)\n    model.vol_hat = pyo.Param(model.I, initialize={i: volumes[i] for i in model.I}, within=pyo.Reals)\n\n    # Variable: y[i] = 1 if grid point i is selected as the cut height\n    model.y = pyo.Var(model.I, within=pyo.Binary)\n\n    # Variable: x = realised cut height (cm), continuous, within side limits\n    model.x = pyo.Var(within=pyo.NonNegativeReals, bounds=(h_lo, h_hi))\n\n    # Variable: V = resulting volume, bounded by the exact discretised max\n    V_max = max(volumes) if volumes else 0.0\n    model.V = pyo.Var(within=pyo.NonNegativeReals, bounds=(0.0, V_max))\n\n    # (1) exactly one grid point selected (<= 1 is fine; objective drives selection)\n    def rule_pick(m):\n        return sum(m.y[i] for i in m.I) <= 1\n    model.pick = pyo.Constraint(rule=rule_pick)\n\n    # (2) link continuous height to the chosen grid point: x = sum_i h_hat[i] * y[i]\n    def rule_link_lo(m, i):\n        return m.x >= m.h_hat[i] - h_hi * (1 - m.y[i])\n    model.link_lo = pyo.Constraint(model.I, rule=rule_link_lo)\n\n    def rule_link_hi(m, i):\n        return m.x <= m.h_hat[i] + h_hi * (1 - m.y[i])\n    model.link_hi = pyo.Constraint(model.I, rule=rule_link_hi)\n\n    # (3) volume equals the value at the chosen grid point (exact linearisation)\n    def rule_vol(m):\n        return m.V == sum(m.vol_hat[i] * m.y[i] for i in m.I)\n    model.vol = pyo.Constraint(rule=rule_vol)\n\n    # (4) physical: cut height cannot exceed half the shorter side (constraint form)\n    def rule_base(m):\n        return m.x <= h_hi\n    model.base = pyo.Constraint(rule=rule_base)\n\n    # Objective: maximise box volume\n    model.obj = pyo.Objective(expr=model.V, sense=pyo.maximize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 880,
+      "completion_tokens": 1344
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1724,
+      "completion_tokens": 914
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1737,
+      "completion_tokens": 914
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "possible_nonlinearity"
+   ],
+   "seconds": 24.21418523788452,
+   "position": 2,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"a piece of cardboard that is 50 cm by 20 cm\"\n    \"length_cm\": 50.0,\n    \"width_cm\": 20.0,\n    # \"cut out the corners\" -> height h must satisfy 2h < min(50,20)\n    # upper bound on h is min(L,W)/2 = 10 cm\n    \"h_upper_cm\": 10.0,\n    # discretisation of the continuous height for a linear (MILP) model\n    \"n_grid\": 1000,\n    # big-M for linking volume to chosen grid height\n    \"bigM\": 1.0e9,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    L = d[\"length_cm\"]\n    W = d[\"width_cm\"]\n    hmax = d[\"h_upper_cm\"]\n    n = d[\"n_grid\"]\n    BIGM = d[\"bigM\"]\n\n    model = pyo.ConcreteModel()\n\n    # grid points for the height (index set)\n    model.K = pyo.RangeSet(0, n)\n\n    # height value at each grid point\n    step = hmax / n\n\n    def height_val(k):\n        return step * k\n\n    # volume achievable if height == height_val(k)\n    def vol_val(k):\n        h = height_val(k)\n        return (L - 2.0 * h) * (W - 2.0 * h) * h\n\n    # y[k] = 1 if grid point k is the chosen height\n    model.y = pyo.Var(model.K, within=pyo.Binary)\n\n    # chosen height (cm) and resulting volume (cm^3)\n    model.h = pyo.Var(within=pyo.NonNegativeReals, bounds=(0.0, hmax))\n    model.vol = pyo.Var(within=pyo.NonNegativeReals)\n\n    # exactly one grid point selected\n    def rule_one_height(m):\n        return sum(m.y[k] for k in m.K) == 1\n    model.one_height = pyo.Constraint(rule=rule_one_height)\n\n    # link h to the selected grid point\n    def rule_link_h(m, k):\n        return m.h - height_val(k) <= BIGM * (1 - m.y[k])\n    model.link_h = pyo.Constraint(model.K, rule=rule_link_h)\n\n    def rule_link_h_lo(m, k):\n        return height_val(k) - m.h <= BIGM * (1 - m.y[k])\n    model.link_h_lo = pyo.Constraint(model.K, rule=rule_link_h_lo)\n\n    # link volume to the selected grid point\n    def rule_link_vol(m, k):\n        return m.vol - vol_val(k) <= BIGM * (1 - m.y[k])\n    model.link_vol = pyo.Constraint(model.K, rule=rule_link_vol)\n\n    def rule_link_vol_lo(m, k):\n        return vol_val(k) - m.vol <= BIGM * (1 - m.y[k])\n    model.link_vol_lo = pyo.Constraint(model.K, rule=rule_link_vol_lo)\n\n    # maximize box volume\n    def rule_obj(m):\n        return m.vol\n    model.obj = pyo.Objective(rule=rule_obj, sense=pyo.maximize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 868,
+      "completion_tokens": 999
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.577090501785278,
+   "position": 3,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------\n# All numeric constants of the problem belong here.\n# Original problem: cardboard 50 cm x 20 cm, cut square corners of side h,\n# fold to a box.  Valid height 0 < h < min(L,W)/2 = 10 cm.\n# In 1 dimension the volume as a function of h is a smooth cubic that only\n# depends on the single variable h.  To keep the model linear we discretise\n# h over a uniform grid of N candidate cut heights; each candidate has a\n# known (data) volume and we select exactly one.\n# ---------------------------------------------------------------------\nDATA = {\n    \"L\": 50.0,                 # cm, length of the cardboard\n    \"W\": 20.0,                 # cm, width of the cardboard\n    \"N\": 2001,                 # number of grid candidate heights (odd -> grid==0.01)\n    \"h_min\": 0.0,              # cm, lowest allowed cut\n    # h_max chosen so that min(L, W)/2 - margin\n    \"margin\": 0.01,\n    # big-M used when linking the chosen height grid point to the continuous h\n    \"M_h\": 10.0,\n}\n\n# Precompute the candidate grid (data, not model components)\n_N = DATA[\"N\"]\n_L = DATA[\"L\"]\n_W = DATA[\"W\"]\n_HALF_W = _W / 2.0 - DATA[\"margin\"]         # strictly less than 10\n_H_MIN = DATA[\"h_min\"]\n\n\ndef _heights_data():\n    \"\"\"Uniform grid of candidate cut heights.\"\"\"\n    n = _N\n    step = (_HALF_W - _H_MIN) / (n - 1)\n    return [_H_MIN + i * step for i in range(n)]\n\n\nDATA[\"heights\"] = _heights_data()\n# Volume (cm^3) at each candidate height -> pure data, computed before the model\nDATA[\"volumes\"] = [h * (_L - 2.0 * h) * (_W - 2.0 * h) for h in DATA[\"heights\"]]\n\n\ndef build_model(data=None):\n    d = data or DATA\n    heights = d[\"heights\"]\n    vols = d[\"volumes\"]\n    L = d[\"L\"]\n    W = d[\"W\"]\n    Mh = d[\"M_h\"]\n\n    n = len(heights)\n    model = pyo.ConcreteModel()\n\n    # --- sets -------------------------------------------------------\n    model.K = pyo.RangeSet(0, n - 1)          # candidate-height index set\n\n    # --- variables --------------------------------------------------\n    # binary selector: exactly one candidate height chosen\n    model.z = pyo.Var(model.K, domain=pyo.Binary)\n    # revealed actual cut height (cm); bounds keep the box valid\n    model.h = pyo.Var(domain=pyo.NonNegativeReals, bounds=(d[\"h_min\"], W / 2.0))\n\n    # --- objective ---------------------------------------------------\n    # maximise the volume of the folded box over the chosen candidate\n    model.V = pyo.Var(domain=pyo.NonNegativeReals)\n    model.obj = pyo.Objective(expr=model.V, sense=pyo.maximize)\n\n    # --- constraints -------------------------------------------------\n\n    # (a) \"cut out the corners\": cut side must not exceed half the width\n    #     already enforced by h bounds; add an explicit limiting sound constraint\n    def _limit_rule(m):\n        return m.h <= W / 2.0 - 0.0\n    model.h_limit = pyo.Constraint(rule=_limit_rule)\n\n    # (b) \"select exactly one candidate cut height\"\n    def _one_rule(m):\n        return sum(m.z[k] for k in m.K) == 1\n    model.one_height = pyo.Constraint(rule=_one_rule)\n\n    # (c) link continuous h to the chosen grid point:\n    #     h = sum_k heights[k] * z_k  <-- written LINEAR with the binary\n    def _link_rule(m):\n        return m.h == sum(heights[k] * m.z[k] for k in m.K)\n    model.h_link = pyo.Constraint(rule=_link_rule)\n\n    # (d) volume equals the volume belonging to the chosen candidate\n    def _vol_rule(m):\n        return m.V == sum(vols[k] * m.z[k] for k in m.K)\n    model.vol_link = pyo.Constraint(rule=_vol_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 870,
+      "completion_tokens": 1713
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 10.075300931930542,
+   "position": 4,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"length_cm\": 50.0,          # long side of cardboard\n    \"width_cm\": 20.0,           # short side of cardboard\n    \"corners_per_dim\": 2,       # two corners removed per dimension\n    \"height_lb\": 0.0,           # cut size cannot be negative\n    \"height_ub\": 10.0,          # half the short side -> base width >= 0\n    \"n_grid\": 1001,             # candidate cut sizes (grid resolution)\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    L = d[\"length_cm\"]\n    W = d[\"width_cm\"]\n    k = d[\"corners_per_dim\"]\n    lb = d[\"height_lb\"]\n    ub = d[\"height_ub\"]\n    n = d[\"n_grid\"]\n\n    # Candidate heights: evenly spaced grid over [lb, ub]\n    step = (ub - lb) / (n - 1)\n    heights = [lb + i * step for i in range(n)]\n    # Precomputed (constant) volume for each candidate height\n    volumes = [(L - k * h) * (W - k * h) * h for h in heights]\n\n    model = pyo.ConcreteModel()\n\n    # --- Sets / indices ---\n    model.I = pyo.RangeSet(0, n - 1)   # grid positions\n\n    # --- Variables ---\n    # select[i] = 1 iff candidate height i is chosen\n    model.select = pyo.Var(model.I, within=pyo.Binary)\n    # height realised (for reporting / linking); bounded by physical limits\n    model.height = pyo.Var(within=pyo.NonNegativeReals, bounds=(lb, ub))\n\n    # --- Objective: maximise the box volume ---\n    def obj_rule(m):\n        return sum(volumes[i] * m.select[i] for i in m.I)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # --- Constraint: choose exactly one candidate height ---\n    def one_height_rule(m):\n        return sum(m.select[i] for i in m.I) == 1\n    model.one_height = pyo.Constraint(rule=one_height_rule)\n\n    # --- Constraint: link realised height to the chosen candidate ---\n    def link_height_rule(m):\n        return m.height == sum(heights[i] * m.select[i] for i in m.I)\n    model.link_height = pyo.Constraint(rule=link_height_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 864,
+      "completion_tokens": 917
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.4203691482543945,
+   "position": 5,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"L\": 50.0,          # cardboard length (cm)\n    \"W\": 20.0,          # cardboard width (cm)\n    \"max_cut\": 10.0,    # largest possible corner cut = W/2 (cm)\n    \"n_steps\": 20,      # number of grid points (>=1) along [0, max_cut]\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    L = d[\"L\"]\n    W = d[\"W\"]\n    max_cut = d[\"max_cut\"]\n    n_steps = d[\"n_steps\"]\n\n    # Precomputed candidate cut heights and their (linear) resulting volumes.\n    heights = [(max_cut * k) / n_steps for k in range(n_steps + 1)]\n    vols = [(L - 2.0 * h) * (W - 2.0 * h) * h for h in heights]\n\n    model = pyo.ConcreteModel()\n\n    # ---- Sets ----\n    model.K = pyo.RangeSet(0, n_steps)   # grid candidate indices\n    model.C = pyo.RangeSet(1)            # trivial set for the length/width constraints\n\n    # ---- Variables ----\n    # x = corner cut side = box height (cm)\n    model.x = pyo.Var(domain=pyo.NonNegativeReals, bounds=(0.0, max_cut))\n    # y[k] = 1 if grid candidate k is selected\n    model.y = pyo.Var(model.K, domain=pyo.Binary)\n    # v = resulting box volume (cm^3)\n    model.v = pyo.Var(domain=pyo.NonNegativeReals)\n\n    # ---- Objective: maximise volume ----\n    def obj_rule(m):\n        return m.v\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # ---- Constraints ----\n    # Exactly one grid point is selected.\n    def exactly_one_rule(m):\n        return sum(m.y[k] for k in m.K) == 1\n\n    model.exactly_one = pyo.Constraint(rule=exactly_one_rule)\n\n    # x equals the selected grid height.\n    def x_link_rule(m):\n        return m.x == sum(heights[k] * m.y[k] for k in m.K)\n\n    model.x_link = pyo.Constraint(rule=x_link_rule)\n\n    # v equals the volume associated with the selected grid height.\n    def v_link_rule(m):\n        return m.v == sum(vols[k] * m.y[k] for k in m.K)\n\n    model.v_link = pyo.Constraint(rule=v_link_rule)\n\n    # Length must be nonnegative: 50 - 2x >= 0  (<=)\n    def length_rule(m, i):\n        return L - 2.0 * m.x >= 0.0\n\n    model.length_pos = pyo.Constraint(model.C, rule=length_rule)\n\n    # Width must be nonnegative: 20 - 2x >= 0  (<=)\n    def width_rule(m, i):\n        return W - 2.0 * m.x >= 0.0\n\n    model.width_pos = pyo.Constraint(model.C, rule=width_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 880,
+      "completion_tokens": 1365
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.923281192779541,
+   "position": 6,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Problem\n# ---------------------------------------------------------------------------\n# A 50 cm x 20 cm piece of cardboard has squares of side h cut from each corner\n# and the sides folded up to form an open-top box.\n#\n#   base length  = 50 - 2h\n#   base width   = 20 - 2h\n#   height       = h\n#   volume       = h * (50 - 2h) * (20 - 2h)\n#\n# The volume is a cubic function of h, so it is NOT linear in h.  To keep the\n# model strictly linear (per the code contract) we discretise the feasible\n# height range into a finite grid of candidate heights and select exactly one\n# of them with a binary variable.  The volume for each candidate height is a\n# precomputed numeric constant, so the objective is linear in the binaries.\n#\n# ---------------------------------------------------------------------------\n# Decision variables\n# ---------------------------------------------------------------------------\n#   y[k] in {0,1}   : 1 if candidate height h_k is chosen, 0 otherwise\n#                     (index set K = {0, 1, ..., N-1})\n#\n# ---------------------------------------------------------------------------\n# Objective (in words)\n# ---------------------------------------------------------------------------\n#   Maximise the box volume, i.e. maximise sum_k V_k * y[k], where V_k is the\n#   volume obtained with candidate height h_k.\n#\n# ---------------------------------------------------------------------------\n# Constraints\n# ---------------------------------------------------------------------------\n#   (1) Exactly one candidate height is selected:  sum_k y[k] = 1.\n#       Source sentence: \"Determine the height of the box that will give a\n#       maximum volume.\"\n#   (2) Candidate heights must lie in the feasible range 0 <= h <= 10\n#       (since 20 - 2h >= 0).  Enforced by construction of the grid.\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"card_long\": 50.0,      # cm, long side of cardboard\n    \"card_short\": 20.0,     # cm, short side of cardboard\n    \"n_candidates\": 1001,   # number of grid points for the height\n    \"h_min\": 0.0,           # cm, lower bound on feasible height\n    \"h_max\": 10.0,          # cm, upper bound on feasible height (20/2)\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    long_side = d[\"card_long\"]\n    short_side = d[\"card_short\"]\n    n = d[\"n_candidates\"]\n    h_min = d[\"h_min\"]\n    h_max = d[\"h_max\"]\n\n    # Build the candidate height grid and the corresponding volumes.\n    step = (h_max - h_min) / (n - 1)\n    heights = [h_min + i * step for i in range(n)]\n    volumes = [\n        h * (long_side - 2.0 * h) * (short_side - 2.0 * h) for h in heights\n    ]\n\n    model = pyo.ConcreteModel()\n\n    model.K = pyo.RangeSet(0, n - 1)\n\n    model.y = pyo.Var(model.K, within=pyo.Binary)\n\n    # (1) Exactly one candidate height is selected.\n    def one_height_rule(m):\n        return sum(m.y[k] for k in m.K) == 1\n\n    model.one_height = pyo.Constraint(rule=one_height_rule)\n\n    # Objective: maximise the volume of the selected candidate height.\n    def obj_rule(m):\n        return sum(volumes[k] * m.y[k] for k in m.K)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 884,
+      "completion_tokens": 3994
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 819,
+      "completion_tokens": 841
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 35.27218747138977,
+   "position": 7,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Problem: cardboard 50 cm x 20 cm, cut equal squares of side h from each\n# corner, fold up sides to form an open-top box. Maximise volume.\n#\n# Decision variable:\n#   h  : height of the box = side of the cut-out square (cm), continuous,\n#        bounded by 0 <= h <= min(50,20)/2 = 10.\n#\n# Objective (in words): maximise volume V = h * (50 - 2h) * (20 - 2h).\n#\n# The volume is a cubic in h, hence NOT linear.  To keep the model linear we\n# discretise the height into a finite set of candidate values and select the\n# best one with a binary variable (a standard piecewise / grid linearisation).\n#\n# Sets:\n#   K : candidate height indices.\n# Data:\n#   H[k] : candidate height value for index k (cm).\n#   L    : cardboard length (50 cm).\n#   W    : cardboard width  (20 cm).\n#\n# Variables:\n#   z[k] in {0,1} : 1 if candidate height k is selected.\n#\n# Objective (linear):\n#   maximise sum_k V[k] * z[k],  where V[k] = H[k]*(L-2H[k])*(W-2H[k]).\n#\n# Constraints:\n#   (1) exactly one candidate height is chosen:  sum_k z[k] = 1.\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"L\": 50.0,          # cardboard length (cm)\n    \"W\": 20.0,          # cardboard width (cm)\n    \"H_max\": 10.0,      # largest feasible height = min(L, W) / 2\n    \"n_grid\": 1001,     # number of candidate heights on the grid\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    L = d[\"L\"]\n    W = d[\"W\"]\n    H_max = d[\"H_max\"]\n    n_grid = d[\"n_grid\"]\n\n    # Candidate heights: evenly spaced grid from 0 to H_max inclusive.\n    heights = [H_max * k / (n_grid - 1) for k in range(n_grid)]\n\n    model = pyo.ConcreteModel()\n\n    model.K = pyo.RangeSet(0, n_grid - 1)\n\n    # Precomputed volume for each candidate height (data, not a variable).\n    vol = {k: heights[k] * (L - 2.0 * heights[k]) * (W - 2.0 * heights[k])\n           for k in model.K}\n\n    model.z = pyo.Var(model.K, within=pyo.Binary)\n\n    def obj_rule(m):\n        return sum(vol[k] * m.z[k] for k in m.K)\n\n    model.obj = pyo.Objective(expr=obj_rule, sense=pyo.maximize)\n\n    def pick_rule(m):\n        return sum(m.z[k] for k in m.K) == 1\n\n    model.pick_one = pyo.Constraint(rule=pick_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 884,
+      "completion_tokens": 5998
+     },
+     "finish_reason": "length"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1600,
+      "completion_tokens": 700
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 52.220863580703735,
+   "position": 8,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"length_cm\": 50.0,\n    \"width_cm\": 20.0,\n    \"step_cm\": 0.01,\n    \"eps\": 1e-4,      # strictness guard for h < half_min_side\n}\n\ndef build_model(data=None):\n    d = data or DATA\n    L = float(d[\"length_cm\"])\n    W = float(d[\"width_cm\"])\n    step = float(d[\"step_cm\"])\n    eps = float(d[\"eps\"])\n\n    # Largest admissible height from the shorter side (sides must stay positive)\n    h_max = min(L, W) / 2.0 - eps\n\n    # Build candidate grid: h_k = step, 2*step, ..., <= h_max\n    heights = []\n    k = 1\n    while k * step <= h_max:\n        h = k * step\n        heights.append(round(h, 10))\n        k += 1\n\n    # Precompute volumes at each candidate height (stored as numeric constants)\n    vols = [(L - 2.0 * h) * (W - 2.0 * h) * h for h in heights]\n\n    model = pyo.ConcreteModel()\n\n    model.K = pyo.RangeSet(0, len(heights) - 1)\n\n    def _vol_init(m, k):\n        return vols[k]\n    model.vol = pyo.Param(model.K, initialize=_vol_init, within=pyo.Reals)\n\n    def _h_init(m, k):\n        return heights[k]\n    model.height = pyo.Param(model.K, initialize=_h_init, within=pyo.NonNegativeReals)\n\n    # Binary selection of one candidate height\n    model.y = pyo.Var(model.K, within=pyo.Binary)\n\n    # Exactly one height chosen\n    def rule_pick(m):\n        return sum(m.y[k] for k in m.K) == 1\n    model.pick = pyo.Constraint(rule=rule_pick)\n\n    # Maximise volume\n    def rule_obj(m):\n        return sum(m.vol[k] * m.y[k] for k in m.K)\n    model.obj = pyo.Objective(rule=rule_obj, sense=pyo.maximize)\n\n    return model\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 870,
+      "completion_tokens": 1006
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1324,
+      "completion_tokens": 514
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1325,
+      "completion_tokens": 514
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "possible_nonlinearity"
+   ],
+   "seconds": 11.768226146697998,
+   "position": 9,
+   "recipe_index": 8
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T10:39:21"
+}

@@ -1,0 +1,277 @@
+{
+ "pid": "nl4opt_0041",
+ "question": "Both coconut oil and lavender need to be added to a body wash. One unit of coconut oil takes 0.7 minutes to be effective while one unit of lavender takes 0.9 minutes to be effective. The body wash must contain at least 300 units of coconut oil and at most 550 units of both ingredients. Since too much coconut oil can make the body wash too oily, there can be at most thrice the amount of coconut oil as lavenders in the body wash. How many units of each should be added to the body wash to minimize the total amount of time it takes for the mixture to be effective? (Note: one must be added before the other)",
+ "templates": [
+  "Blending / Diet"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# All numeric constants from the problem text live here.\nDATA = {\n    \"ingredients\": [\"coconut\", \"lavender\"],\n    \"time_per_unit\": {          # minutes per unit to be effective\n        \"coconut\": 0.7,\n        \"lavender\": 0.9,\n    },\n    \"coconut_min_units\": 300,   # at least 300 units of coconut oil\n    \"total_max_units\": 550,     # at most 550 units of both ingredients\n    \"coconut_to_lavender_ratio\": 3,  # coconut <= 3 * lavender\n    \"unit_upper_bound\": 550,    # implied individual upper bound\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # Set: the ingredients\n    model.I = pyo.Set(initialize=d[\"ingredients\"])\n\n    # Variables: units of each ingredient added (continuous, bounded)\n    model.x = pyo.Var(\n        model.I,\n        domain=pyo.NonNegativeReals,\n        bounds=(0, d[\"unit_upper_bound\"]),\n    )\n\n    # Objective: minimise total time for the mixture to be effective\n    def obj_rule(m):\n        return sum(d[\"time_per_unit\"][i] * m.x[i] for i in m.I)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint 1: at least 300 units of coconut oil\n    def coconut_min_rule(m):\n        return m.x[\"coconut\"] >= d[\"coconut_min_units\"]\n\n    model.coconut_min = pyo.Constraint(rule=coconut_min_rule)\n\n    # Constraint 2: at most 550 units of both ingredients combined\n    def total_max_rule(m):\n        return sum(m.x[i] for i in m.I) <= d[\"total_max_units\"]\n\n    model.total_max = pyo.Constraint(rule=total_max_rule)\n\n    # Constraint 3: coconut at most thrice the amount of lavender\n    def ratio_rule(m):\n        return m.x[\"coconut\"] <= d[\"coconut_to_lavender_ratio\"] * m.x[\"lavender\"]\n\n    model.ratio_limit = pyo.Constraint(rule=ratio_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 963,
+      "completion_tokens": 1062
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1695,
+      "completion_tokens": 527
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.33980655670166,
+   "position": 0,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"ingredients\": [\"coconut\", \"lavender\"],\n    \"duration\": {\"coconut\": 0.7, \"lavender\": 0.9},\n    \"coconut_min\": 300,          # at least this many units of coconut oil\n    \"total_max\": 550,            # at most this many units of both ingredients\n    \"coconut_to_lavender_ratio\": 3,  # coconut <= 3 * lavender\n    \"big_M\": 10000,              # big-M for sequencing disjunction\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.I = pyo.Set(initialize=d[\"ingredients\"])\n\n    # Variables\n    model.amount = pyo.Var(model.I, within=pyo.NonNegativeReals)\n    model.order = pyo.Var(model.I, within=pyo.Binary)\n    model.start = pyo.Var(model.I, within=pyo.NonNegativeReals)\n    model.makespan = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Objective: minimise total time for the mixture to be effective\n    def obj_rule(m):\n        return m.makespan\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # At least coconut_min units of coconut oil\n    def coconut_min_rule(m):\n        return m.amount[\"coconut\"] >= d[\"coconut_min\"]\n    model.coconut_min = pyo.Constraint(rule=coconut_min_rule)\n\n    # At most total_max units of both ingredients\n    def total_max_rule(m):\n        return m.amount[\"coconut\"] + m.amount[\"lavender\"] <= d[\"total_max\"]\n    model.total_max = pyo.Constraint(rule=total_max_rule)\n\n    # Coconut oil at most ratio times lavender\n    def ratio_rule(m):\n        return m.amount[\"coconut\"] <= d[\"coconut_to_lavender_ratio\"] * m.amount[\"lavender\"]\n    model.ratio = pyo.Constraint(rule=ratio_rule)\n\n    # Exactly one ingredient is added first\n    def one_first_rule(m):\n        return sum(m.order[i] for i in m.I) == 1\n    model.one_first = pyo.Constraint(rule=one_first_rule)\n\n    # Non-overlap: if i is first, j starts after i finishes (big-M disjunction)\n    def precedence_rule(m, i, j):\n        if i == j:\n            return pyo.Constraint.Skip\n        return m.start[j] >= m.start[i] + d[\"duration\"][i] - d[\"big_M\"] * (1 - m.order[i])\n    model.precedence = pyo.Constraint(model.I, model.I, rule=precedence_rule)\n\n    # Makespan is at least the finish time of each ingredient\n    def makespan_rule(m, i):\n        return m.makespan >= m.start[i] + d[\"duration\"][i]\n    model.makespan_def = pyo.Constraint(model.I, rule=makespan_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 957,
+      "completion_tokens": 1120
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.404060363769531,
+   "position": 1,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"time\": {1: 0.7, 2: 0.9},          # minutes per unit of coconut(1) / lavender(2)\n    \"coconut_min\": 300,                # at least 300 units of coconut oil\n    \"total_max\": 550,                  # at most 550 units of both ingredients combined\n    \"coconut_lavender_ratio\": 3.0,     # coconut <= 3 * lavender\n    \"coconut_idx\": 1,\n    \"lavender_idx\": 2,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.ING = pyo.RangeSet(1, 2)  # 1 = coconut oil, 2 = lavender\n\n    # Variables: units of each ingredient (nonnegative, continuous)\n    model.x = pyo.Var(model.ING, within=pyo.NonNegativeReals)\n\n    # Objective: minimize total effectiveness time\n    def obj_rule(m):\n        return sum(d[\"time\"][i] * m.x[i] for i in m.ING)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint: at least coconut_min units of coconut oil (>=)\n    def coconut_min_rule(m):\n        return m.x[d[\"coconut_idx\"]] >= d[\"coconut_min\"]\n    model.coconut_min = pyo.Constraint(rule=coconut_min_rule)\n\n    # Constraint: total units <= total_max (<=)\n    def total_max_rule(m):\n        return sum(m.x[i] for i in m.ING) <= d[\"total_max\"]\n    model.total_max = pyo.Constraint(rule=total_max_rule)\n\n    # Constraint: coconut <= ratio * lavender  =>  x[1] - 3*x[2] <= 0  (<=)\n    def ratio_rule(m):\n        return m.x[d[\"coconut_idx\"]] <= d[\"coconut_lavender_ratio\"] * m.x[d[\"lavender_idx\"]]\n    model.ratio = pyo.Constraint(rule=ratio_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 973,
+      "completion_tokens": 788
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.8703532218933105,
+   "position": 2,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"time_coconut\": 0.7,      # minutes per unit of coconut oil\n    \"time_lavender\": 0.9,     # minutes per unit of lavender\n    \"min_coconut\": 300,       # at least 300 units of coconut oil\n    \"max_total\": 550,         # at most 550 units of both ingredients combined\n    \"coconut_lavender_ratio\": 3,  # coconut oil at most thrice the lavender\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Decision variables: units of each ingredient (nonnegative reals)\n    model.coconut = pyo.Var(within=pyo.NonNegativeReals)\n    model.lavender = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Objective: minimize total effective time\n    model.obj = pyo.Objective(\n        expr=d[\"time_coconut\"] * model.coconut + d[\"time_lavender\"] * model.lavender,\n        sense=pyo.minimize,\n    )\n\n    # Constraint 1: at least 300 units of coconut oil\n    model.min_coconut = pyo.Constraint(\n        expr=model.coconut >= d[\"min_coconut\"]\n    )\n\n    # Constraint 2: at most 550 units of both ingredients combined\n    model.max_total = pyo.Constraint(\n        expr=model.coconut + model.lavender <= d[\"max_total\"]\n    )\n\n    # Constraint 3: coconut oil at most thrice the lavender\n    model.ratio = pyo.Constraint(\n        expr=model.coconut <= d[\"coconut_lavender_ratio\"] * model.lavender\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 977,
+      "completion_tokens": 4116
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2563,
+      "completion_tokens": 404
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 34.1119544506073,
+   "position": 3,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"ingredients\": [\"coconut\", \"lavender\"],\n    \"time\": {\"coconut\": 0.7, \"lavender\": 0.9},  # minutes per unit\n    \"coconut_min\": 300,      # at least 300 units of coconut oil\n    \"total_max\": 550,        # at most 550 units of both ingredients combined\n    \"coconut_to_lavender_max_ratio\": 3,  # coconut <= 3 * lavender\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.I = pyo.Set(initialize=d[\"ingredients\"])\n\n    # Variables: nonnegative units of each ingredient\n    model.x = pyo.Var(model.I, within=pyo.NonNegativeReals)\n\n    # Objective: minimize total time to be effective\n    def obj_rule(m):\n        return sum(d[\"time\"][i] * m.x[i] for i in m.I)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint: at least 300 units of coconut oil  (>=)\n    def coconut_min_rule(m):\n        return m.x[\"coconut\"] >= d[\"coconut_min\"]\n    model.coconut_min = pyo.Constraint(rule=coconut_min_rule)\n\n    # Constraint: at most 550 units of both ingredients combined  (<=)\n    def total_max_rule(m):\n        return sum(m.x[i] for i in m.I) <= d[\"total_max\"]\n    model.total_max = pyo.Constraint(rule=total_max_rule)\n\n    # Constraint: coconut <= 3 * lavender  (<=)\n    def ratio_rule(m):\n        return m.x[\"coconut\"] <= d[\"coconut_to_lavender_max_ratio\"] * m.x[\"lavender\"]\n    model.ratio = pyo.Constraint(rule=ratio_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 973,
+      "completion_tokens": 1091
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.694546699523926,
+   "position": 4,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"ingredients\": [\"coconut\", \"lavender\"],\n    \"time_per_unit\": {\"coconut\": 0.70, \"lavender\": 0.90},\n    \"coconut_min_units\": 300.0,\n    \"total_units_max\": 550.0,\n    \"coconut_to_lavender_ratio_max\": 3.0,\n    \"big_M\": 1_000_000.0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # --- Sets ---\n    model.I = pyo.Set(initialize=d[\"ingredients\"])\n\n    # --- Variables ---\n    # Lower bound for coconut is enforced in constraints; here nonneg with explicit bounds.\n    def x_bounds(m, i):\n        if i == \"coconut\":\n            return (d[\"coconut_min_units\"], d[\"total_units_max\"])\n        return (0.0, d[\"total_units_max\"])\n\n    model.x = pyo.Var(model.I, domain=pyo.NonNegativeReals, bounds=x_bounds)\n\n    # Ordering binary: y = 1 if lavender is added second (i.e., coconut first);\n    # y = 0 if coconut is added second (i.e., lavender first).\n    model.y = pyo.Var(domain=pyo.Binary)\n\n    # Auxiliary continuous variable capturing the \"effective finishing time\"\n    # (time contributed by the second-added ingredient) \u2014 bounded by big-M.\n    model.t_finish = pyo.Var(domain=pyo.NonNegativeReals,\n                             bounds=(0.0, d[\"big_M\"]))\n\n    # --- Constraints ---\n    # (a) at least `coconut_min_units` of coconut\n    def rule_coconut_min(m):\n        return m.x[\"coconut\"] >= d[\"coconut_min_units\"]\n    model.coconut_min = pyo.Constraint(rule=rule_coconut_min)\n\n    # (b) at most `total_units_max` units total of both ingredients\n    def rule_total_max(m):\n        return m.x[\"coconut\"] + m.x[\"lavender\"] <= d[\"total_units_max\"]\n    model.total_max = pyo.Constraint(rule=rule_total_max)\n\n    # (c) coconut <= ratio_max * lavender\n    def rule_ratio(m):\n        return (m.x[\"coconut\"]\n                <= d[\"coconut_to_lavender_ratio_max\"] * m.x[\"lavender\"])\n    model.ratio_max = pyo.Constraint(rule=rule_ratio)\n\n    # (d) Ordering (indicator linearisation).\n    # If lavender is finishing (y = 1): t_finish >= 0.9 * x_lavender\n    def rule_finish_lav(m):\n        return (m.t_finish\n                >= d[\"time_per_unit\"][\"lavender\"] * m.x[\"lavender\"]\n                   - d[\"big_M\"] * (1 - m.y))\n    model.finish_lavender = pyo.Constraint(rule=rule_finish_lav)\n\n    # If coconut is finishing (y = 0 => 1 - y = 1): t_finish >= 0.7 * x_coconut\n    def rule_finish_coc(m):\n        return (m.t_finish\n                >= d[\"time_per_unit\"][\"coconut\"] * m.x[\"coconut\"]\n                   - d[\"big_M\"] * m.y)\n    model.finish_coconut = pyo.Constraint(rule=rule_finish_coc)\n\n    # --- Objective ---\n    # Minimise total effective processing time (additive per-unit time).\n    def rule_obj(m):\n        return (d[\"time_per_unit\"][\"coconut\"] * m.x[\"coconut\"]\n                + d[\"time_per_unit\"][\"lavender\"] * m.x[\"lavender\"])\n    model.obj = pyo.Objective(rule=rule_obj, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 963,
+      "completion_tokens": 1678
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.05645489692688,
+   "position": 5,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem, with its source sentence\n# ---------------------------------------------------------------------------\nDATA = {\n    # \"One unit of coconut oil takes 0.7 minutes to be effective\"\n    \"time_coconut\": 0.7,\n    # \"one unit of lavender takes 0.9 minutes to be effective\"\n    \"time_lavender\": 0.9,\n    # \"The body wash must contain at least 300 units of coconut oil\"\n    \"min_coconut\": 300,\n    # \"at most 550 units of both ingredients\"\n    \"max_total\": 550,\n    # \"at most thrice the amount of coconut oil as lavenders\"\n    \"coconut_to_lavender_ratio\": 3,\n    # Big-M for the \"one must be added before the other\" ordering constraint\n    \"big_m\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ------------------------------------------------------------------\n    # Sets / indices\n    # ------------------------------------------------------------------\n    model.I = pyo.Set(initialize=[\"coconut\", \"lavender\"])\n\n    # ------------------------------------------------------------------\n    # Variables\n    # ------------------------------------------------------------------\n    # units of each ingredient (continuous, non-negative)\n    model.x = pyo.Var(model.I, domain=pyo.NonNegativeReals)\n\n    # binary choosing which ingredient is added first:\n    # order = 1  -> coconut added before lavender\n    # order = 0  -> lavender added before coconut\n    model.order = pyo.Var(domain=pyo.Binary)\n\n    # ------------------------------------------------------------------\n    # Objective: minimize total time for the mixture to be effective\n    # ------------------------------------------------------------------\n    def obj_rule(m):\n        return (d[\"time_coconut\"] * m.x[\"coconut\"]\n                + d[\"time_lavender\"] * m.x[\"lavender\"])\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ------------------------------------------------------------------\n    # Constraints\n    # ------------------------------------------------------------------\n    # at least 300 units of coconut oil\n    def min_coconut_rule(m):\n        return m.x[\"coconut\"] >= d[\"min_coconut\"]\n\n    model.min_coconut = pyo.Constraint(rule=min_coconut_rule)\n\n    # at most 550 units of both ingredients combined\n    def max_total_rule(m):\n        return m.x[\"coconut\"] + m.x[\"lavender\"] <= d[\"max_total\"]\n\n    model.max_total = pyo.Constraint(rule=max_total_rule)\n\n    # at most thrice the amount of coconut oil as lavender\n    def ratio_rule(m):\n        return m.x[\"coconut\"] <= d[\"coconut_to_lavender_ratio\"] * m.x[\"lavender\"]\n\n    model.ratio = pyo.Constraint(rule=ratio_rule)\n\n    # \"one must be added before the other\": sequencing choice via binary.\n    # If order = 1, coconut precedes lavender; if order = 0, lavender precedes\n    # coconut.  Big-M disjunctive form keeps the model linear.\n    def order_before_rule(m):\n        # coconut - lavender <=  M * order   (loose when order=1)\n        return m.x[\"coconut\"] - m.x[\"lavender\"] <= d[\"big_m\"] * m.order\n\n    model.order_before = pyo.Constraint(rule=order_before_rule)\n\n    def order_after_rule(m):\n        # lavender - coconut <= M * (1 - order)  (loose when order=0)\n        return m.x[\"lavender\"] - m.x[\"coconut\"] <= d[\"big_m\"] * (1 - m.order)\n\n    model.order_after = pyo.Constraint(rule=order_after_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 961,
+      "completion_tokens": 1213
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.771472215652466,
+   "position": 6,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # per-unit effectiveness times (minutes per unit)\n    \"time_coconut\": 0.7,\n    \"time_lavender\": 0.9,\n    # coconut lower bound\n    \"min_coconut\": 300,\n    # combined upper bound\n    \"max_total\": 550,\n    # coconut <= 3 * lavender  ->  coconut - 3*lavender <= 0\n    \"coconut_lavender_ratio\": 3,\n}\n\n# -----------------------------------------------------------------------------\n# Decision variables\n#   x = units of coconut oil   (NonNegativeReals, x >= 0)\n#   y = units of lavender      (NonNegativeReals, y >= 0)\n#\n# Objective (in words)\n#   Minimize total effectiveness time: 0.7*x + 0.9*y\n#\n# Constraints (numbered, with source sentence)\n#   1. \"at least 300 units of coconut oil\":        x >= 300\n#   2. \"at most 550 units of both ingredients\":    x + y <= 550\n#   3. \"at most thrice the amount of coconut oil\n#       as lavenders\":                             x <= 3*y  ->  x - 3*y <= 0\n# -----------------------------------------------------------------------------\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.I = pyo.Set(initialize=[\"coconut\", \"lavender\"])\n\n    m.x = pyo.Var(m.I, domain=pyo.NonNegativeReals, bounds=(0, None))\n\n    def rule_objective(model):\n        return (\n            d[\"time_coconut\"] * model.x[\"coconut\"]\n            + d[\"time_lavender\"] * model.x[\"lavender\"]\n        )\n\n    m.obj = pyo.Objective(rule=rule_objective, sense=pyo.minimize)\n\n    # Constraint 1: coconut >= min_coconut\n    def rule_min_coconut(model):\n        return model.x[\"coconut\"] >= d[\"min_coconut\"]\n\n    m.min_coconut = pyo.Constraint(rule=rule_min_coconut)\n\n    # Constraint 2: coconut + lavender <= max_total\n    def rule_max_total(model):\n        return model.x[\"coconut\"] + model.x[\"lavender\"] <= d[\"max_total\"]\n\n    m.max_total = pyo.Constraint(rule=rule_max_total)\n\n    # Constraint 3: coconut - ratio * lavender <= 0\n    def rule_ratio(model):\n        return (\n            model.x[\"coconut\"]\n            - d[\"coconut_lavender_ratio\"] * model.x[\"lavender\"]\n            <= 0\n        )\n\n    m.ratio = pyo.Constraint(rule=rule_ratio)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 977,
+      "completion_tokens": 576
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1474,
+      "completion_tokens": 614
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.588052749633789,
+   "position": 7,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"One unit of coconut oil takes 0.7 minutes to be effective\"\n    \"time_coconut\": 0.7,\n    # \"one unit of lavender takes 0.9 minutes to be effective\"\n    \"time_lavender\": 0.9,\n    # \"The body wash must contain at least 300 units of coconut oil\"\n    \"min_coconut\": 300,\n    # \"at most 550 units of both ingredients\"\n    \"max_total\": 550,\n    # \"at most thrice the amount of coconut oil as lavenders\"\n    \"ratio_coconut_to_lavender\": 3,\n    # ingredient labels\n    \"ingredients\": [\"coconut\", \"lavender\"],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # --- Sets ---\n    model.I = pyo.Set(initialize=d[\"ingredients\"])\n\n    # --- Variables ---\n    # units of each ingredient added (continuous, nonnegative)\n    model.x = pyo.Var(model.I, within=pyo.NonNegativeReals)\n\n    # --- Objective: minimize total effective time ---\n    def obj_rule(m):\n        return (d[\"time_coconut\"] * m.x[\"coconut\"]\n                + d[\"time_lavender\"] * m.x[\"lavender\"])\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --- Constraints ---\n    # at least 300 units of coconut oil\n    def min_coconut_rule(m):\n        return m.x[\"coconut\"] >= d[\"min_coconut\"]\n    model.min_coconut = pyo.Constraint(rule=min_coconut_rule)\n\n    # at most 550 units of both ingredients combined\n    def max_total_rule(m):\n        return m.x[\"coconut\"] + m.x[\"lavender\"] <= d[\"max_total\"]\n    model.max_total = pyo.Constraint(rule=max_total_rule)\n\n    # coconut oil at most thrice the amount of lavender\n    def ratio_rule(m):\n        return m.x[\"coconut\"] <= d[\"ratio_coconut_to_lavender\"] * m.x[\"lavender\"]\n    model.ratio = pyo.Constraint(rule=ratio_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 961,
+      "completion_tokens": 831
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.071878910064697,
+   "position": 8,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"ingredients\": [\"coconut\", \"lavender\"],\n    \"time_per_unit\": {\"coconut\": 0.7, \"lavender\": 0.9},\n    \"min_coconut\": 300,\n    \"max_total\": 550,\n    \"coconut_to_lavender_ratio\": 3,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.INGREDIENTS = pyo.Set(initialize=d[\"ingredients\"])\n\n    # Decision: units of each ingredient added\n    model.amount = pyo.Var(\n        model.INGREDIENTS,\n        domain=pyo.NonNegativeReals,\n    )\n\n    # Objective: minimize total effective time\n    def obj_rule(m):\n        return sum(d[\"time_per_unit\"][i] * m.amount[i] for i in m.INGREDIENTS)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # At least 300 units of coconut oil\n    def min_coconut_rule(m):\n        return m.amount[\"coconut\"] >= d[\"min_coconut\"]\n\n    model.min_coconut = pyo.Constraint(rule=min_coconut_rule)\n\n    # At most 550 units of both ingredients combined\n    def max_total_rule(m):\n        return sum(m.amount[i] for i in m.INGREDIENTS) <= d[\"max_total\"]\n\n    model.max_total = pyo.Constraint(rule=max_total_rule)\n\n    # At most thrice the amount of coconut oil as lavender\n    def ratio_rule(m):\n        return m.amount[\"coconut\"] <= d[\"coconut_to_lavender_ratio\"] * m.amount[\"lavender\"]\n\n    model.ratio = pyo.Constraint(rule=ratio_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 957,
+      "completion_tokens": 861
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.531518459320068,
+   "position": 9,
+   "recipe_index": 0
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-13T22:56:13"
+}

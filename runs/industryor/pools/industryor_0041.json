@@ -1,0 +1,330 @@
+{
+ "pid": "industryor_0041",
+ "question": "A company plans to produce three products, $A_{1}, A_{2}, A_{3}$, within a four-month timeframe (January to April). The demand for the products is shown in the table below:\n\n| Demand | January | February | March | April |\n| :---: | :---: | :---: | :---: | :---: |\n| $A_{1}$ | 5300 | 1200 | 7400 | 5300 |\n| $A_{2}$ | 4500 | 5400 | 6500 | 7200 |\n| $A_{3}$ | 4400 | 6700 | 12500 | 13200 |\n\nThe prices, production costs, production quotas, activation costs, and minimum batch sizes (refer to the definitions in Exercise 4.3) are as follows:\n\n| Product | $A_{1}$ | $A_{2}$ | $A_{3}$ |\n| :---: | :---: | :---: | :---: |\n| Unit Price | $\\\\$ 124$ | $\\\\$ 109$ | $\\\\$ 115$ |\n| Activation Cost | $\\\\$ 150000$ | $\\\\$ 150000$ | $\\\\$ 100000$ |\n| Production Cost | $\\\\$ 73.30$ | $\\\\$ 52.90$ | $\\\\$ 65.40$ |\n| Production Quota | 500 | 450 | 550 |\n| Minimum Batch Size | 20 | 20 | 16 |\n\nJanuary has 23 production days, February has 20, March has 23, and April has 22. The activation status of the production lines can be changed each month. The minimum batch size is calculated on a monthly basis.\n\nIn addition, storage space can be rented monthly at a cost of $\\\\$ 3.50$ for $A_{1}$, $\\\\$ 4.00$ for $A_{2}$, and $\\\\$ 3.00$ for $A_{3}$. Each product takes up the same amount of storage space. The total available capacity is 800 units.\n\nWrite a mathematical program to maximize revenue.",
+ "templates": [
+  "Production Planning / Product Mix"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"A1\", \"A2\", \"A3\"],\n    \"months\": [\"Jan\", \"Feb\", \"Mar\", \"Apr\"],\n    # unit price per product\n    \"price\": {\"A1\": 124.0, \"A2\": 109.0, \"A3\": 115.0},\n    # activation cost per product\n    \"activation_cost\": {\"A1\": 150000.0, \"A2\": 150000.0, \"A3\": 100000.0},\n    # production cost per unit\n    \"prod_cost\": {\"A1\": 73.30, \"A2\": 52.90, \"A3\": 65.40},\n    # production quota (units per production day) per product\n    \"quota\": {\"A1\": 500.0, \"A2\": 450.0, \"A3\": 550.0},\n    # minimum batch size per product\n    \"batch\": {\"A1\": 20.0, \"A2\": 20.0, \"A3\": 16.0},\n    # holding cost per unit per month\n    \"hold_cost\": {\"A1\": 3.50, \"A2\": 4.00, \"A3\": 3.00},\n    # production days per month\n    \"days\": {\"Jan\": 23, \"Feb\": 20, \"Mar\": 23, \"Apr\": 22},\n    # demands: (product, month) -> units\n    \"demand\": {\n        (\"A1\", \"Jan\"): 5300, (\"A1\", \"Feb\"): 1200, (\"A1\", \"Mar\"): 7400, (\"A1\", \"Apr\"): 5300,\n        (\"A2\", \"Jan\"): 4500, (\"A2\", \"Feb\"): 5400, (\"A2\", \"Mar\"): 6500, (\"A2\", \"Apr\"): 7200,\n        (\"A3\", \"Jan\"): 4400, (\"A3\", \"Feb\"): 6700, (\"A3\", \"Mar\"): 12500, (\"A3\", \"Apr\"): 13200,\n    },\n    # total storage capacity (units)\n    \"storage_capacity\": 800.0,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    # Mutable month list captured in a plain tuple to avoid late-binding issues\n    months = tuple(d[\"months\"])\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=d[\"products\"])\n    model.T = pyo.Set(initialize=d[\"months\"])\n\n    # Decision variables\n    model.x = pyo.Var(model.P, model.T, domain=pyo.NonNegativeIntegers)\n    model.s = pyo.Var(model.P, model.T, domain=pyo.NonNegativeIntegers)\n    model.y = pyo.Var(model.P, model.T, domain=pyo.Binary)\n\n    def prev_month(t):\n        idx = months.index(t)\n        return months[idx - 1] if idx > 0 else None\n\n    def next_month(t):\n        idx = months.index(t)\n        return months[idx + 1] if idx + 1 < len(months) else None\n\n    # Objective: maximise revenue - variable costs.\n    # Revenue term is price * demand (demand is fully met within horizon).\n    def revenue_expr(m, p, t):\n        return d[\"price\"][p] * d[\"demand\"][(p, t)]\n\n    revenue_total = pyo.quicksum(\n            d[\"price\"][p] * d[\"demand\"][(p, t)]\n            for p in model.P for t in model.T\n    )\n\n    def prod_cost_expr(m, p, t):\n        return d[\"prod_cost\"][p] * m.x[p, t]\n\n    prod_cost_total = pyo.quicksum(\n            d[\"prod_cost\"][p] * model.x[p, t]\n            for p in model.P for t in model.T\n    )\n\n    act_cost_total = pyo.quicksum(\n            d[\"activation_cost\"][p] * model.y[p, t]\n            for p in model.P for t in model.T\n    )\n\n    hold_cost_total = pyo.quicksum(\n            d[\"hold_cost\"][p] * model.s[p, t]\n            for p in model.P for t in model.T\n    )\n\n    model.obj = pyo.Objective(\n        expr=revenue_total - prod_cost_total - act_cost_total - hold_cost_total,\n        sense=pyo.maximize,\n    )\n\n    # Production cannot exceed quota * available days if line activated;\n    # and cannot exceed zero if line is not activated (big-M via quota*days)\n    def quota_rule(m, p, t):\n        days = d[\"days\"][t]\n        cap = d[\"quota\"][p] * days\n        return m.x[p, t] <= cap * m.y[p, t]\n    model.quota_con = pyo.Constraint(model.P, model.T, rule=quota_rule)\n\n    # Minimum batch size: if activated, production at least one min batch *\n    # number of batches -> production >= batch_size * y  (a single batch minimum).\n    def min_batch_rule(m, p, t):\n        return m.x[p, t] >= d[\"batch\"][p] * m.y[p, t]\n    model.min_batch_con = pyo.Constraint(model.P, model.T, rule=min_batch_rule)\n\n    # Inventory balance\n    def balance_rule(m, p, t):\n        pm = prev_month(t)\n        prev_stock = m.s[p, pm] if pm is not None else 0\n        return prev_stock + m.x[p, t] - m.s[p, t] == d[\"demand\"][(p, t)]\n    model.balance_con = pyo.Constraint(model.P, model.T, rule=balance_rule)\n\n    # Storage capacity per month\n    def storage_rule(m, t):\n        return pyo.quicksum(m.s[p, t] for p in m.P) <= d[\"storage_capacity\"]\n    model.storage_con = pyo.Constraint(model.T, rule=storage_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1283,
+      "completion_tokens": 1930
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.559315919876099,
+   "position": 0,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# =============================================================================\n# PROBLEM: Multi-product, multi-period production planning with activation\n#          (setup) costs, minimum batch sizes, monthly storage and capacity.\n#\n# SETS / INDICES\n#   P = {A1, A2, A3}          products, index p\n#   T = {Jan, Feb, Mar, Apr}  months,   index t\n#\n# DECISION VARIABLES\n#   x[p,t]  >= 0  integer   units of product p produced in month t\n#   y[p,t]  binary          1 if product p's line is activated in month t\n#   s[p,t]  >= 0  integer   units of product p held in storage at end of month t\n#\n# OBJECTIVE (maximize net revenue)\n#   sum over p,t of  price[p] * x[p,t]\n#     - sum over p,t of  prod_cost[p] * x[p,t]\n#     - sum over p,t of  activation_cost[p] * y[p,t]\n#     - sum over p,t of  storage_cost[p] * s[p,t]\n#\n# CONSTRAINTS\n#   (1) Inventory balance:  s[p,t-1] + x[p,t] - s[p,t] = demand[p,t]\n#   (2) Production quota:   x[p,t] <= quota[p] * days[t] * y[p,t]\n#   (3) Minimum batch:      x[p,t] >= min_batch[p] * y[p,t]\n#   (4) Storage capacity:   sum over p of s[p,t] <= storage_capacity\n# =============================================================================\n\nDATA = {\n    \"products\": [\"A1\", \"A2\", \"A3\"],\n    \"months\": [\"Jan\", \"Feb\", \"Mar\", \"Apr\"],\n    \"days\": {\"Jan\": 23, \"Feb\": 20, \"Mar\": 23, \"Apr\": 22},\n    \"demand\": {\n        \"A1\": {\"Jan\": 5300, \"Feb\": 1200, \"Mar\": 7400, \"Apr\": 5300},\n        \"A2\": {\"Jan\": 4500, \"Feb\": 5400, \"Mar\": 6500, \"Apr\": 7200},\n        \"A3\": {\"Jan\": 4400, \"Feb\": 6700, \"Mar\": 12500, \"Apr\": 13200},\n    },\n    \"price\": {\"A1\": 124.0, \"A2\": 109.0, \"A3\": 115.0},\n    \"activation_cost\": {\"A1\": 150000.0, \"A2\": 150000.0, \"A3\": 100000.0},\n    \"prod_cost\": {\"A1\": 73.30, \"A2\": 52.90, \"A3\": 65.40},\n    \"quota\": {\"A1\": 500, \"A2\": 450, \"A3\": 550},\n    \"min_batch\": {\"A1\": 20, \"A2\": 20, \"A3\": 16},\n    \"storage_cost\": {\"A1\": 3.50, \"A2\": 4.00, \"A3\": 3.00},\n    \"storage_capacity\": 800,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=d[\"products\"])\n    model.T = pyo.Set(initialize=d[\"months\"])\n\n    # -------------------------------------------------------------------------\n    # Variables\n    # -------------------------------------------------------------------------\n    model.x = pyo.Var(model.P, model.T, within=pyo.NonNegativeIntegers)\n    model.y = pyo.Var(model.P, model.T, within=pyo.Binary)\n    model.s = pyo.Var(model.P, model.T, within=pyo.NonNegativeIntegers)\n\n    # -------------------------------------------------------------------------\n    # Objective: maximize net revenue\n    # -------------------------------------------------------------------------\n    def obj_rule(m):\n        revenue = sum(d[\"price\"][p] * m.x[p, t] for p in m.P for t in m.T)\n        prod = sum(d[\"prod_cost\"][p] * m.x[p, t] for p in m.P for t in m.T)\n        act = sum(d[\"activation_cost\"][p] * m.y[p, t] for p in m.P for t in m.T)\n        stor = sum(d[\"storage_cost\"][p] * m.s[p, t] for p in m.P for t in m.T)\n        return revenue - prod - act - stor\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # -------------------------------------------------------------------------\n    # (1) Inventory balance\n    # -------------------------------------------------------------------------\n    def balance_rule(m, p, t):\n        idx = list(m.T).index(t)\n        prev = m.s[p, list(m.T)[idx - 1]] if idx > 0 else 0\n        return prev + m.x[p, t] - m.s[p, t] == d[\"demand\"][p][t]\n\n    model.balance = pyo.Constraint(model.P, model.T, rule=balance_rule)\n\n    # -------------------------------------------------------------------------\n    # (2) Production quota (big-M via quota * days)\n    # -------------------------------------------------------------------------\n    def quota_rule(m, p, t):\n        return m.x[p, t] <= d[\"quota\"][p] * d[\"days\"][t] * m.y[p, t]\n\n    model.quota = pyo.Constraint(model.P, model.T, rule=quota_rule)\n\n    # -------------------------------------------------------------------------\n    # (3) Minimum batch size\n    # -------------------------------------------------------------------------\n    def minbatch_rule(m, p, t):\n        return m.x[p, t] >= d[\"min_batch\"][p] * m.y[p, t]\n\n    model.minbatch = pyo.Constraint(model.P, model.T, rule=minbatch_rule)\n\n    # -------------------------------------------------------------------------\n    # (4) Storage capacity\n    # -------------------------------------------------------------------------\n    def storage_rule(m, t):\n        return sum(m.s[p, t] for p in m.P) <= d[\"storage_capacity\"]\n\n    model.storage = pyo.Constraint(model.T, rule=storage_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1297,
+      "completion_tokens": 1123
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2342,
+      "completion_tokens": 1398
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 15.125174760818481,
+   "position": 1,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # sets\n    \"A\": [\"A1\", \"A2\", \"A3\"],\n    \"months\": [\"Jan\", \"Feb\", \"Mar\", \"Apr\"],\n    # demand d[p][month] in units\n    \"demand\": {\n        \"A1\": [5300, 1200, 7400, 5300],\n        \"A2\": [4500, 5400, 6500, 7200],\n        \"A3\": [4400, 6700, 12500, 13200],\n    },\n    \"price\": {\"A1\": 124.0, \"A2\": 109.0, \"A3\": 115.0},\n    \"activate\": {\"A1\": 150000.0, \"A2\": 150000.0, \"A3\": 100000.0},\n    \"prodcost\": {\"A1\": 73.30, \"A2\": 52.90, \"A3\": 65.40},\n    \"quota\": {\"A1\": 500.0, \"A2\": 450.0, \"A3\": 550.0},\n    \"minbatch\": {\"A1\": 20.0, \"A2\": 20.0, \"A3\": 16.0},\n    \"days\": {\"Jan\": 23.0, \"Feb\": 20.0, \"Mar\": 23.0, \"Apr\": 22.0},\n    \"holdcost\": {\"A1\": 3.50, \"A2\": 4.00, \"A3\": 3.00},\n    \"capacity\": 800.0,\n    \"bigM\": 1.0e7,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    m.A = pyo.Set(initialize=d[\"A\"], ordered=True)\n    m.T = pyo.Set(initialize=d[\"months\"], ordered=True)\n\n    # ---- Variables ----\n    # monthly production on product p, month t (integer unit batches)\n    m.produce = pyo.Var(m.A, m.T, domain=pyo.NonNegativeIntegers, bounds=(0, None))\n    # sales in each month\n    m.sales = pyo.Var(m.A, m.T, domain=pyo.NonNegativeReals, bounds=(0, None))\n    # end-of-month inventory\n    m.invent = pyo.Var(m.A, m.T, domain=pyo.NonNegativeReals, bounds=(0, None))\n    # activation of production line\n    m.run = pyo.Var(m.A, m.T, domain=pyo.Binary)\n    # storage rented in month t\n    m.store = pyo.Var(m.T, domain=pyo.Binary)\n\n    # ---- Objective: maximize revenue minus all costs ----\n    def obj_rule(M):\n        revenue = sum(d[\"price\"][p] * M.sales[p, t] for p in M.A for t in M.T)\n        act = sum(d[\"activate\"][p] * M.run[p, t] for p in M.A for t in M.T)\n        prod = sum(d[\"prodcost\"][p] * M.produce[p, t] for p in M.A for t in M.T)\n        hold = sum(d[\"holdcost\"][p] * M.invent[p, t] for p in M.A for t in M.T)\n        return revenue - act - prod - hold\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # ---- Constraints ----\n\n    def sales_cap_rule(M, p, t):\n        idx = d[\"months\"].index(t)\n        return M.sales[p, t] <= d[\"demand\"][p][idx]\n\n    m.sales_cap = pyo.Constraint(m.A, m.T, rule=sales_cap_rule)\n\n    # Balance: Jan has no opening stock\n    def bal_rule(M, p, t):\n        i = d[\"months\"].index(t)\n        if i == 0:\n            return M.produce[p, t] == M.sales[p, t] + M.invent[p, t]\n        val = M.invent[p, d[\"months\"][i - 1]] + M.produce[p, t]\n        return val == M.sales[p, t] + M.invent[p, t]\n\n    m.balance = pyo.Constraint(m.A, m.T, rule=bal_rule)\n\n    # production quota per month (capacity of the line)\n    def quota_rule(M, p, t):\n        cap = d[\"quota\"][p] * d[\"days\"][t]\n        return M.produce[p, t] <= cap\n\n    m.quota_cap = pyo.Constraint(m.A, m.T, rule=quota_rule)\n\n    # big-M activation indicator\n    def bigm_rule(M, p, t):\n        return M.produce[p, t] <= d[\"bigM\"] * M.run[p, t]\n\n    m.prod_if_active = pyo.Constraint(m.A, m.T, rule=bigm_rule)\n\n    # minimum batch size when the line is active\n    def minbatch_rule(M, p, t):\n        return M.produce[p, t] >= d[\"minbatch\"][p] * M.run[p, t]\n\n    m.minbatch = pyo.Constraint(m.A, m.T, rule=minbatch_rule)\n\n    # storage capacity if rented\n    def storage_rule(M, t):\n        total = sum(M.invent[p, t] for p in M.A)\n        return total <= d[\"capacity\"] * M.store[t]\n\n    m.storage_cap = pyo.Constraint(m.T, rule=storage_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1283,
+      "completion_tokens": 1836
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "reserved_pyomo_component_name",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2809,
+      "completion_tokens": 1290
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 13.366400241851807,
+   "position": 2,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"A1\", \"A2\", \"A3\"],\n    \"months\": [\"Jan\", \"Feb\", \"Mar\", \"Apr\"],\n    \"price\": {\"A1\": 124.0, \"A2\": 109.0, \"A3\": 115.0},\n    \"activation_cost\": {\"A1\": 150000.0, \"A2\": 150000.0, \"A3\": 100000.0},\n    \"production_cost\": {\"A1\": 73.30, \"A2\": 52.90, \"A3\": 65.40},\n    \"quota\": {\"A1\": 500, \"A2\": 450, \"A3\": 550},\n    \"min_batch\": {\"A1\": 20, \"A2\": 20, \"A3\": 16},\n    \"storage_cost\": {\"A1\": 3.50, \"A2\": 4.00, \"A3\": 3.00},\n    \"days\": {\"Jan\": 23, \"Feb\": 20, \"Mar\": 23, \"Apr\": 22},\n    \"demand\": {\n        \"A1\": {\"Jan\": 5300, \"Feb\": 1200, \"Mar\": 7400, \"Apr\": 5300},\n        \"A2\": {\"Jan\": 4500, \"Feb\": 5400, \"Mar\": 6500, \"Apr\": 7200},\n        \"A3\": {\"Jan\": 4400, \"Feb\": 6700, \"Mar\": 12500, \"Apr\": 13200},\n    },\n    \"storage_capacity\": 800,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=d[\"products\"])\n    model.T = pyo.Set(initialize=d[\"months\"])\n\n    # Production quantity of product p in month t\n    model.production = pyo.Var(\n        model.P, model.T, within=pyo.NonNegativeIntegers\n    )\n\n    # Activation binary for product p in month t\n    model.line_on = pyo.Var(model.P, model.T, within=pyo.Binary)\n\n    # End-of-month inventory of product p in month t\n    model.inventory = pyo.Var(\n        model.P, model.T, within=pyo.NonNegativeIntegers\n    )\n\n    # Objective: maximize total revenue from sales (sales = demand met)\n    def obj_rule(m):\n        return sum(\n            d[\"price\"][p] * d[\"demand\"][p][t]\n            for p in m.P\n            for t in m.T\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Demand satisfaction / inventory balance for each product and month\n    def balance_rule(m, p, t):\n        idx = d[\"months\"].index(t)\n        prev_inv = m.inventory[p, d[\"months\"][idx - 1]] if idx > 0 else 0\n        return (\n            m.production[p, t] + prev_inv - m.inventory[p, t]\n            == d[\"demand\"][p][t]\n        )\n\n    model.balance = pyo.Constraint(model.P, model.T, rule=balance_rule)\n\n    # Production quota: limited by quota * days when activated\n    def quota_rule(m, p, t):\n        return m.production[p, t] <= (\n            d[\"quota\"][p] * d[\"days\"][t] * m.line_on[p, t]\n        )\n\n    model.quota = pyo.Constraint(model.P, model.T, rule=quota_rule)\n\n    # Minimum batch size when activated\n    def batch_rule(m, p, t):\n        return m.production[p, t] >= d[\"min_batch\"][p] * m.line_on[p, t]\n\n    model.batch = pyo.Constraint(model.P, model.T, rule=batch_rule)\n\n    # Storage capacity: total inventory across products each month\n    def storage_rule(m, t):\n        return (\n            sum(m.inventory[p, t] for p in m.P) <= d[\"storage_capacity\"]\n        )\n\n    model.storage = pyo.Constraint(model.T, rule=storage_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1277,
+      "completion_tokens": 1567
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "reserved_pyomo_component_name",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2373,
+      "completion_tokens": 974
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 11.117609739303589,
+   "position": 3,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"A1\", \"A2\", \"A3\"],\n    \"months\": [\"Jan\", \"Feb\", \"Mar\", \"Apr\"],\n    \"demand\": {\n        \"A1\": {\"Jan\": 5300, \"Feb\": 1200, \"Mar\": 7400, \"Apr\": 5300},\n        \"A2\": {\"Jan\": 4500, \"Feb\": 5400, \"Mar\": 6500, \"Apr\": 7200},\n        \"A3\": {\"Jan\": 4400, \"Feb\": 6700, \"Mar\": 12500, \"Apr\": 13200},\n    },\n    \"price\": {\"A1\": 124.0, \"A2\": 109.0, \"A3\": 115.0},\n    \"activation_cost\": {\"A1\": 150000.0, \"A2\": 150000.0, \"A3\": 100000.0},\n    \"production_cost\": {\"A1\": 73.30, \"A2\": 52.90, \"A3\": 65.40},\n    \"quota\": {\"A1\": 500, \"A2\": 450, \"A3\": 550},\n    \"min_batch\": {\"A1\": 20, \"A2\": 20, \"A3\": 16},\n    \"storage_cost\": {\"A1\": 3.50, \"A2\": 4.00, \"A3\": 3.00},\n    \"days\": {\"Jan\": 23, \"Feb\": 20, \"Mar\": 23, \"Apr\": 22},\n    \"storage_capacity\": 800,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = d[\"products\"]\n    months = d[\"months\"]\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=products)\n    model.M = pyo.Set(initialize=months)\n\n    # Production quantity (integer units)\n    model.production = pyo.Var(model.P, model.M, within=pyo.NonNegativeIntegers)\n    # Sales quantity\n    model.sales = pyo.Var(model.P, model.M, within=pyo.NonNegativeIntegers)\n    # End-of-month inventory\n    model.inventory = pyo.Var(model.P, model.M, within=pyo.NonNegativeIntegers)\n    # Activation binary (renamed to avoid reserved attribute 'activate')\n    model.line_on = pyo.Var(model.P, model.M, within=pyo.Binary)\n\n    # Objective: maximize profit\n    def obj_rule(m):\n        revenue = sum(d[\"price\"][p] * m.sales[p, t] for p in m.P for t in m.M)\n        prod_cost = sum(d[\"production_cost\"][p] * m.production[p, t]\n                        for p in m.P for t in m.M)\n        act_cost = sum(d[\"activation_cost\"][p] * m.line_on[p, t]\n                       for p in m.P for t in m.M)\n        store_cost = sum(d[\"storage_cost\"][p] * m.inventory[p, t]\n                         for p in m.P for t in m.M)\n        return revenue - prod_cost - act_cost - store_cost\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Demand limit: cannot sell more than demand\n    def demand_rule(m, p, t):\n        return m.sales[p, t] <= d[\"demand\"][p][t]\n\n    model.demand_limit = pyo.Constraint(model.P, model.M, rule=demand_rule)\n\n    # Inventory balance (first month has no prior inventory)\n    def balance_rule(m, p, t):\n        idx = m.M.ord(t)\n        prev = m.inventory[p, m.M.prev(t)] if idx > 1 else 0\n        return m.inventory[p, t] == prev + m.production[p, t] - m.sales[p, t]\n\n    model.inventory_balance = pyo.Constraint(model.P, model.M, rule=balance_rule)\n\n    # Production quota: production <= quota * days * activation (big-M linking)\n    def quota_rule(m, p, t):\n        cap = d[\"quota\"][p] * d[\"days\"][t]\n        return m.production[p, t] <= cap * m.line_on[p, t]\n\n    model.production_quota = pyo.Constraint(model.P, model.M, rule=quota_rule)\n\n    # Minimum batch size when activated\n    def minbatch_rule(m, p, t):\n        return m.production[p, t] >= d[\"min_batch\"][p] * m.line_on[p, t]\n\n    model.min_batch = pyo.Constraint(model.P, model.M, rule=minbatch_rule)\n\n    # Storage capacity per month\n    def storage_rule(m, t):\n        return sum(m.inventory[p, t] for p in m.P) <= d[\"storage_capacity\"]\n\n    model.storage_capacity = pyo.Constraint(model.M, rule=storage_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1277,
+      "completion_tokens": 1561
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "reserved_pyomo_component_name",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2536,
+      "completion_tokens": 1146
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 10.680123090744019,
+   "position": 4,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"P\": 3,\n    \"T\": 4,\n    # Demand[p][t]\n    \"demand\": [\n        [5300, 1200, 7400, 5300],\n        [4500, 5400, 6500, 7200],\n        [4400, 6700, 12500, 13200],\n    ],\n    \"price\": [124.0, 109.0, 115.0],\n    \"activation_cost\": [150000.0, 150000.0, 100000.0],\n    \"production_cost\": [73.30, 52.90, 65.40],\n    \"quota\": [500, 450, 550],          # units per production day\n    \"min_batch\": [20, 20, 16],\n    \"days\": [23, 20, 23, 22],\n    \"storage_cost\": [3.50, 4.00, 3.00],\n    \"storage_capacity\": 800,\n    \"big_M\": 1000000,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.P = pyo.RangeSet(d[\"P\"])\n    m.T = pyo.RangeSet(d[\"T\"])\n\n    # x[p,t]: production quantity, integer >= 0\n    m.x = pyo.Var(m.P, m.T, within=pyo.NonNegativeIntegers)\n\n    # b[p,t]: activation binary\n    m.b = pyo.Var(m.P, m.T, within=pyo.Binary)\n\n    # I[p,t]: end-of-month inventory\n    m.I = pyo.Var(m.P, m.T, within=pyo.NonNegativeReals)\n\n    # s[p,t]: storage space rented/held for product p in month t\n    m.s = pyo.Var(m.P, m.T, within=pyo.NonNegativeReals)\n\n    # Objective: maximize profit\n    def obj_rule(m):\n        revenue = sum(d[\"price\"][p - 1] * d[\"demand\"][p - 1][t - 1]\n                      for p in m.P for t in m.T)\n        prod_cost = sum(d[\"production_cost\"][p - 1] * m.x[p, t]\n                        for p in m.P for t in m.T)\n        act_cost = sum(d[\"activation_cost\"][p - 1] * m.b[p, t]\n                       for p in m.P for t in m.T)\n        stor_cost = sum(d[\"storage_cost\"][p - 1] * m.s[p, t]\n                        for p in m.P for t in m.T)\n        return revenue - prod_cost - act_cost - stor_cost\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Production quota: x[p,t] <= days[t] * quota[p]\n    def quota_rule(m, p, t):\n        return m.x[p, t] <= d[\"days\"][t - 1] * d[\"quota\"][p - 1]\n    m.quota_con = pyo.Constraint(m.P, m.T, rule=quota_rule)\n\n    # Activation upper link: x[p,t] <= bigM * b[p,t]\n    def act_upper_rule(m, p, t):\n        return m.x[p, t] <= d[\"big_M\"] * m.b[p, t]\n    m.act_upper = pyo.Constraint(m.P, m.T, rule=act_upper_rule)\n\n    # Activation lower link (min batch): x[p,t] >= min_batch[p] * b[p,t]\n    def act_lower_rule(m, p, t):\n        return m.x[p, t] >= d[\"min_batch\"][p - 1] * m.b[p, t]\n    m.act_lower = pyo.Constraint(m.P, m.T, rule=act_lower_rule)\n\n    # Inventory balance: I[p,t] = I[p,t-1] + x[p,t] - demand[p,t]\n    def inv_rule(m, p, t):\n        prev = m.I[p, t - 1] if t > 1 else 0\n        return m.I[p, t] == prev + m.x[p, t] - d[\"demand\"][p - 1][t - 1]\n    m.inv_balance = pyo.Constraint(m.P, m.T, rule=inv_rule)\n\n    # Storage must cover inventory: s[p,t] >= I[p,t]\n    def stor_link_rule(m, p, t):\n        return m.s[p, t] >= m.I[p, t]\n    m.stor_link = pyo.Constraint(m.P, m.T, rule=stor_link_rule)\n\n    # Storage capacity: sum_p s[p,t] <= 800\n    def stor_cap_rule(m, t):\n        return sum(m.s[p, t] for p in m.P) <= d[\"storage_capacity\"]\n    m.stor_cap = pyo.Constraint(m.T, rule=stor_cap_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1293,
+      "completion_tokens": 1679
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.126075506210327,
+   "position": 5,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Products and months\n    \"products\": [\"A1\", \"A2\", \"A3\"],\n    \"months\": [\"Jan\", \"Feb\", \"Mar\", \"Apr\"],\n    \"inventory_months\": [\"Jan\", \"Feb\", \"Mar\"],  # no carry needed after April\n\n    # Demand table (units): [Jan, Feb, Mar, Apr]\n    \"demand\": {\n        \"A1\": [5300, 1200, 7400, 5300],\n        \"A2\": [4500, 5400, 6500, 7200],\n        \"A3\": [4400, 6700, 12500, 13200],\n    },\n\n    # Unit price ($)\n    \"price\": {\"A1\": 124.0, \"A2\": 109.0, \"A3\": 115.0},\n\n    # Activation cost ($)\n    \"activation_cost\": {\"A1\": 150000.0, \"A2\": 150000.0, \"A3\": 100000.0},\n\n    # Production cost ($/unit)\n    \"production_cost\": {\"A1\": 73.30, \"A2\": 52.90, \"A3\": 65.40},\n\n    # Production quota (units per day)\n    \"quota\": {\"A1\": 500, \"A2\": 450, \"A3\": 550},\n\n    # Minimum batch size (units per month)\n    \"min_batch\": {\"A1\": 20, \"A2\": 20, \"A3\": 16},\n\n    # Production days per month\n    \"days\": {\"Jan\": 23, \"Feb\": 20, \"Mar\": 23, \"Apr\": 22},\n\n    # Storage cost ($/unit/month)\n    \"storage_cost\": {\"A1\": 3.50, \"A2\": 4.00, \"A3\": 3.00},\n\n    # Total storage capacity (units)\n    \"storage_capacity\": 800,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # Sets\n    m.P = pyo.Set(initialize=d[\"products\"])\n    m.T = pyo.Set(initialize=d[\"months\"])\n    m.TI = pyo.Set(initialize=d[\"inventory_months\"])\n\n    # Variables\n    # Production quantity (integer units)\n    m.x = pyo.Var(m.P, m.T, domain=pyo.NonNegativeIntegers)\n\n    # Activation binary\n    m.y = pyo.Var(m.P, m.T, domain=pyo.Binary)\n\n    # Ending inventory (integer units), only for inventory months\n    m.I = pyo.Var(m.P, m.TI, domain=pyo.NonNegativeIntegers)\n\n    # Storage rented (integer units), only for inventory months\n    m.s = pyo.Var(m.P, m.TI, domain=pyo.NonNegativeIntegers)\n\n    # Objective: maximize profit = revenue - production - activation - storage\n    # Revenue uses demand met; since demand is fixed and must be satisfied,\n    # profit = sum (price - prod_cost) * x - activation - storage\n    def obj_rule(m):\n        revenue_minus_prod = sum(\n            (d[\"price\"][p] - d[\"production_cost\"][p]) * m.x[p, t]\n            for p in m.P for t in m.T\n        )\n        activation = sum(\n            d[\"activation_cost\"][p] * m.y[p, t]\n            for p in m.P for t in m.T\n        )\n        storage = sum(\n            d[\"storage_cost\"][p] * m.s[p, t]\n            for p in m.P for t in m.TI\n        )\n        return revenue_minus_prod - activation - storage\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Inventory balance for each product and inventory month\n    def balance_rule(m, p, t):\n        idx = d[\"months\"].index(t)\n        if idx == 0:\n            prev_inv = 0\n        else:\n            prev_t = d[\"months\"][idx - 1]\n            prev_inv = m.I[p, prev_t]\n        return m.I[p, t] == prev_inv + m.x[p, t] - d[\"demand\"][p][idx]\n\n    m.balance = pyo.Constraint(m.P, m.TI, rule=balance_rule)\n\n    # For April (last month) no inventory carried: production + inventory from March = demand\n    def april_rule(m, p):\n        last = d[\"months\"][-1]\n        idx = len(d[\"months\"]) - 1\n        prev_t = d[\"months\"][idx - 1]\n        return m.I[p, prev_t] + m.x[p, last] == d[\"demand\"][p][idx]\n\n    m.april_balance = pyo.Constraint(m.P, rule=april_rule)\n\n    # Storage capacity per inventory month\n    def storage_cap_rule(m, t):\n        return sum(m.s[p, t] for p in m.P) <= d[\"storage_capacity\"]\n\n    m.storage_cap = pyo.Constraint(m.TI, rule=storage_cap_rule)\n\n    # Storage linkage: rented storage must cover inventory\n    def storage_link_rule(m, p, t):\n        return m.s[p, t] >= m.I[p, t]\n\n    m.storage_link = pyo.Constraint(m.P, m.TI, rule=storage_link_rule)\n\n    # Production quota (capacity) linking with activation\n    def quota_rule(m, p, t):\n        cap = d[\"quota\"][p] * d[\"days\"][t]\n        return m.x[p, t] <= cap * m.y[p, t]\n\n    m.quota = pyo.Constraint(m.P, m.T, rule=quota_rule)\n\n    # Minimum batch size when activated\n    def minbatch_rule(m, p, t):\n        return m.x[p, t] >= d[\"min_batch\"][p] * m.y[p, t]\n\n    m.minbatch = pyo.Constraint(m.P, m.T, rule=minbatch_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1281,
+      "completion_tokens": 1876
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.820891857147217,
+   "position": 6,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Products and months\n    \"products\": [\"A1\", \"A2\", \"A3\"],\n    \"months\": [\"Jan\", \"Feb\", \"Mar\", \"Apr\"],\n\n    # Unit Price ($) per product\n    \"price\": {\"A1\": 124.0, \"A2\": 109.0, \"A3\": 115.0},\n\n    # Activation Cost ($) per product\n    \"activation_cost\": {\"A1\": 150000.0, \"A2\": 150000.0, \"A3\": 100000.0},\n\n    # Production Cost ($/unit) per product\n    \"production_cost\": {\"A1\": 73.30, \"A2\": 52.90, \"A3\": 65.40},\n\n    # Production Quota (units per production day) per product\n    \"quota\": {\"A1\": 500, \"A2\": 450, \"A3\": 550},\n\n    # Minimum Batch Size (units) per product, monthly basis\n    \"min_batch\": {\"A1\": 20, \"A2\": 20, \"A3\": 16},\n\n    # Storage cost ($/unit/month) per product\n    \"storage_cost\": {\"A1\": 3.50, \"A2\": 4.00, \"A3\": 3.00},\n\n    # Total storage capacity (units), all products share same space\n    \"storage_capacity\": 800,\n\n    # Production days per month\n    \"days\": {\"Jan\": 23, \"Feb\": 20, \"Mar\": 23, \"Apr\": 22},\n\n    # Demand per product per month\n    \"demand\": {\n        \"A1\": {\"Jan\": 5300, \"Feb\": 1200, \"Mar\": 7400, \"Apr\": 5300},\n        \"A2\": {\"Jan\": 4500, \"Feb\": 5400, \"Mar\": 6500, \"Apr\": 7200},\n        \"A3\": {\"Jan\": 4400, \"Feb\": 6700, \"Mar\": 12500, \"Apr\": 13200},\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    products = d[\"products\"]\n    months = d[\"months\"]\n    pm = [(p, t) for p in products for t in months]\n\n    m = pyo.ConcreteModel()\n\n    m.P = pyo.Set(initialize=products, ordered=True)\n    m.T = pyo.Set(initialize=months, ordered=True)\n    m.PT = pyo.Set(initialize=pm, dimen=2, ordered=True)\n\n    # Big-M for activation linking: quota * days (max possible production when on)\n    big_m = {(p, t): d[\"quota\"][p] * d[\"days\"][t] for (p, t) in pm}\n\n    # x[p,t]: units produced\n    m.x = pyo.Var(m.PT, within=pyo.NonNegativeIntegers)\n\n    # s[p,t]: units stored at end of month t\n    m.s = pyo.Var(m.PT, within=pyo.NonNegativeIntegers)\n\n    # y[p,t]: activation binary\n    m.y = pyo.Var(m.PT, within=pyo.Binary)\n\n    # Objective: maximize revenue - activation - production - storage\n    def obj_rule(mm):\n        revenue = sum(\n            d[\"price\"][p] * d[\"demand\"][p][t] for (p, t) in mm.PT\n        )\n        act = sum(d[\"activation_cost\"][p] * mm.y[p, t] for (p, t) in mm.PT)\n        prod = sum(d[\"production_cost\"][p] * mm.x[p, t] for (p, t) in mm.PT)\n        store = sum(d[\"storage_cost\"][p] * mm.s[p, t] for (p, t) in mm.PT)\n        return revenue - act - prod - store\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Quota constraint: x[p,t] <= quota*days*y[p,t]\n    def quota_rule(mm, p, t):\n        return mm.x[p, t] <= big_m[(p, t)] * mm.y[p, t]\n\n    m.quota_con = pyo.Constraint(m.PT, rule=quota_rule)\n\n    # Minimum batch: x[p,t] >= min_batch * y[p,t]\n    def minbatch_rule(mm, p, t):\n        return mm.x[p, t] >= d[\"min_batch\"][p] * mm.y[p, t]\n\n    m.minbatch_con = pyo.Constraint(m.PT, rule=minbatch_rule)\n\n    # Flow balance with demand met: s[p,t] = s[p,t-1] + x[p,t] - demand[p,t]\n    def balance_rule(mm, p, t):\n        idx = mm.T.ord(t)\n        prev = 0\n        if idx > 1:\n            t_prev = mm.T.at(idx - 1)\n            prev = mm.s[p, t_prev]\n        return mm.s[p, t] == prev + mm.x[p, t] - d[\"demand\"][p][t]\n\n    m.balance_con = pyo.Constraint(m.PT, rule=balance_rule)\n\n    # Storage capacity per month: sum_p s[p,t] <= capacity\n    def cap_rule(mm, t):\n        return sum(mm.s[p, t] for p in mm.P) <= d[\"storage_capacity\"]\n\n    m.cap_con = pyo.Constraint(m.T, rule=cap_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1281,
+      "completion_tokens": 1785
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.502043962478638,
+   "position": 7,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# =============================================================================\n# PROBLEM: Multi-period production planning with activation costs, minimum\n#          batch sizes, production quotas, and shared storage capacity.\n#\n# SETS\n#   P = {A1, A2, A3}          products\n#   T = {Jan, Feb, Mar, Apr}  months\n#\n# DECISION VARIABLES\n#   x[p,t]  >= 0 integer   units of product p produced in month t\n#   s[p,t]  >= 0 integer   units of product p held in storage at end of month t\n#   y[p,t]  binary         1 if production line for product p is activated in t\n#\n# OBJECTIVE (maximize net revenue)\n#   sum over p,t of (price_p - cost_p) * x[p,t]\n#     - sum over p,t of activation_cost_p * y[p,t]\n#     - sum over p,t of storage_cost_p * s[p,t]\n#\n# CONSTRAINTS\n#   (1) Demand balance: s[p,t-1] + x[p,t] = demand[p,t] + s[p,t]\n#   (2) Production quota: x[p,t] <= quota_p * days_t * y[p,t]\n#   (3) Minimum batch:   x[p,t] >= min_batch_p * y[p,t]\n#   (4) Storage capacity: sum_p s[p,t] <= 800\n#   (5) Initial storage s[p,0] = 0\n# =============================================================================\n\nDATA = {\n    \"products\": [\"A1\", \"A2\", \"A3\"],\n    \"months\": [\"Jan\", \"Feb\", \"Mar\", \"Apr\"],\n    \"demand\": {\n        \"A1\": {\"Jan\": 5300, \"Feb\": 1200, \"Mar\": 7400, \"Apr\": 5300},\n        \"A2\": {\"Jan\": 4500, \"Feb\": 5400, \"Mar\": 6500, \"Apr\": 7200},\n        \"A3\": {\"Jan\": 4400, \"Feb\": 6700, \"Mar\": 12500, \"Apr\": 13200},\n    },\n    \"price\": {\"A1\": 124.0, \"A2\": 109.0, \"A3\": 115.0},\n    \"activation_cost\": {\"A1\": 150000.0, \"A2\": 150000.0, \"A3\": 100000.0},\n    \"production_cost\": {\"A1\": 73.30, \"A2\": 52.90, \"A3\": 65.40},\n    \"quota\": {\"A1\": 500, \"A2\": 450, \"A3\": 550},\n    \"min_batch\": {\"A1\": 20, \"A2\": 20, \"A3\": 16},\n    \"storage_cost\": {\"A1\": 3.50, \"A2\": 4.00, \"A3\": 3.00},\n    \"days\": {\"Jan\": 23, \"Feb\": 20, \"Mar\": 23, \"Apr\": 22},\n    \"storage_capacity\": 800,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    products = d[\"products\"]\n    months = d[\"months\"]\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=products)\n    model.T = pyo.Set(initialize=months)\n\n    # x[p,t]: production quantity\n    model.x = pyo.Var(model.P, model.T, within=pyo.NonNegativeIntegers)\n\n    # s[p,t]: end-of-month storage\n    model.s = pyo.Var(model.P, model.T, within=pyo.NonNegativeIntegers)\n\n    # y[p,t]: activation binary\n    model.y = pyo.Var(model.P, model.T, within=pyo.Binary)\n\n    # Objective: maximize net revenue\n    def obj_rule(m):\n        revenue = sum(\n            (d[\"price\"][p] - d[\"production_cost\"][p]) * m.x[p, t]\n            for p in m.P for t in m.T\n        )\n        activation = sum(\n            d[\"activation_cost\"][p] * m.y[p, t]\n            for p in m.P for t in m.T\n        )\n        storage = sum(\n            d[\"storage_cost\"][p] * m.s[p, t]\n            for p in m.P for t in m.T\n        )\n        return revenue - activation - storage\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # (1) Demand balance\n    def demand_balance_rule(m, p, t):\n        idx = m.T.ord(t)\n        prev = m.s[p, m.T.prev(t)] if idx > 1 else 0\n        return prev + m.x[p, t] == d[\"demand\"][p][t] + m.s[p, t]\n\n    model.demand_balance = pyo.Constraint(model.P, model.T, rule=demand_balance_rule)\n\n    # (2) Production quota (big-M linking)\n    def quota_rule(m, p, t):\n        return m.x[p, t] <= d[\"quota\"][p] * d[\"days\"][t] * m.y[p, t]\n\n    model.quota = pyo.Constraint(model.P, model.T, rule=quota_rule)\n\n    # (3) Minimum batch size\n    def min_batch_rule(m, p, t):\n        return m.x[p, t] >= d[\"min_batch\"][p] * m.y[p, t]\n\n    model.min_batch = pyo.Constraint(model.P, model.T, rule=min_batch_rule)\n\n    # (4) Storage capacity\n    def storage_cap_rule(m, t):\n        return sum(m.s[p, t] for p in m.P) <= d[\"storage_capacity\"]\n\n    model.storage_cap = pyo.Constraint(model.T, rule=storage_cap_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1297,
+      "completion_tokens": 3004
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1239,
+      "completion_tokens": 1348
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 24.85395836830139,
+   "position": 8,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [1, 2, 3],\n    \"months\": [1, 2, 3, 4],\n    \"days\": {1: 23, 2: 20, 3: 23, 4: 22},\n    # price per unit\n    \"price\": {1: 124.0, 2: 109.0, 3: 115.0},\n    # activation cost per month if line used\n    \"activation_cost\": {1: 150000.0, 2: 150000.0, 3: 100000.0},\n    # production cost per unit\n    \"prod_cost\": {1: 73.30, 2: 52.90, 3: 65.40},\n    # production quota (units per day)\n    \"quota\": {1: 500, 2: 450, 3: 550},\n    # minimum batch size (per month)\n    \"min_batch\": {1: 20, 2: 20, 3: 16},\n    # storage cost per unit per month\n    \"storage_cost\": {1: 3.50, 2: 4.00, 3: 3.00},\n    # total storage capacity (units, all products share same space)\n    \"storage_capacity\": 800,\n    # demand[p][month]\n    \"demand\": {\n        1: {1: 5300, 2: 1200, 3: 7400, 4: 5300},\n        2: {1: 4500, 2: 5400, 3: 6500, 4: 7200},\n        3: {1: 4400, 2: 6700, 3: 12500, 4: 13200},\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=d[\"products\"])\n    model.T = pyo.Set(initialize=d[\"months\"])\n\n    # x[p,t]: units produced\n    model.x = pyo.Var(model.P, model.T, within=pyo.NonNegativeIntegers)\n\n    # s[p,t]: units stored at end of month t\n    model.s = pyo.Var(model.P, model.T, within=pyo.NonNegativeIntegers)\n\n    # y[p,t]: activation binary\n    model.y = pyo.Var(model.P, model.T, within=pyo.Binary)\n\n    # precompute max production per month as a parameter\n    def maxprod_init(m, p, t):\n        return d[\"quota\"][p] * d[\"days\"][t]\n\n    model.maxprod = pyo.Param(model.P, model.T, initialize=maxprod_init)\n\n    # ---- objective ----\n    # revenue - production cost - activation cost - storage cost\n    def revenue(m):\n        return sum(d[\"price\"][p] * d[\"demand\"][p][t] for p in m.P for t in m.T)\n\n    def prod_cost_expr(m):\n        return sum(d[\"prod_cost\"][p] * m.x[p, t] for p in m.P for t in m.T)\n\n    def act_cost_expr(m):\n        return sum(d[\"activation_cost\"][p] * m.y[p, t] for p in m.P for t in m.T)\n\n    def stor_cost_expr(m):\n        return sum(d[\"storage_cost\"][p] * m.s[p, t] for p in m.P for t in m.T)\n\n    # Revenue is fixed by demand (all demand must be met), so it is a constant;\n    # maximizing revenue == maximizing profit here. We model profit maximization\n    # which is equivalent given fixed satisfied demand.\n    model.obj = pyo.Objective(\n        expr=revenue(model) - prod_cost_expr(model)\n        - act_cost_expr(model) - stor_cost_expr(model),\n        sense=pyo.maximize,\n    )\n\n    # ---- demand balance ----\n    # production_t + stock_{t-1} - stock_t = demand_t   (stock_0 = 0)\n    def balance_rule(m, p, t):\n        prev = m.s[p, t - 1] if t > 1 else 0\n        return m.x[p, t] + prev - m.s[p, t] == d[\"demand\"][p][t]\n\n    model.balance = pyo.Constraint(model.P, model.T, rule=balance_rule)\n\n    # ---- max production: x <= maxprod * y ----\n    def max_rule(m, p, t):\n        return m.x[p, t] <= m.maxprod[p, t] * m.y[p, t]\n\n    model.max_prod = pyo.Constraint(model.P, model.T, rule=max_rule)\n\n    # ---- minimum batch: x >= min_batch * y ----\n    def min_rule(m, p, t):\n        return m.x[p, t] >= d[\"min_batch\"][p] * m.y[p, t]\n\n    model.min_prod = pyo.Constraint(model.P, model.T, rule=min_rule)\n\n    # ---- storage capacity: total stock each month <= capacity ----\n    def cap_rule(m, t):\n        return sum(m.s[p, t] for p in m.P) <= d[\"storage_capacity\"]\n\n    model.storage_cap = pyo.Constraint(model.T, rule=cap_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1293,
+      "completion_tokens": 1611
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2458,
+      "completion_tokens": 1224
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2458,
+      "completion_tokens": 1224
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "possible_nonlinearity"
+   ],
+   "seconds": 16.008378744125366,
+   "position": 9,
+   "recipe_index": 7
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:55:17"
+}

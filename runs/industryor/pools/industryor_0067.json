@@ -1,0 +1,293 @@
+{
+ "pid": "industryor_0067",
+ "question": "Consider the allocation of $n$ factories to $n$ locations, where the transportation quantity between factory $i$ and factory $j$ is $d_{ij}$, and the unit transportation cost from location $p$ to location $q$ is $c_{pq}$. To minimize the total transportation cost, represent this problem as an integer model.",
+ "templates": [
+  "Transportation",
+  "Facility Location"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Data: n factories / n locations, transport quantities d[i][j] (0-indexed),\n# unit location-to-location costs c[p][q] (0-indexed).  Replace with instance.\n# ---------------------------------------------------------------------------\nDATA = {\n    \"n\": 3,\n    \"d\": [\n        [0.0, 5.0, 2.0],\n        [3.0, 0.0, 4.0],\n        [1.0, 6.0, 0.0],\n    ],\n    \"c\": [\n        [0.0, 8.0, 3.0],\n        [5.0, 0.0, 7.0],\n        [2.0, 4.0, 0.0],\n    ],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"n\"]\n    dq = d[\"d\"]      # dq[i][j] = d_ij\n    cu = d[\"c\"]      # cu[p][q] = c_pq\n\n    model = pyo.ConcreteModel()\n\n    # ---- Sets ------------------------------------------------------------\n    model.I = pyo.RangeSet(0, n - 1)   # factories\n    model.P = pyo.RangeSet(0, n - 1)   # locations\n\n    # ---- Decision variables ---------------------------------------------\n    # y[i,p] = 1 if factory i is assigned to location p.\n    model.y = pyo.Var(model.I, model.P, domain=pyo.Binary)\n    # w[i,j,p,q] = 1 iff factory i -> location p AND factory j -> location q.\n    model.w = pyo.Var(model.I, model.I, model.P, model.P, domain=pyo.Binary)\n\n    # ---- Objective: minimise total transportation cost -------------------\n    # min sum_{i,j,p,q} d_ij * c_pq * w_ijpq    (linear in w)\n    def obj_rule(m):\n        return sum(\n            dq[i][j] * cu[p][q] * m.w[i, j, p, q]\n            for i in m.I for j in m.I for p in m.P for q in m.P\n        )\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---- Constraints -----------------------------------------------------\n\n    # Each factory is assigned to exactly one location.\n    def factory_assign_rule(m, i):\n        return sum(m.y[i, p] for p in m.P) == 1\n    model.factory_assign = pyo.Constraint(model.I, rule=factory_assign_rule)\n\n    # Each location receives exactly one factory.\n    def location_assign_rule(m, p):\n        return sum(m.y[i, p] for i in m.I) == 1\n    model.location_assign = pyo.Constraint(model.P, rule=location_assign_rule)\n\n    # Linearisation of w[i,j,p,q] = y[i,p] * y[j,q]:\n    #   w >= y_ip + y_jq - 1   (forces w = 1 when both are 1)\n    #   w <= y_ip,  w <= y_jq  (force w = 0 when either is 0)\n    def w_lb_rule(m, i, j, p, q):\n        return m.w[i, j, p, q] >= m.y[i, p] + m.y[j, q] - 1\n    model.w_lb = pyo.Constraint(\n        model.I, model.I, model.P, model.P, rule=w_lb_rule\n    )\n\n    def w_ub_i_rule(m, i, j, p, q):\n        return m.w[i, j, p, q] <= m.y[i, p]\n    model.w_ub_i = pyo.Constraint(\n        model.I, model.I, model.P, model.P, rule=w_ub_i_rule\n    )\n\n    def w_ub_j_rule(m, i, j, p, q):\n        return m.w[i, j, p, q] <= m.y[j, q]\n    model.w_ub_j = pyo.Constraint(\n        model.I, model.I, model.P, model.P, rule=w_ub_j_rule\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1110,
+      "completion_tokens": 1394
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.104410171508789,
+   "position": 0,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nGOLD_ANSWER = None\n\nDATA = {\n    \"n\": 3,\n    # flow matrix d[i][j] between factories i, j\n    \"d\": [\n        [0, 5, 3],\n        [5, 0, 2],\n        [3, 2, 0],\n    ],\n    # unit transportation cost c[p][q] between locations p, q\n    \"c\": [\n        [0, 4, 6],\n        [4, 0, 3],\n        [6, 3, 0],\n    ],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = int(d[\"n\"])\n    idx = list(range(n))\n\n    m = pyo.ConcreteModel()\n    m.idxitems = pyo.Set(initialize=idx)\n    m.idxpos = pyo.Set(initialize=idx)\n    m.pairs_i = pyo.Set(initialize=[(i, j) for i in idx for j in idx])\n    m.pairs_p = pyo.Set(initialize=[(p, q) for p in idx for q in idx])\n\n    # Assignment variable: factory i placed at location p\n    m.x = pyo.Var(m.idxitems, m.idxpos, within=pyo.Binary)\n\n    # Auxiliary AND-linearisation variable for the bilinear term x[i,p]*x[j,q]\n    m.y = pyo.Var(\n        m.pairs_i, m.pairs_p,\n        within=pyo.Binary,\n    )\n\n    # c-coefficient application nested as a Pyomo expression; d uses .extract as numeric\n    dcd = {ri[2]: d[\"d\"][ri[0]][ri[1]] for ri in [(i, j, p, q) for i in idx for j in idx for p in idx for q in idx]}\n\n    # Objective  <-- constants and single-variable terms only\n    def obj_rule(mn):\n        expr = 0\n        for i in idx:\n            for j in idx:\n                for p in idx:\n                    for q in idx:\n                        if d[\"d\"][i][j] * d[\"c\"][p][q] == 0:\n                            continue\n                        expr = expr + d[\"d\"][i][j] * d[\"c\"][p][q] * mn.y[(i, j), (p, q)]\n        return expr\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each factory assigned exactly once\n    def rule_factory_once(mn, i):\n        return sum(mn.x[i, p] for p in idx) == 1\n\n    m.factory_once = pyo.Constraint(m.idxitems, rule=rule_factory_once)\n\n    # Each location gets exactly one factory\n    def rule_location_once(mn, p):\n        return sum(mn.x[i, p] for i in idx) == 1\n\n    m.location_once = pyo.Constraint(m.idxpos, rule=rule_location_once)\n\n    # Linearisation of y[i,j,p,q] >= x[i,p] + x[j,q] - 1\n    def rule_y_lower(mn, i, j, p, q):\n        return mn.y[(i, j), (p, q)] >= mn.x[i, p] + mn.x[j, q] - 1\n\n    m.y_lower = pyo.Constraint(m.pairs_i, m.pairs_p, rule=rule_y_lower)\n\n    # y[i,j,p,q] <= x[i,p]\n    def rule_y_upper_left(mn, i, j, p, q):\n        return mn.y[(i, j), (p, q)] <= mn.x[i, p]\n\n    m.y_upper_left = pyo.Constraint(m.pairs_i, m.pairs_p, rule=rule_y_upper_left)\n\n    # y[i,j,p,q] <= x[j,q]\n    def rule_y_upper_right(mn, i, j, p, q):\n        return mn.y[(i, j), (p, q)] <= mn.x[j, q]\n\n    m.y_upper_right = pyo.Constraint(m.pairs_i, m.pairs_p, rule=rule_y_upper_right)\n\n    return m\n\n\nif __name__ == \"__main__\":\n    model = build_model()\n    print(\"Model built with\", model.idxitems.__len__(), \"sites\")\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1100,
+      "completion_tokens": 1765
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.330877780914307,
+   "position": 1,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Structured formulation comment block\n# ---------------------------------------------------------------------------\n# Problem: Quadratic Assignment Problem (QAP) \u2014 assign n factories to n locations.\n#\n# DATA\n#   n            : number of factories = number of locations\n#   d[i][j]      : transportation quantity between factory i and factory j\n#   c[p][q]      : unit transportation cost from location p to location q\n#\n# DECISION VARIABLES\n#   x[i, p] in {0,1}   = 1 if factory i is assigned to location p, else 0\n#                        (index sets: factories I, locations P)\n#\n# OBJECTIVE (in words)\n#   Minimize total transportation cost = sum over all ordered factory pairs\n#   (i, j) of [ quantity d_ij * unit cost c_{p q} ] where p is the location\n#   assigned to factory i and q is the location assigned to factory j.\n#   Because the product x[i,p]*x[j,q] is bilinear, we linearise it with an\n#   auxiliary binary variable y[i,j,p,q] = x[i,p] * x[j,q].\n#\n# CONSTRAINTS (numbered, with source sentence)\n#   (1) Each factory is assigned to exactly one location.\n#       Source: \"allocation of n factories to n locations\".\n#   (2) Each location receives exactly one factory (bijection).\n#       Source: \"allocation of n factories to n locations\".\n#   (3) Linearisation linking constraints for y[i,j,p,q] = x[i,p]*x[j,q]:\n#         y[i,j,p,q] <= x[i,p]\n#         y[i,j,p,q] <= x[j,q]\n#         y[i,j,p,q] >= x[i,p] + x[j,q] - 1\n#       Source: standard linearisation of the bilinear objective term.\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"n\": 3,\n    # d[i][j] : transportation quantity between factory i and factory j\n    \"d\": [\n        [0, 1, 2],\n        [1, 0, 3],\n        [2, 3, 0],\n    ],\n    # c[p][q] : unit transportation cost from location p to location q\n    \"c\": [\n        [0, 4, 5],\n        [4, 0, 6],\n        [5, 6, 0],\n    ],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"n\"]\n    dq = d[\"d\"]\n    cc = d[\"c\"]\n\n    model = pyo.ConcreteModel()\n\n    # Index sets\n    model.I = pyo.RangeSet(0, n - 1)   # factories\n    model.P = pyo.RangeSet(0, n - 1)   # locations\n\n    # (x) assignment variable: x[i,p] = 1 if factory i assigned to location p\n    model.x = pyo.Var(model.I, model.P, within=pyo.Binary)\n\n    # (y) linearisation variable: y[i,j,p,q] = x[i,p] * x[j,q]\n    model.y = pyo.Var(model.I, model.I, model.P, model.P, within=pyo.Binary)\n\n    # (1) Each factory assigned to exactly one location\n    def factory_rule(m, i):\n        return sum(m.x[i, p] for p in m.P) == 1\n    model.factory_assign = pyo.Constraint(model.I, rule=factory_rule)\n\n    # (2) Each location receives exactly one factory\n    def location_rule(m, p):\n        return sum(m.x[i, p] for i in m.I) == 1\n    model.location_assign = pyo.Constraint(model.P, rule=location_rule)\n\n    # (3) Linearisation linking constraints\n    def link_ub_i_rule(m, i, j, p, q):\n        return m.y[i, j, p, q] <= m.x[i, p]\n    model.link_ub_i = pyo.Constraint(\n        model.I, model.I, model.P, model.P, rule=link_ub_i_rule\n    )\n\n    def link_ub_j_rule(m, i, j, p, q):\n        return m.y[i, j, p, q] <= m.x[j, q]\n    model.link_ub_j = pyo.Constraint(\n        model.I, model.I, model.P, model.P, rule=link_ub_j_rule\n    )\n\n    def link_lb_rule(m, i, j, p, q):\n        return m.y[i, j, p, q] >= m.x[i, p] + m.x[j, q] - 1\n    model.link_lb = pyo.Constraint(\n        model.I, model.I, model.P, model.P, rule=link_lb_rule\n    )\n\n    # Objective: minimize total transportation cost\n    def obj_rule(m):\n        return sum(\n            dq[i][j] * cc[p][q] * m.y[i, j, p, q]\n            for i in m.I\n            for j in m.I\n            for p in m.P\n            for q in m.P\n        )\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1114,
+      "completion_tokens": 432
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1467,
+      "completion_tokens": 1192
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.872682809829712,
+   "position": 2,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------\n# DATA: every numeric constant of the problem lives here.\n# d[i][j]  = transportation quantity between factory i and factory j\n# c[p][q]  = unit transportation cost from location p to location q\n# n        = number of factories = number of locations\n# ---------------------------------------------------------------\nDATA = {\n    \"n\": 3,\n    \"d\": [\n        [0, 4, 6],\n        [4, 0, 5],\n        [6, 5, 0],\n    ],\n    \"c\": [\n        [0, 2, 3],\n        [2, 0, 1],\n        [3, 1, 0],\n    ],\n    \"M\": 1000,   # big-M: an upper bound on any single flow value\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"n\"]\n    dmat = d[\"d\"]\n    cmat = d[\"c\"]\n    M = d[\"M\"]\n\n    model = pyo.ConcreteModel()\n\n    # ---------------- Sets ----------------\n    model.F = pyo.RangeSet(0, n - 1)   # factories (also locations)\n    model.L = pyo.RangeSet(0, n - 1)   # locations (also factories)\n\n    # ---------------- Variables ----------------\n    # assign[i, p] = 1 if factory i is placed at location p\n    model.assign = pyo.Var(model.F, model.L, domain=pyo.Binary)\n\n    # flow[i, j, p, q] = quantity shipped from factory i (at location p)\n    #                    to factory j (at location q)\n    model.flow = pyo.Var(\n        model.F, model.F, model.L, model.L,\n        domain=pyo.NonNegativeReals,\n    )\n\n    # ---------------- Objective ----------------\n    # minimize total transportation cost\n    def obj_rule(m):\n        return sum(\n            cmat[p][q] * dmat[i][j] * m.flow[i, j, p, q]\n            for i in m.F for j in m.F\n            for p in m.L for q in m.L\n        )\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---------------- Constraints ----------------\n    # Each factory assigned to exactly one location\n    def factory_once_rule(m, i):\n        return sum(m.assign[i, p] for p in m.L) == 1\n    model.factory_once = pyo.Constraint(model.F, rule=factory_once_rule)\n\n    # Each location hosts exactly one factory\n    def location_once_rule(m, p):\n        return sum(m.assign[i, p] for i in m.F) == 1\n    model.location_once = pyo.Constraint(model.L, rule=location_once_rule)\n\n    # Flow may only occur if its origin factory is assigned to location p\n    def flow_origin_rule(m, i, j, p, q):\n        return m.flow[i, j, p, q] <= M * m.assign[i, p]\n    model.flow_origin = pyo.Constraint(\n        model.F, model.F, model.L, model.L, rule=flow_origin_rule\n    )\n\n    # Flow may only occur if its destination factory is assigned to location q\n    def flow_dest_rule(m, i, j, p, q):\n        return m.flow[i, j, p, q] <= M * m.assign[j, q]\n    model.flow_dest = pyo.Constraint(\n        model.F, model.F, model.L, model.L, rule=flow_dest_rule\n    )\n\n    # Required flow: whenever factory i is at p and factory j is at q,\n    # the transportation quantity d_ij must be carried.\n    def flow_require_rule(m, i, j, p, q):\n        return m.flow[i, j, p, q] >= dmat[i][j] * (\n            m.assign[i, p] + m.assign[j, q] - 1\n        )\n    model.flow_require = pyo.Constraint(\n        model.F, model.F, model.L, model.L, rule=flow_require_rule\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1094,
+      "completion_tokens": 1461
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.584167003631592,
+   "position": 3,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------\n# Data\n# n : number of factories = number of locations\n# d[i-1][j-1] : transportation quantity between factory i and factory j\n# c[p-1][q-1] : unit transportation cost from location p to location q\n# (Symmetric-distance / cost matrices are customary but any values work.)\n# ---------------------------------------------------------------\nN = 3\nDATA = {\n    \"n\": N,\n    # transport quantity matrix (factories index 0..n-1)\n    \"d\": [\n        [0, 4, 2],\n        [4, 0, 6],\n        [2, 6, 0],\n    ],\n    # unit transportation cost matrix (locations index 0..n-1)\n    \"c\": [\n        [0, 1, 3],\n        [1, 0, 2],\n        [3, 2, 0],\n    ],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"n\"]\n    dmat = d[\"d\"]\n    cmat = d[\"c\"]\n\n    model = pyo.ConcreteModel()\n\n    # ---- Sets ----\n    model.I = pyo.RangeSet(0, n - 1)   # factories\n    model.P = pyo.RangeSet(0, n - 1)   # locations\n\n    # ---- Variables ----\n    model.x = pyo.Var(model.I, model.P, within=pyo.Binary)   # x[i,p]=1 if factory i -> location p\n    model.y = pyo.Var(model.I, model.I, model.P, model.P, within=pyo.Binary)  # y[i,j,p,q]=x[i,p]*x[j,q]\n\n    # ---- Objective : minimize total transportation cost (linearised) ----\n    def obj_rule(m):\n        return sum(\n            dmat[i][j] * cmat[p][q] * m.y[i, j, p, q]\n            for i in m.I for j in m.I for p in m.P for q in m.P\n            if i != j\n        )\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---- Constraints ----\n    # Each factory assigned to exactly one location\n    def assign_factory_rule(m, i):\n        return sum(m.x[i, p] for p in m.P) == 1\n    model.assign_factory = pyo.Constraint(model.I, rule=assign_factory_rule)\n\n    # Each location receives exactly one factory\n    def assign_location_rule(m, p):\n        return sum(m.x[i, p] for i in m.I) == 1\n    model.assign_location = pyo.Constraint(model.P, rule=assign_location_rule)\n\n    # Linearisation of y = x * x :\n    #   y[i,j,p,q] >= x[i,p] + x[j,q] - 1\n    #   y[i,j,p,q] <= x[i,p]\n    #   y[i,j,p,q] <= x[j,q]\n    # (valid because all vars binary; big-M = 1 suffices)\n    def y_lb_rule(m, i, j, p, q):\n        return m.y[i, j, p, q] >= m.x[i, p] + m.x[j, q] - 1\n    model.y_lb = pyo.Constraint(model.I, model.I, model.P, model.P, rule=y_lb_rule)\n\n    def y_ub_i_rule(m, i, j, p, q):\n        return m.y[i, j, p, q] <= m.x[i, p]\n    model.y_ub_i = pyo.Constraint(model.I, model.I, model.P, model.P, rule=y_ub_i_rule)\n\n    def y_ub_j_rule(m, i, j, p, q):\n        return m.y[i, j, p, q] <= m.x[j, q]\n    model.y_ub_j = pyo.Constraint(model.I, model.I, model.P, model.P, rule=y_ub_j_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1110,
+      "completion_tokens": 1294
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.091981887817383,
+   "position": 4,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# =====================================================================\n# PROBLEM: Quadratic assignment problem (QAP) as a linear MILP.\n#\n# We must assign n factories to n locations.  If factory i is placed at\n# location p and factory j is placed at location q, then the flow d[i][j]\n# travels from p to q at unit cost c[p][q], contributing\n#     d[i][j] * c[p][q]\n# to the total cost.  The total cost is the sum of these contributions\n# over all ordered pairs (i,j) of factories.\n#\n# DECISION VARIABLES\n#   x[i,p] in {0,1} : 1 if factory i is assigned to location p, else 0.\n#                     Index sets: i in I (factories), p in P (locations).\n#\n# OBJECTIVE (words)\n#   Minimize the total transportation cost\n#       sum_{i,j,p,q} d[i][j] * c[p][q] * x[i,p] * x[j,q]\n#   The product x[i,p]*x[j,q] is bilinear, so we linearise it with an\n#   auxiliary binary variable y[i,p,j,q] = x[i,p] * x[j,q].\n#\n# CONSTRAINTS\n#   (1) Each factory is assigned to exactly one location:\n#           sum_p x[i,p] = 1   for all i          [source sentence: \"allocation of n factories to n locations\"]\n#   (2) Each location receives exactly one factory:\n#           sum_i x[i,p] = 1   for all p          [same sentence: it is a bijection]\n#   (3) Linearisation of y[i,p,j,q] = x[i,p] * x[j,q] via the standard\n#       four inequalities (McCormick / Fortet):\n#           y[i,p,j,q] <= x[i,p]\n#           y[i,p,j,q] <= x[j,q]\n#           y[i,p,j,q] >= x[i,p] + x[j,q] - 1\n#           y[i,p,j,q] >= 0\n#       Since x is binary, y is automatically binary.\n# =====================================================================\n\nDATA = {\n    \"n\": 4,\n    # d[i][j] : transportation quantity between factory i and factory j\n    \"shipment\": [\n        [0.0, 5.0, 3.0, 8.0],\n        [5.0, 0.0, 2.0, 6.0],\n        [3.0, 2.0, 0.0, 7.0],\n        [8.0, 6.0, 7.0, 0.0],\n    ],\n    # c[p][q] : unit transportation cost from location p to location q\n    \"unit_cost\": [\n        [0.0, 9.0, 4.0, 3.0],\n        [9.0, 0.0, 1.0, 2.0],\n        [4.0, 1.0, 0.0, 5.0],\n        [3.0, 2.0, 5.0, 0.0],\n    ],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"n\"]\n\n    model = pyo.ConcreteModel()\n\n    # Index sets\n    model.I = pyo.RangeSet(0, n - 1)   # factories\n    model.P = pyo.RangeSet(0, n - 1)   # locations\n\n    # Decision variables\n    model.x = pyo.Var(model.I, model.P, within=pyo.Binary)\n    model.y = pyo.Var(model.I, model.P, model.I, model.P, within=pyo.Binary)\n\n    # (1) Each factory assigned to exactly one location\n    def rule_factory(m, i):\n        return sum(m.x[i, p] for p in m.P) == 1\n    model.assign_factory = pyo.Constraint(model.I, rule=rule_factory)\n\n    # (2) Each location receives exactly one factory\n    def rule_location(m, p):\n        return sum(m.x[i, p] for i in m.I) == 1\n    model.assign_location = pyo.Constraint(model.P, rule=rule_location)\n\n    # (3) Linearisation of y[i,p,j,q] = x[i,p] * x[j,q]\n    def rule_y_ub_xip(m, i, p, j, q):\n        return m.y[i, p, j, q] <= m.x[i, p]\n    model.y_ub_xip = pyo.Constraint(model.I, model.P, model.I, model.P,\n                                    rule=rule_y_ub_xip)\n\n    def rule_y_ub_xjq(m, i, p, j, q):\n        return m.y[i, p, j, q] <= m.x[j, q]\n    model.y_ub_xjq = pyo.Constraint(model.I, model.P, model.I, model.P,\n                                    rule=rule_y_ub_xjq)\n\n    def rule_y_lb(m, i, p, j, q):\n        return m.y[i, p, j, q] >= m.x[i, p] + m.x[j, q] - 1\n    model.y_lb = pyo.Constraint(model.I, model.P, model.I, model.P,\n                                rule=rule_y_lb)\n\n    # Objective: minimize total transportation cost\n    def obj_rule(m):\n        return sum(\n            d[\"shipment\"][i][j] * d[\"unit_cost\"][p][q] * m.y[i, p, j, q]\n            for i in m.I for j in m.I for p in m.P for q in m.P\n        )\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1114,
+      "completion_tokens": 2035
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_no_objective"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1746,
+      "completion_tokens": 1306
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 19.531686305999756,
+   "position": 5,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"n\": 3,\n    # d[i][j]: transport quantity between factory i and factory j (i, j: 1..n)\n    \"d\": {\n        1: {1: 0.0, 2: 10.0, 3: 5.0},\n        2: {1: 10.0, 2: 0.0, 3: 7.0},\n        3: {1: 5.0, 2: 7.0, 3: 0.0},\n    },\n    # c[p][q]: unit transportation cost from location p to location q (p, q: 1..n)\n    \"c\": {\n        1: {1: 0.0, 2: 3.0, 3: 2.0},\n        2: {1: 3.0, 2: 0.0, 3: 4.0},\n        3: {1: 2.0, 2: 4.0, 3: 0.0},\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"n\"]\n    d_ij = d[\"d\"]\n    c_pq = d[\"c\"]\n\n    model = pyo.ConcreteModel()\n\n    # --- Sets ---\n    idx = list(range(1, n + 1))\n    model.I = pyo.Set(initialize=idx)   # factories\n    model.J = pyo.Set(initialize=idx)   # factories (second index)\n    model.P = pyo.Set(initialize=idx)   # locations (as position of i)\n    model.Q = pyo.Set(initialize=idx)   # locations (as position of j)\n\n    # --- Quadruple index set ---\n    model.IJPQ = pyo.Set(\n        dimen=4,\n        initialize=[(i, j, p, q) for i in idx for j in idx\n                    for p in idx for q in idx],\n    )\n\n    # --- Cost parameter over the quadruple index ---\n    def _cost_init(m, i, j, p, q):\n        return d_ij[i][j] * c_pq[p][q]\n\n    model.kappa = pyo.Param(model.IJPQ, initialize=_cost_init, mutable=False)\n\n    # --- Decision Variables ---\n    # x[i,p] = 1 if factory i is assigned to location p\n    model.x = pyo.Var(model.I, model.P, within=pyo.Binary)\n\n    # y[i,j,p,q] = x[i,p] * x[j,q] (linearisation auxiliary, binary)\n    model.y = pyo.Var(model.IJPQ, within=pyo.Binary)\n\n    # --- Objective: minimize total transportation cost ---\n    def _obj_rule(m):\n        return sum(m.kappa[i, j, p, q] * m.y[i, j, p, q]\n                   for (i, j, p, q) in m.IJPQ)\n\n    model.obj = pyo.Objective(rule=_obj_rule, sense=pyo.minimize)\n\n    # --- Constraint: each factory assigned to exactly one location ---\n    def _factory_place_rule(m, i):\n        return sum(m.x[i, p] for p in m.P) == 1\n\n    model.factory_place = pyo.Constraint(model.I, rule=_factory_place_rule)\n\n    # --- Constraint: each location receives exactly one factory ---\n    def _location_receive_rule(m, p):\n        return sum(m.x[i, p] for i in m.I) == 1\n\n    model.location_receive = pyo.Constraint(model.P, rule=_location_receive_rule)\n\n    # --- Linearisation constraints for y[i,j,p,q] = x[i,p] * x[j,q] ---\n    def _lin_le_xip_rule(m, i, j, p, q):\n        return m.y[i, j, p, q] <= m.x[i, p]\n\n    model.lin_le_xip = pyo.Constraint(model.IJPQ, rule=_lin_le_xip_rule)\n\n    def _lin_le_xjq_rule(m, i, j, p, q):\n        return m.y[i, j, p, q] <= m.x[j, q]\n\n    model.lin_le_xjq = pyo.Constraint(model.IJPQ, rule=_lin_le_xjq_rule)\n\n    def _lin_ge_rule(m, i, j, p, q):\n        return m.y[i, j, p, q] >= m.x[i, p] + m.x[j, q] - 1\n\n    model.lin_ge = pyo.Constraint(model.IJPQ, rule=_lin_ge_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1100,
+      "completion_tokens": 1536
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "possible_nonlinearity",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2362,
+      "completion_tokens": 1066
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2107,
+      "completion_tokens": 1066
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "possible_nonlinearity"
+   ],
+   "seconds": 15.486303091049194,
+   "position": 6,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA\n# ---------------------------------------------------------------------------\n# Source sentences:\n#   \"the transportation quantity between factory i and factory j is d_ij\"\n#       -> DATA[\"d\"]\n#   \"the unit transportation cost from location p to location q is c_pq\"\n#       -> DATA[\"c\"]\n#   \"allocation of n factories to n locations\"  -> DATA[\"n\"]\n# ---------------------------------------------------------------------------\nDATA = {\n    \"n\": 3,\n    # d[i][j] = transportation quantity from factory i to factory j\n    \"d\": [\n        [0, 4, 7],\n        [4, 0, 2],\n        [7, 2, 0],\n    ],\n    # c[p][q] = unit transportation cost from location p to location q\n    \"c\": [\n        [0, 3, 5],\n        [3, 0, 1],\n        [5, 1, 0],\n    ],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"n\"]\n\n    model = pyo.ConcreteModel()\n\n    # ---- Sets -------------------------------------------------------------\n    model.F = pyo.RangeSet(0, n - 1)   # factories  i, j\n    model.L = pyo.RangeSet(0, n - 1)   # locations  p, q\n\n    # ---- Variables --------------------------------------------------------\n    # x[i,p] = 1 if factory i is assigned to location p\n    model.x = pyo.Var(model.F, model.L, within=pyo.Binary)\n\n    # y[i,j,p,q] = 1 if the i->j flow uses the p->q location arc\n    model.y = pyo.Var(model.F, model.F, model.L, model.L, within=pyo.Binary)\n\n    # ---- Objective --------------------------------------------------------\n    # minimize sum_{i,j,p,q} d_ij * c_pq * y[i,j,p,q]\n    def obj_rule(m):\n        return sum(\n            d[\"d\"][i][j] * d[\"c\"][p][q] * m.y[i, j, p, q]\n            for i in m.F for j in m.F for p in m.L for q in m.L\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---- Constraints ------------------------------------------------------\n    # Each factory assigned to exactly one location.\n    def assign_factory_rule(m, i):\n        return sum(m.x[i, p] for p in m.L) == 1\n\n    model.assign_factory = pyo.Constraint(model.F, rule=assign_factory_rule)\n\n    # Each location holds exactly one factory.\n    def assign_location_rule(m, p):\n        return sum(m.x[i, p] for i in m.F) == 1\n\n    model.assign_location = pyo.Constraint(model.L, rule=assign_location_rule)\n\n    # Linearisation linking y to x:  y[i,j,p,q] >= x[i,p] + x[j,q] - 1\n    def link_lb_rule(m, i, j, p, q):\n        return m.y[i, j, p, q] >= m.x[i, p] + m.x[j, q] - 1\n\n    model.link_lb = pyo.Constraint(\n        model.F, model.F, model.L, model.L, rule=link_lb_rule\n    )\n\n    # y[i,j,p,q] <= x[i,p]\n    def link_ub_a_rule(m, i, j, p, q):\n        return m.y[i, j, p, q] <= m.x[i, p]\n\n    model.link_ub_a = pyo.Constraint(\n        model.F, model.F, model.L, model.L, rule=link_ub_a_rule\n    )\n\n    # y[i,j,p,q] <= x[j,q]\n    def link_ub_b_rule(m, i, j, p, q):\n        return m.y[i, j, p, q] <= m.x[j, q]\n\n    model.link_ub_b = pyo.Constraint(\n        model.F, model.F, model.L, model.L, rule=link_ub_b_rule\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1098,
+      "completion_tokens": 1336
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.757123947143555,
+   "position": 7,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"n\": 3,\n    # d[i][j]: transportation quantity between factory i and factory j\n    \"d\": [\n        [0, 5, 3],\n        [5, 0, 2],\n        [3, 2, 0],\n    ],\n    # c[p][q]: unit transportation cost from location p to location q\n    \"c\": [\n        [0, 4, 6],\n        [4, 0, 1],\n        [6, 1, 0],\n    ],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"n\"]\n    D = d[\"d\"]\n    C = d[\"c\"]\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.RangeSet(0, n - 1)  # factories\n    model.P = pyo.RangeSet(0, n - 1)  # locations\n\n    # assignment: factory i placed at location p\n    model.assign = pyo.Var(model.I, model.P, within=pyo.Binary)\n\n    # linearisation variable z[i,j,p,q] = assign[i,p] * assign[j,q]\n    model.z = pyo.Var(\n        model.I, model.I, model.P, model.P,\n        within=pyo.NonNegativeReals,\n        bounds=(0, 1),\n    )\n\n    # Objective: minimize total transportation cost\n    def obj_rule(m):\n        return sum(\n            D[i][j] * C[p][q] * m.z[i, j, p, q]\n            for i in m.I for j in m.I for p in m.P for q in m.P\n        )\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each factory assigned to exactly one location\n    def factory_once_rule(m, i):\n        return sum(m.assign[i, p] for p in m.P) == 1\n    model.factory_once = pyo.Constraint(model.I, rule=factory_once_rule)\n\n    # Each location holds exactly one factory\n    def location_once_rule(m, p):\n        return sum(m.assign[i, p] for i in m.I) == 1\n    model.location_once = pyo.Constraint(model.P, rule=location_once_rule)\n\n    # Linearisation (McCormick) constraints for z[i,j,p,q] = assign[i,p]*assign[j,q]\n    def z_ub1_rule(m, i, j, p, q):\n        return m.z[i, j, p, q] <= m.assign[i, p]\n    model.z_ub1 = pyo.Constraint(model.I, model.I, model.P, model.P, rule=z_ub1_rule)\n\n    def z_ub2_rule(m, i, j, p, q):\n        return m.z[i, j, p, q] <= m.assign[j, q]\n    model.z_ub2 = pyo.Constraint(model.I, model.I, model.P, model.P, rule=z_ub2_rule)\n\n    def z_lb_rule(m, i, j, p, q):\n        return m.z[i, j, p, q] >= m.assign[i, p] + m.assign[j, q] - 1\n    model.z_lb = pyo.Constraint(model.I, model.I, model.P, model.P, rule=z_lb_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1094,
+      "completion_tokens": 1261
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.881382942199707,
+   "position": 8,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem statement.\n# The problem gives no explicit numbers beyond the dimension n and the two\n# coefficient matrices d (factory-to-factory transportation quantity) and\n# c (location-to-location unit transportation cost).  In a concrete instance\n# these would be supplied by the user; a small default instance is used here.\n# ---------------------------------------------------------------------------\nDATA = {\n    # \"n factories ... n locations\"\n    \"n\": 3,\n    # \"transportation quantity between factory i and factory j is d_ij\"\n    # (n x n matrix, symmetric, zero diagonal)\n    \"d\": [\n        [0, 4, 6],\n        [4, 0, 5],\n        [6, 5, 0],\n    ],\n    # \"unit transportation cost from location p to location q is c_pq\"\n    # (n x n matrix, symmetric, zero diagonal)\n    \"c\": [\n        [0, 2, 3],\n        [2, 0, 7],\n        [3, 7, 0],\n    ],\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"n\"]\n    Dq = d[\"d\"]   # d[i][j] : factory i -> factory j quantity\n    Cq = d[\"c\"]   # c[p][q] : location p -> location q cost\n\n    model = pyo.ConcreteModel()\n\n    # ---- Sets -----------------------------------------------------------\n    # Factories and locations both range over 1..n\n    model.I = pyo.RangeSet(1, n)   # factories i\n    model.P = pyo.RangeSet(1, n)   # locations p\n    # Ordered pair index for the linearised product x[i,p]*x[j,q]\n    model.IJ = pyo.Set(initialize=[(i, j) for i in range(1, n + 1)\n                                   for j in range(1, n + 1)])\n    model.PQ = pyo.Set(initialize=[(p, q) for p in range(1, n + 1)\n                                   for q in range(1, n + 1)])\n    model.IPJQ = pyo.Set(initialize=[(i, p, j, q)\n                                     for i in range(1, n + 1)\n                                     for p in range(1, n + 1)\n                                     for j in range(1, n + 1)\n                                     for q in range(1, n + 1)])\n\n    # ---- Variables ------------------------------------------------------\n    # x[i,p] = 1 if factory i is assigned to location p\n    model.x = pyo.Var(model.I, model.P, domain=pyo.Binary)\n    # y[i,p,j,q] = 1 iff factory i is at location p AND factory j is at\n    # location q  (linearisation of the product x[i,p]*x[j,q])\n    model.y = pyo.Var(model.IPJQ, domain=pyo.Binary)\n\n    # ---- Objective ------------------------------------------------------\n    # Minimize total transportation cost:\n    #   sum_{i,j,p,q} d[i,j] * c[p,q] * y[i,p,j,q]\n    def obj_rule(m):\n        return sum(Dq[i - 1][j - 1] * Cq[p - 1][q - 1] * m.y[i, p, j, q]\n                   for (i, p, j, q) in m.IPJQ)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---- Constraints ----------------------------------------------------\n    # Each factory is assigned to exactly one location\n    def factory_rule(m, i):\n        return sum(m.x[i, p] for p in m.P) == 1\n    model.factory_assign = pyo.Constraint(model.I, rule=factory_rule)\n\n    # Each location receives exactly one factory\n    def location_rule(m, p):\n        return sum(m.x[i, p] for i in m.I) == 1\n    model.location_assign = pyo.Constraint(model.P, rule=location_rule)\n\n    # Linearisation of y[i,p,j,q] <= x[i,p]\n    def y_le_xip_rule(m, i, p, j, q):\n        return m.y[i, p, j, q] <= m.x[i, p]\n    model.y_le_xip = pyo.Constraint(model.IPJQ, rule=y_le_xip_rule)\n\n    # Linearisation of y[i,p,j,q] <= x[j,q]\n    def y_le_xjq_rule(m, i, p, j, q):\n        return m.y[i, p, j, q] <= m.x[j, q]\n    model.y_le_xjq = pyo.Constraint(model.IPJQ, rule=y_le_xjq_rule)\n\n    # Linearisation of y[i,p,j,q] >= x[i,p] + x[j,q] - 1\n    def y_ge_rule(m, i, p, j, q):\n        return m.y[i, p, j, q] >= m.x[i, p] + m.x[j, q] - 1\n    model.y_ge = pyo.Constraint(model.IPJQ, rule=y_ge_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1098,
+      "completion_tokens": 1579
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.7399115562438965,
+   "position": 9,
+   "recipe_index": 1
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T10:00:30"
+}

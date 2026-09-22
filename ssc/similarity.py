@@ -1,6 +1,7 @@
 """Pairwise program similarity sim(M_i, M_j) in [0, 1] — Appendix E, Eqs. 17–22."""
 from __future__ import annotations
 
+import re
 from collections import Counter
 
 from . import config as C
@@ -34,6 +35,10 @@ def g(a: int, b: int) -> float:
 
 
 # ---------------------------------------------------------------- E.1 variables
+def bound_tokens(b: str) -> set:
+    return {t for t in re.split(r"[\[\],\s]+", b or "") if t}
+
+
 def var_sim(v: VarSig, w: VarSig) -> float:
     if v.domain == w.domain:
         dom = 1.0
@@ -43,7 +48,7 @@ def var_sim(v: VarSig, w: VarSig) -> float:
         dom = 0.0
     W = C.VAR_SIM_WEIGHTS
     return (W["domain"] * dom + W["arity"] * g(v.arity, w.arity)
-            + W["bounds"] * (1.0 if v.bounds == w.bounds else 0.0)
+            + W["bounds"] * jaccard(bound_tokens(v.bounds), bound_tokens(w.bounds))
             + W["tokens"] * jaccard(v.tokens, w.tokens))
 
 

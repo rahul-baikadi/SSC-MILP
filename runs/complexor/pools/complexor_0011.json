@@ -1,0 +1,321 @@
+{
+ "pid": "complexor_0011",
+ "question": "A set of jobs `Jobs` need to be processed on a set of machines `Machines` in series. All jobs have the same processing order through all the machines from machine 1 to machine M. Each machine can work in parallel. The workflow is the following: the first job of the sequence goes to the first machine to be processed; meanwhile, other jobs wait; when the first machine has processed the first job, the first job goes to the second machine and the second job of the sequence starts to be processed by the first machine; and so on. The time required to process job `j` on machine `m` is `ProcesTime_{j, m}`. The problem aims to minimize the total makespan. The goal is to find a sequence of jobs that minimize the makespan: the time when all jobs have been processed.\n\nThe following parameters are included in this problem:\njobs: list of ints, represents a set of all Jobs\nschedules: list of ints, represents a set of all schedules, range [1, S]\nmachines: list of ints, represents a set of all machines, range [1, M]\nproces_time: 2D list of ints, time required to process job `j` on machine `m`, domain size [Jobs x Machines]\n\n\nThe following data is included in this problem:\n{'jobs': [1, 2, 3], 'schedules': [1, 2, 3], 'machines': [1, 2], 'proces_time': [[1, 3], [2, 2], [3, 1]]}",
+ "templates": [
+  "Scheduling"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"jobs\": [1, 2, 3],\n    \"schedules\": [1, 2, 3],\n    \"machines\": [1, 2],\n    \"proces_time\": [[1, 3], [2, 2], [3, 1]],  # proces_time[j-1][m-1]\n    \"big_M\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    jobs = d[\"jobs\"]\n    schedules = d[\"schedules\"]\n    machines = d[\"machines\"]\n    p = d[\"proces_time\"]\n    big_m = d[\"big_M\"]\n\n    model = pyo.ConcreteModel()\n\n    model.Jobs = pyo.Set(initialize=jobs)\n    model.Schedules = pyo.Set(initialize=schedules)\n    model.Machines = pyo.Set(initialize=machines)\n\n    # processing time lookup: ptime[j, m]\n    ptime = {(j, m): p[j - 1][m - 1] for j in jobs for m in machines}\n\n    # --- Variables ---\n    model.assign = pyo.Var(model.Jobs, model.Schedules, within=pyo.Binary)\n    model.start = pyo.Var(model.Jobs, model.Machines, within=pyo.NonNegativeReals)\n    model.makespan = pyo.Var(within=pyo.NonNegativeReals)\n\n    # --- Objective ---\n    model.obj = pyo.Objective(expr=model.makespan, sense=pyo.minimize)\n\n    # --- Constraints ---\n\n    # Each job assigned to exactly one sequence position\n    def job_once_rule(m, j):\n        return sum(m.assign[j, s] for s in m.Schedules) == 1\n\n    model.job_once = pyo.Constraint(model.Jobs, rule=job_once_rule)\n\n    # Each sequence position holds exactly one job\n    def slot_once_rule(m, s):\n        return sum(m.assign[j, s] for j in m.Jobs) == 1\n\n    model.slot_once = pyo.Constraint(model.Schedules, rule=slot_once_rule)\n\n    # Precedence within a job across consecutive machines (flow shop order)\n    def precedence_rule(m, j, m_idx):\n        m_list = list(m.Machines)\n        if m_idx == m_list[0]:\n            return pyo.Constraint.Skip\n        prev_m = m_list[m_list.index(m_idx) - 1]\n        return m.start[j, m_idx] >= m.start[j, prev_m] + ptime[j, prev_m]\n\n    model.precedence = pyo.Constraint(\n        model.Jobs, model.Machines, rule=precedence_rule\n    )\n\n    # Machine capacity: jobs run in sequence-position order on each machine.\n    # Linear big-M form: for each machine m, position s (s>1), and pair (j1 at prev_s, j2 at s):\n    # start[j2,m] >= start[j1,m] + ptime[j1,m] - M*(2 - assign[j1,prev_s] - assign[j2,s])\n    def machine_order_rule(m, m_idx, s, j1, j2):\n        s_list = list(m.Schedules)\n        if s == s_list[0]:\n            return pyo.Constraint.Skip\n        prev_s = s_list[s_list.index(s) - 1]\n        return m.start[j2, m_idx] >= (\n            m.start[j1, m_idx]\n            + ptime[j1, m_idx]\n            - big_m * (2 - m.assign[j1, prev_s] - m.assign[j2, s])\n        )\n\n    model.machine_order = pyo.Constraint(\n        model.Machines,\n        model.Schedules,\n        model.Jobs,\n        model.Jobs,\n        rule=machine_order_rule,\n    )\n\n    # Makespan: at least the completion time of every job on the last machine\n    last_machine = list(machines)[-1]\n\n    def makespan_rule(m, j):\n        return m.makespan >= m.start[j, last_machine] + ptime[j, last_machine]\n\n    model.makespan_def = pyo.Constraint(model.Jobs, rule=makespan_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1190,
+      "completion_tokens": 1568
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2353,
+      "completion_tokens": 947
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 10.925980806350708,
+   "position": 0,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Data from the problem statement (1-based labels kept for readability)\n# ---------------------------------------------------------------------------\nDATA = {\n    \"jobs\": [1, 2, 3],\n    \"schedules\": [1, 2, 3],\n    \"machines\": [1, 2],\n    # proces_time[j-1][m-1] = time of job j on machine m\n    \"proces_time\": [[1, 3], [2, 2], [3, 1]],\n    # big-M for linearising disjunctive (either/or) precedence constraints\n    \"bigM\": 100,\n    # objective value for the optimal sequence (all jobs complete); tracked as\n    # derived data used only for reference, not inside the model\n    \"opt_makespan\": None,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    jobs = d[\"jobs\"]\n    machines = d[\"machines\"]\n    p_time = d[\"proces_time\"]\n    bigM = d[\"bigM\"]\n\n    def proc(j, m):\n        # 1-based job/machine -> 0-based list index\n        return p_time[j - 1][m - 1]\n\n    model = pyo.ConcreteModel()\n\n    # ---------------------------------------------------------------- Sets\n    model.Jobs = pyo.Set(initialize=jobs, ordered=True)\n    model.Machines = pyo.Set(initialize=machines, ordered=True)\n    # ordered disjoint pairs of jobs, used for the disjunctive constraints\n    pairs = [(j, k) for j in jobs for k in jobs if j < k]\n    model.Pairs = pyo.Set(initialize=pairs, dimen=2)\n\n    # ------------------------------------------------------------- Variables\n    model.s = pyo.Var(\n        model.Jobs, model.Machines,\n        domain=pyo.NonNegativeReals, bounds=(0, None)\n    )\n    model.Cmax = pyo.Var(domain=pyo.NonNegativeReals, bounds=(0, None))\n    model.y = pyo.Var(\n        model.Pairs, model.Machines,\n        domain=pyo.Binary\n    )\n\n    # --------------------------------------------------------- Objective\n    # Minimise the total makespan\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    # ------------------------------------------------------- Constraints\n\n    # Within a job, machine m+1 starts after machine m finishes (series order).\n    def precedence_rule(b, j, m):\n        nxt = m + 1\n        if nxt in machines:\n            return b.s[j, nxt] >= b.s[j, m] + proc(j, m)\n        return pyo.Constraint.Skip\n\n    model.precedence = pyo.Constraint(\n        model.Jobs, model.Machines, rule=precedence_rule\n    )\n\n    # Disjunctive: on each machine jobs must not overlap.\n    # y[j,k,m] = 1 means job j runs before job k on machine m.\n    def machine_order_rule(b, j, k, m):\n        return (b.s[k, m] >= b.s[j, m] + proc(j, m) - bigM * (1 - b.y[j, k, m]))\n\n    model.order_forward = pyo.Constraint(\n        model.Pairs, model.Machines, rule=machine_order_rule\n    )\n\n    def machine_order_rule_rev(b, j, k, m):\n        return (b.s[j, m] >= b.s[k, m] + proc(k, m) - bigM * b.y[j, k, m])\n\n    model.order_backward = pyo.Constraint(\n        model.Pairs, model.Machines, rule=machine_order_rule_rev\n    )\n\n    # Makespan >= completion time of every job on its last machine.\n    last_machine = max(machines)\n\n    def makespan_rule(b, j):\n        return b.Cmax >= b.s[j, last_machine] + proc(j, last_machine)\n\n    model.makespan_def = pyo.Constraint(model.Jobs, rule=makespan_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1196,
+      "completion_tokens": 1432
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.866788387298584,
+   "position": 1,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"jobs\": [1, 2, 3],\n    \"schedules\": [1, 2, 3],\n    \"machines\": [1, 2],\n    \"proces_time\": [[1, 3], [2, 2], [3, 1]],  # proces_time[j-1][m-1]\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    jobs = list(d[\"jobs\"])\n    schedules = list(d[\"schedules\"])\n    machines = list(d[\"machines\"])\n    pt = d[\"proces_time\"]\n\n    # dict lookup for processing time\n    def ptime(j, m):\n        # jobs and machines are 1-based indices into pt\n        return pt[j - 1][m - 1]\n\n    def M_big():\n        return sum(pt[j - 1][m - 1] for j in jobs for m in machines)\n\n    Mval = M_big()\n\n    model = pyo.ConcreteModel()\n\n    model.Jobs = pyo.Set(initialize=jobs)\n    model.Schedules = pyo.Set(initialize=schedules)\n    model.Machines = pyo.Set(initialize=machines)\n    # positions ordered in sequence\n    model.Pairs = pyo.Set(initialize=[(s, t) for s in schedules for t in schedules if t == s + 1])\n    # consecutive machine pairs\n    model.MPairs = pyo.Set(initialize=[(m, m2) for m in machines for m2 in machines if m2 == m + 1])\n\n    # --- Variables ---\n    # x[j,s] = 1 if job j occupies sequence position s\n    model.x = pyo.Var(model.Jobs, model.Schedules, within=pyo.Binary)\n\n    # start time of the job in position s on machine m\n    model.s = pyo.Var(model.Schedules, model.Machines, within=pyo.NonNegativeReals)\n\n    # completion time of the job in position s on machine m\n    model.C = pyo.Var(model.Schedules, model.Machines, within=pyo.NonNegativeReals)\n\n    # makespan\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n\n    # --- Objective: minimize makespan ---\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    # --- Constraints ---\n\n    # (1) Each job assigned to exactly one sequence position\n    def job_assign_rule(m, j):\n        return sum(m.x[j, s] for s in m.Schedules) == 1\n    model.job_assign = pyo.Constraint(model.Jobs, rule=job_assign_rule)\n\n    # (2) Each sequence position holds exactly one job\n    def sched_assign_rule(m, s):\n        return sum(m.x[j, s] for j in m.Jobs) == 1\n    model.sched_assign = pyo.Constraint(model.Schedules, rule=sched_assign_rule)\n\n    # (3) Completion = start + processing time of the assigned job\n    def comp_rule(m, s, mm):\n        proc = sum(ptime(j, mm) * m.x[j, s] for j in m.Jobs)\n        return m.C[s, mm] == m.s[s, mm] + proc\n    model.comp = pyo.Constraint(model.Schedules, model.Machines, rule=comp_rule)\n\n    # (4) Machine precedence: machine m starts after previous machine finishes (same job/position)\n    def mach_prec_rule(m, s, mm, m2):\n        return m.s[s, m2] >= m.C[s, mm]\n    model.mach_prec = pyo.Constraint(model.Schedules, model.MPairs, rule=mach_prec_rule)\n\n    # (5) Job precedence: same machine, next position in sequence starts after previous finishes\n    def job_prec_rule(m, s, t, mm):\n        return m.s[t, mm] >= m.C[s, mm]\n    model.job_prec = pyo.Constraint(model.Pairs, model.Machines, rule=job_prec_rule)\n\n    # (6) Makespan >= completion of last operation of every position\n    last_machine = machines[-1]\n\n    def makespan_rule(m, s):\n        return m.Cmax >= m.C[s, last_machine]\n    model.makespan = pyo.Constraint(model.Schedules, rule=makespan_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1206,
+      "completion_tokens": 1430
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.081146478652954,
+   "position": 2,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------\n# Problem data\n# ---------------------------------------------------------------\nDATA = {\n    \"jobs\": [1, 2, 3],\n    \"schedules\": [1, 2, 3],\n    \"machines\": [1, 2],\n    \"proces_time\": [[1, 3], [2, 2], [3, 1]],  # proces_time[j-1][m-1]\n    \"big_M\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    jobs = d[\"jobs\"]\n    schedules = d[\"schedules\"]\n    machines = d[\"machines\"]\n    p = d[\"proces_time\"]  # p[j-1][m-1] : job j on machine m\n    big_M = d[\"big_M\"]\n\n    # ------------------------------------------------------------\n    # MODEL\n    # ------------------------------------------------------------\n    model = pyo.ConcreteModel()\n\n    # ---------------- Sets ----------------\n    model.J = pyo.Set(initialize=jobs, ordered=True)        # jobs\n    model.S = pyo.Set(initialize=schedules, ordered=True)   # sequence positions\n    model.M = pyo.Set(initialize=machines, ordered=True)    # machines\n\n    # Predecessor sets (avoid python max/min on pyomo expressions)\n    model.S_prev = pyo.Set(\n        initialize=[(s, t) for s in schedules for t in schedules if t < s],\n        dimen=2,\n    )\n    model.M_prev = pyo.Set(\n        initialize=[(k, l) for k in machines for l in machines if l < k],\n        dimen=2,\n    )\n\n    # ------------------------------------------------------------\n    # Parameters (PROC[j,m] = time of real job j on machine m)\n    # ------------------------------------------------------------\n    model.PROC = pyo.Param(\n        model.J, model.M, initialize=lambda m, j, k: p[j - 1][k - 1]\n    )\n\n    # ------------------------------------------------------------\n    # VARIABLES\n    # ------------------------------------------------------------\n    # x[s,j] = 1 if real job j is placed at sequence position s\n    model.x = pyo.Var(model.S, model.J, domain=pyo.Binary)\n\n    # start[s,k] = start time of the job placed at position s on machine k\n    model.start = pyo.Var(model.S, model.M, domain=pyo.NonNegativeReals)\n\n    # makespan\n    model.Cmax = pyo.Var(domain=pyo.NonNegativeReals)\n\n    # ------------------------------------------------------------\n    # CONSTRAINTS\n    # ------------------------------------------------------------\n\n    # 1) Each position of the sequence gets exactly one real job.\n    def rule_one_job_per_position(m, s):\n        return sum(m.x[s, j] for j in m.J) == 1\n    model.one_job_per_position = pyo.Constraint(\n        model.S, rule=rule_one_job_per_position\n    )\n\n    # 2) Each real job fills exactly one position.\n    def rule_one_position_per_job(m, j):\n        return sum(m.x[s, j] for s in m.S) == 1\n    model.one_position_per_job = pyo.Constraint(\n        model.J, rule=rule_one_position_per_job\n    )\n\n    # 3) First job of the sequence starts on machine 1 at time 0.\n    def rule_first_start(m):\n        return m.start[1, 1] == 0\n    model.first_start = pyo.Constraint(rule=rule_first_start)\n\n    # 4) Sequence chain on machine 1: start[s,1] >= start[t,1] + proc time\n    #    of the job placed at position t (t is the predecessor of s).\n    def rule_seq_machine1(m, s, t):\n        proc_prev = sum(m.PROC[j, 1] * m.x[t, j] for j in m.J)\n        return m.start[s, 1] >= m.start[t, 1] + proc_prev\n    model.seq_machine1 = pyo.Constraint(\n        model.S_prev, rule=rule_seq_machine1\n    )\n\n    # 5) Within a job, machine k starts after it finished on machine l\n    #    (l is the predecessor machine of k).\n    def rule_machine_order(m, s, k, l):\n        proc_l = sum(m.PROC[j, l] * m.x[s, j] for j in m.J)\n        return m.start[s, k] >= m.start[s, l] + proc_l\n    model.machine_order = pyo.Constraint(\n        model.S, model.M_prev, rule=rule_machine_order\n    )\n\n    # 6) Same machine works on jobs one at a time in sequence order.\n    def rule_machine_capacity(m, s, t, k):\n        proc_t_k = sum(m.PROC[j, k] * m.x[t, j] for j in m.J)\n        return m.start[s, k] >= m.start[t, k] + proc_t_k\n    model.machine_capacity = pyo.Constraint(\n        model.S_prev, model.M, rule=rule_machine_capacity\n    )\n\n    # 7) Makespan: every position's job must finish its last machine.\n    def rule_makespan(m, s, k):\n        proc = sum(m.PROC[j, k] * m.x[s, j] for j in m.J)\n        return m.Cmax >= m.start[s, k] + proc\n    model.link_makespan = pyo.Constraint(\n        model.S, model.M, rule=rule_makespan\n    )\n\n    # ------------------------------------------------------------\n    # OBJECTIVE : minimize the total makespan\n    # ------------------------------------------------------------\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1196,
+      "completion_tokens": 2406
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "possible_nonlinearity",
+      "sandbox_construct_error",
+      "unsupported_python_max_on_pyomo_expr"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3122,
+      "completion_tokens": 1286
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "possible_nonlinearity",
+      "unsupported_python_max_on_pyomo_expr"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2437,
+      "completion_tokens": 1300
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "possible_nonlinearity"
+   ],
+   "seconds": 21.533186674118042,
+   "position": 3,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Structured formulation summary\n# ---------------------------------------------------------------------------\n# PROBLEM: Flow-shop scheduling. All jobs visit machines 1..M in the same\n# order. Each machine processes one job at a time. Find the job sequence that\n# minimizes the makespan (completion time of the last job on the last machine).\n#\n# SETS / INDICES\n#   Jobs     : jobs to schedule                       -> DATA[\"jobs\"]\n#   Machines : machines in fixed order 1..M           -> DATA[\"machines\"]\n#   Schedules: positions in the sequence 1..S         -> DATA[\"schedules\"]\n#   (S == number of jobs; each position holds exactly one job)\n#\n# DECISION VARIABLES\n#   x[j, k]   Binary          : 1 if job j is placed at sequence position k\n#   s[j, m]   NonNegativeReals: start time of job j on machine m\n#   Cmax      NonNegativeReals: makespan (finish of last operation)\n#\n# OBJECTIVE (minimize)\n#   Minimize Cmax : the time when all jobs have been processed.\n#\n# CONSTRAINTS\n#   1) Assignment: each job occupies exactly one position.\n#   2) Assignment: each position holds exactly one job.\n#   3) Precedence within a job: job j on machine m+1 starts after it finishes\n#      on machine m (same job, consecutive machines).\n#   4) Machine capacity / no overlap: for two jobs occupying consecutive\n#      sequence positions k and k+1, the job at position k+1 cannot start on\n#      machine m until the job at position k has finished on machine m.\n#      (Permutation flow-shop: sequence order is the same on every machine.)\n#   5) Makespan: Cmax >= finish time of the job in the last position on the\n#      last machine.\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"jobs\": [1, 2, 3],\n    \"schedules\": [1, 2, 3],\n    \"machines\": [1, 2],\n    \"proces_time\": [[1, 3], [2, 2], [3, 1]],\n    \"big_M\": 10000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    jobs = list(d[\"jobs\"])\n    machines = list(d[\"machines\"])\n    schedules = list(d[\"schedules\"])\n    p = d[\"proces_time\"]\n    bigM = d[\"big_M\"]\n\n    # processing time lookup: ptime[j][m]\n    ptime = {j: {m: p[j - 1][m - 1] for m in machines} for j in jobs}\n\n    model = pyo.ConcreteModel()\n\n    model.Jobs = pyo.Set(initialize=jobs)\n    model.Machines = pyo.Set(initialize=machines)\n    model.Schedules = pyo.Set(initialize=schedules)\n\n    # x[j, k] = 1 if job j is at sequence position k\n    model.x = pyo.Var(model.Jobs, model.Schedules, within=pyo.Binary)\n\n    # start time of job j on machine m\n    model.s = pyo.Var(model.Jobs, model.Machines, within=pyo.NonNegativeReals)\n\n    # makespan\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n\n    # ---- Constraint 1: each job occupies exactly one position -------------\n    def job_assignment_rule(m, j):\n        return sum(m.x[j, k] for k in m.Schedules) == 1\n\n    model.job_assignment = pyo.Constraint(model.Jobs, rule=job_assignment_rule)\n\n    # ---- Constraint 2: each position holds exactly one job ----------------\n    def position_assignment_rule(m, k):\n        return sum(m.x[j, k] for j in m.Jobs) == 1\n\n    model.position_assignment = pyo.Constraint(\n        model.Schedules, rule=position_assignment_rule\n    )\n\n    # ---- Constraint 3: precedence within a job across machines ------------\n    # s[j, m+1] >= s[j, m] + ptime[j][m]\n    machine_pairs = [\n        (machines[i], machines[i + 1]) for i in range(len(machines) - 1)\n    ]\n\n    def job_precedence_rule(m, j, m1, m2):\n        return m.s[j, m2] >= m.s[j, m1] + ptime[j][m1]\n\n    model.job_precedence = pyo.Constraint(\n        model.Jobs, machine_pairs, rule=job_precedence_rule\n    )\n\n    # ---- Constraint 4: machine capacity (no overlap) ----------------------\n    # For consecutive positions k, k+1 and machine m:\n    #   s[j2, m] >= s[j1, m] + ptime[j1][m] - bigM*(2 - x[j1,k] - x[j2,k+1])\n    # where j1 is the job at position k and j2 the job at position k+1.\n    position_pairs = [\n        (schedules[i], schedules[i + 1]) for i in range(len(schedules) - 1)\n    ]\n\n    def machine_capacity_rule(m, j1, j2, k1, k2, mach):\n        return m.s[j2, mach] >= (\n            m.s[j1, mach]\n            + ptime[j1][mach]\n            - bigM * (2 - m.x[j1, k1] - m.x[j2, k2])\n        )\n\n    model.machine_capacity = pyo.Constraint(\n        model.Jobs,\n        model.Jobs,\n        position_pairs,\n        model.Machines,\n        rule=machine_capacity_rule,\n    )\n\n    # ---- Constraint 5: makespan -------------------------------------------\n    last_machine = machines[-1]\n    last_position = schedules[-1]\n\n    def makespan_rule(m, j):\n        return m.Cmax >= (\n            m.s[j, last_machine]\n            + ptime[j][last_machine]\n            - bigM * (1 - m.x[j, last_position])\n        )\n\n    model.makespan = pyo.Constraint(model.Jobs, rule=makespan_rule)\n\n    # ---- Objective --------------------------------------------------------\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1210,
+      "completion_tokens": 3225
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "missing_constraints",
+      "missing_objective",
+      "missing_variables",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1740,
+      "completion_tokens": 1445
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 29.986226081848145,
+   "position": 4,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Problem: Permutation Flow Shop Scheduling (minimize makespan)\n#\n# Sets / indices\n#   Jobs      = {1,2,3}          jobs to be processed\n#   Schedules = {1,2,3}          positions in the processing sequence\n#   Machines  = {1,2}            machines, processed in order 1..M\n#\n# Decision variables\n#   x[j, s]      in {0,1}        job j is placed at sequence position s\n#   start[s, m]  >= 0            start time of the job at position s on machine m\n#   Cmax         >= 0            makespan (completion of last job on last machine)\n#\n# Objective (minimize)\n#   minimize Cmax\n#\n# Constraints\n#   (1) Each position holds exactly one job.            sum_j x[j,s] = 1\n#   (2) Each job occupies exactly one position.         sum_s x[j,s] = 1\n#   (3) Machine precedence within a job (position s):\n#       start[s,m] >= start[s,m-1] + processing time of the job at s on m-1\n#       -> linearised with big-M using x[j,s].\n#   (4) No overlap on a machine between consecutive positions:\n#       start[s,m] >= start[s-1,m] + processing time of the job at s-1 on m\n#       -> linearised with big-M using x[j,s-1].\n#   (5) Makespan definition: Cmax >= start[s,M] + processing time of job at s on M.\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"jobs\": [1, 2, 3],\n    \"schedules\": [1, 2, 3],\n    \"machines\": [1, 2],\n    \"proces_time\": [[1, 3], [2, 2], [3, 1]],\n    \"bigM\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    jobs = list(d[\"jobs\"])\n    schedules = list(d[\"schedules\"])\n    machines = list(d[\"machines\"])\n    p = d[\"proces_time\"]\n    M = d[\"bigM\"]\n\n    # processing time lookup: ptime[j][m]\n    ptime = {j: {m: p[j - 1][m - 1] for m in machines} for j in jobs}\n\n    model = pyo.ConcreteModel()\n\n    model.Jobs = pyo.Set(initialize=jobs)\n    model.Schedules = pyo.Set(initialize=schedules)\n    model.Machines = pyo.Set(initialize=machines)\n\n    # x[j,s] = 1 if job j is at sequence position s\n    model.x = pyo.Var(model.Jobs, model.Schedules, within=pyo.Binary)\n\n    # start[s,m] = start time of the job at position s on machine m\n    model.start = pyo.Var(model.Schedules, model.Machines, within=pyo.NonNegativeReals)\n\n    # makespan\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n\n    # (1) each position holds exactly one job\n    def rule_pos_assign(m, s):\n        return sum(m.x[j, s] for j in m.Jobs) == 1\n    model.pos_assign = pyo.Constraint(model.Schedules, rule=rule_pos_assign)\n\n    # (2) each job occupies exactly one position\n    def rule_job_assign(m, j):\n        return sum(m.x[j, s] for s in m.Schedules) == 1\n    model.job_assign = pyo.Constraint(model.Jobs, rule=rule_job_assign)\n\n    # (3) machine precedence within a job: start[s,m] >= start[s,m-1] + p(job at s, m-1)\n    #     linearised: start[s,m] >= start[s,m-1] + sum_j ptime[j][m-1]*x[j,s] - M*(1 - sum_j x[j,s])\n    #     Since sum_j x[j,s] = 1, the big-M term vanishes; keep it for linearity safety.\n    def rule_machine_prec(m, s, mm):\n        if mm == m.Machines.first():\n            return pyo.Constraint.Skip\n        prev = mm - 1\n        proc = sum(ptime[j][prev] * m.x[j, s] for j in m.Jobs)\n        return m.start[s, mm] >= m.start[s, prev] + proc\n    model.machine_prec = pyo.Constraint(\n        model.Schedules, model.Machines, rule=rule_machine_prec\n    )\n\n    # (4) no overlap on a machine between consecutive positions\n    #     start[s,m] >= start[s-1,m] + p(job at s-1, m)\n    def rule_machine_nooverlap(m, s, mm):\n        if s == m.Schedules.first():\n            return pyo.Constraint.Skip\n        prev_s = s - 1\n        proc = sum(ptime[j][mm] * m.x[j, prev_s] for j in m.Jobs)\n        return m.start[s, mm] >= m.start[prev_s, mm] + proc\n    model.machine_nooverlap = pyo.Constraint(\n        model.Schedules, model.Machines, rule=rule_machine_nooverlap\n    )\n\n    # (5) makespan definition\n    last_m = max(machines)\n\n    def rule_makespan(m, s):\n        proc = sum(ptime[j][last_m] * m.x[j, s] for j in m.Jobs)\n        return m.Cmax >= m.start[s, last_m] + proc\n    model.makespan_def = pyo.Constraint(model.Schedules, rule=rule_makespan)\n\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1210,
+      "completion_tokens": 1027
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2158,
+      "completion_tokens": 1336
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 13.642938375473022,
+   "position": 5,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"jobs\": [1, 2, 3],\n    \"schedules\": [1, 2, 3],\n    \"machines\": [1, 2],\n    \"proces_time\": [[1, 3], [2, 2], [3, 1]],\n    \"bigM\": 1000,\n}\n\ndef build_model(data=None):\n    d = data or DATA\n    jobs = d[\"jobs\"]\n    machines = d[\"machines\"]\n    positions = d[\"schedules\"]\n    p = d[\"proces_time\"]\n    M = d[\"bigM\"]\n\n    # map job -> index in proces_time\n    job_index = {j: i for i, j in enumerate(jobs)}\n    M_last = machines[-1]\n\n    model = pyo.ConcreteModel()\n\n    model.Jobs = pyo.Set(initialize=jobs)\n    model.Machines = pyo.Set(initialize=machines)\n    model.Positions = pyo.Set(initialize=positions)\n\n    # y[j,k] = 1 if job j is in sequence position k\n    model.y = pyo.Var(model.Jobs, model.Positions, within=pyo.Binary)\n\n    # C[k,m] = completion time of the job in position k on machine m\n    model.C = pyo.Var(model.Positions, model.Machines,\n                      within=pyo.NonNegativeReals, bounds=(0, M))\n\n    # makespan\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, M))\n\n    # objective: minimize makespan\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    # each position holds exactly one job\n    def rule_pos_one(m, k):\n        return sum(m.y[j, k] for j in m.Jobs) == 1\n    model.pos_one = pyo.Constraint(model.Positions, rule=rule_pos_one)\n\n    # each job assigned to exactly one position\n    def rule_job_one(m, j):\n        return sum(m.y[j, k] for k in m.Positions) == 1\n    model.job_one = pyo.Constraint(model.Jobs, rule=rule_job_one)\n\n    # machine-order precedence: completion on machine m+1 >= completion on m\n    #   + processing time of the job at position k on machine m+1\n    machine_pairs = list(zip(machines[:-1], machines[1:]))\n\n    def rule_mach_order(m, k, ma, mb):\n        return m.C[k, mb] >= m.C[k, ma] + \\\n            sum(p[job_index[j]][machines.index(mb)] * m.y[j, k] for j in m.Jobs)\n    model.mach_order = pyo.Constraint(\n        model.Positions,\n        pyo.Set(initialize=machine_pairs, dimen=2),\n        rule=rule_mach_order,\n    )\n\n    # sequence-order precedence on each machine: position k after position k-1\n    position_pairs = [(positions[i], positions[i + 1])\n                      for i in range(len(positions) - 1)]\n\n    def rule_seq_order(m, kp, kn, mm):\n        return m.C[kn, mm] >= m.C[kp, mm] + \\\n            sum(p[job_index[j]][machines.index(mm)] * m.y[j, kn] for j in m.Jobs)\n    model.seq_order = pyo.Constraint(\n        pyo.Set(initialize=position_pairs, dimen=2),\n        model.Machines,\n        rule=rule_seq_order,\n    )\n\n    # makespan bounds all completion times on last machine\n    def rule_cmax(m, k):\n        return m.Cmax >= m.C[k, M_last]\n    model.cmax_def = pyo.Constraint(model.Positions, rule=rule_cmax)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1206,
+      "completion_tokens": 1266
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.803776979446411,
+   "position": 6,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"jobs\": [1, 2, 3],\n    \"schedules\": [1, 2, 3],\n    \"machines\": [1, 2],\n    \"proces_time\": [[1, 3], [2, 2], [3, 1]],  # [job_index][machine_index]\n    \"bigM\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    jobs = d[\"jobs\"]\n    schedules = d[\"schedules\"]\n    machines = d[\"machines\"]\n    p = d[\"proces_time\"]\n    M = d[\"bigM\"]\n\n    def proc(j, m):\n        return p[j - 1][m - 1]\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.Jobs = pyo.Set(initialize=jobs)\n    model.Schedules = pyo.Set(initialize=schedules)\n    model.Machines = pyo.Set(initialize=machines)\n    model.JobPairs = pyo.Set(\n        initialize=[(j, k) for j in jobs for k in jobs if j != k], dimen=2\n    )\n    model.MachinePairs = pyo.Set(\n        initialize=[(j, k) for j in jobs for k in jobs if j < k], dimen=2\n    )\n    # machines excluding the last one (for intra-job precedence)\n    model.MachinesExceptLast = pyo.Set(\n        initialize=[m for m in machines if m < max(machines)]\n    )\n\n    # Variables\n    model.assign = pyo.Var(model.Jobs, model.Schedules, within=pyo.Binary)\n    model.before = pyo.Var(model.JobPairs, within=pyo.Binary)\n    model.start = pyo.Var(model.Jobs, model.Machines, within=pyo.NonNegativeReals)\n    model.makespan = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Objective: minimize makespan\n    model.obj = pyo.Objective(expr=model.makespan, sense=pyo.minimize)\n\n    # Each schedule position holds exactly one job\n    def one_job_per_position_rule(m, s):\n        return sum(m.assign[j, s] for j in m.Jobs) == 1\n\n    model.one_job_per_position = pyo.Constraint(\n        model.Schedules, rule=one_job_per_position_rule\n    )\n\n    # Each job occupies exactly one schedule position\n    def one_position_per_job_rule(m, j):\n        return sum(m.assign[j, s] for s in m.Schedules) == 1\n\n    model.one_position_per_job = pyo.Constraint(\n        model.Jobs, rule=one_position_per_job_rule\n    )\n\n    # Link 'before' to sequence positions: j before k iff pos(j) < pos(k)\n    def before_link_rule(m, j, k):\n        pos_j = sum(s * m.assign[j, s] for s in m.Schedules)\n        pos_k = sum(s * m.assign[k, s] for s in m.Schedules)\n        return pos_j - pos_k <= -1 + M * (1 - m.before[j, k])\n\n    model.before_link = pyo.Constraint(model.JobPairs, rule=before_link_rule)\n\n    def before_link_rev_rule(m, j, k):\n        pos_j = sum(s * m.assign[j, s] for s in m.Schedules)\n        pos_k = sum(s * m.assign[k, s] for s in m.Schedules)\n        return pos_k - pos_j <= -1 + M * m.before[j, k]\n\n    model.before_link_rev = pyo.Constraint(\n        model.JobPairs, rule=before_link_rev_rule\n    )\n\n    # Intra-job precedence across machines\n    def job_precedence_rule(m, j, mm):\n        return m.start[j, mm + 1] >= m.start[j, mm] + proc(j, mm)\n\n    model.job_precedence = pyo.Constraint(\n        model.Jobs, model.MachinesExceptLast, rule=job_precedence_rule\n    )\n\n    # Machine non-overlap (disjunctive) for each ordered pair on each machine\n    def machine_no_overlap_rule(m, j, k, mm):\n        return m.start[j, mm] >= m.start[k, mm] + proc(k, mm) - M * (\n            1 - m.before[j, k]\n        )\n\n    model.machine_no_overlap = pyo.Constraint(\n        model.JobPairs, model.Machines, rule=machine_no_overlap_rule\n    )\n\n    # Makespan covers completion of every job on the last machine\n    last_machine = max(machines)\n\n    def makespan_rule(m, j):\n        return m.makespan >= m.start[j, last_machine] + proc(j, last_machine)\n\n    model.makespan_def = pyo.Constraint(model.Jobs, rule=makespan_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1190,
+      "completion_tokens": 1510
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.052217245101929,
+   "position": 7,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"jobs: list of ints, represents a set of all Jobs\"\n    \"jobs\": [1, 2, 3],\n    # \"schedules: list of ints, represents a set of all schedules, range [1, S]\"\n    \"schedules\": [1, 2, 3],\n    # \"machines: list of ints, represents a set of all machines, range [1, M]\"\n    \"machines\": [1, 2],\n    # \"proces_time: 2D list of ints ... domain size [Jobs x Machines]\"\n    # proces_time[j-1][m-1] = time for job j on machine m\n    \"proces_time\": [[1, 3], [2, 2], [3, 1]],\n    # Big-M: an upper bound on any completion time = sum of all processing times\n    \"big_m\": 12,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    jobs = list(d[\"jobs\"])\n    schedules = list(d[\"schedules\"])\n    machines = list(d[\"machines\"])\n    pt = d[\"proces_time\"]\n    big_m = d[\"big_m\"]\n\n    def p(j, m):\n        return pt[j - 1][m - 1]\n\n    model = pyo.ConcreteModel()\n\n    model.JOBS = pyo.Set(initialize=jobs)\n    model.SCHEDULES = pyo.Set(initialize=schedules)\n    model.MACHINES = pyo.Set(initialize=machines)\n    # machines after the first (need precedence to previous machine)\n    model.MACHINES2 = pyo.Set(initialize=[m for m in machines if m != machines[0]])\n    # schedules after the first position (need machine precedence)\n    model.SCHEDULES2 = pyo.Set(initialize=[s for s in schedules if s != schedules[0]])\n\n    # x[j,s] = 1 if job j is placed at sequence position s\n    model.x = pyo.Var(model.JOBS, model.SCHEDULES, within=pyo.Binary)\n\n    # C[s,m] = completion time of the job in position s on machine m\n    model.C = pyo.Var(model.SCHEDULES, model.MACHINES,\n                      within=pyo.NonNegativeReals, bounds=(0, big_m))\n\n    # makespan\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, big_m))\n\n    # (a) each job assigned to exactly one position\n    def job_assign_rule(m, j):\n        return sum(m.x[j, s] for s in m.SCHEDULES) == 1\n    model.job_assign = pyo.Constraint(model.JOBS, rule=job_assign_rule)\n\n    # (b) each position holds exactly one job\n    def pos_assign_rule(m, s):\n        return sum(m.x[j, s] for j in m.JOBS) == 1\n    model.pos_assign = pyo.Constraint(model.SCHEDULES, rule=pos_assign_rule)\n\n    # (c) flow precedence: same job, previous machine -> current machine\n    def flow_rule(m, s, mm):\n        prev_m = machines[machines.index(mm) - 1]\n        return m.C[s, mm] >= m.C[s, prev_m] + sum(\n            p(j, mm) * m.x[j, s] for j in m.JOBS\n        )\n    model.flow = pyo.Constraint(model.SCHEDULES, model.MACHINES2, rule=flow_rule)\n\n    # (d) machine precedence: same machine, previous position -> current position\n    def machine_rule(m, s, mm):\n        prev_s = schedules[schedules.index(s) - 1]\n        return m.C[s, mm] >= m.C[prev_s, mm] + sum(\n            p(j, mm) * m.x[j, s] for j in m.JOBS\n        )\n    model.machine_prec = pyo.Constraint(model.SCHEDULES2, model.MACHINES,\n                                        rule=machine_rule)\n\n    # (e) makespan is at least the completion on the last machine of every position\n    last_m = machines[-1]\n\n    def makespan_rule(m, s):\n        return m.Cmax >= m.C[s, last_m]\n    model.makespan = pyo.Constraint(model.SCHEDULES, rule=makespan_rule)\n\n    # objective: minimize total makespan\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1194,
+      "completion_tokens": 1535
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.7661168575286865,
+   "position": 8,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric value taken directly from the problem statement.\n# ---------------------------------------------------------------------------\nDATA = {\n    # \"jobs: list of ints, represents a set of all Jobs\"\n    \"jobs\": [1, 2, 3],\n    # \"schedules: list of ints, represents a set of all schedules, range [1, S]\"\n    \"schedules\": [1, 2, 3],\n    # \"machines: list of ints, represents a set of all machines, range [1, M]\"\n    \"machines\": [1, 2],\n    # \"proces_time: 2D list of ints, time required to process job j on machine m\"\n    # rows indexed by job 1..3, cols indexed by machine 1..2\n    \"proces_time\": [[1, 3],   # job 1: machine1=1, machine2=3\n                    [2, 2],   # job 2: machine1=2, machine2=2\n                    [3, 1]],  # job 3: machine1=3, machine2=1\n    # big-M for the flow-shop lower-bound constraints; a safe bound is the\n    # sum of all processing times over all jobs and machines.\n    \"bigM\": 100,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    jobs = d[\"jobs\"]\n    schedules = d[\"schedules\"]\n    machines = d[\"machines\"]\n    p = d[\"proces_time\"]\n    bigM = d[\"bigM\"]\n\n    # helper: processing time of job j on machine m  (1-indexed)\n    def ptime(j, m):\n        return p[j - 1][m - 1]\n\n    model = pyo.ConcreteModel()\n\n    # ------------------------------------------------------------------ Sets\n    model.J = pyo.Set(initialize=jobs, ordered=True)        # jobs\n    model.S = pyo.Set(initialize=schedules, ordered=True)   # sequence positions\n    model.M = pyo.Set(initialize=machines, ordered=True)    # machines\n\n    # --------------------------------------------------------------- Vars\n    # x[j,s] = 1 if job j is scheduled in sequence position s\n    model.x = pyo.Var(model.J, model.S, within=pyo.Binary)\n\n    # C[s,m] = completion time of the job in position s on machine m\n    model.C = pyo.Var(model.S, model.M, within=pyo.NonNegativeReals)\n\n    # makespan\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n\n    # ---------------------------------------------------------- Objective\n    # \"minimize the total makespan\"\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    # --------------------------------------------------------- Constraints\n    # Each job occupies exactly one sequence position.\n    def job_assign_rule(m, j):\n        return sum(m.x[j, s] for s in m.S) == 1\n    model.job_assign = pyo.Constraint(model.J, rule=job_assign_rule)\n\n    # Each sequence position holds exactly one job.\n    def pos_assign_rule(m, s):\n        return sum(m.x[j, s] for j in m.J) == 1\n    model.pos_assign = pyo.Constraint(model.S, rule=pos_assign_rule)\n\n    # ---- Flow-shop completion-time recursion -------------------------------\n    # For the FIRST position, there is no preceding position: machine m can only\n    # start after machine m-1 finishes for the same (only) job.\n    first_s = schedules[0]\n    first_m = machines[0]\n\n    def first_machine_rule(m, s):\n        # machine 1 completion for position s >= completion of previous pos on m1 + p\n        if s == first_s:\n            return pyo.Constraint.Skip\n        return m.C[s, first_m] >= m.C[s - 1, first_m] + sum(\n            m.x[j, s] * ptime(j, first_m) for j in m.J\n        )\n    model.first_machine = pyo.Constraint(model.S, rule=first_machine_rule)\n\n    # For machine m > 1: completion >= own previous machine completion + p\n    # and completion >= previous position on same machine + p.\n    def later_machine_own_rule(m, s, mm):\n        if mm == first_m:\n            return pyo.Constraint.Skip\n        return m.C[s, mm] >= m.C[s, mm - 1] + sum(\n            m.x[j, s] * ptime(j, mm) for j in m.J\n        )\n    model.later_machine_own = pyo.Constraint(\n        model.S, model.M, rule=later_machine_own_rule\n    )\n\n    def later_machine_prev_rule(m, s, mm):\n        if s == first_s:\n            return pyo.Constraint.Skip\n        return m.C[s, mm] >= m.C[s - 1, mm] + sum(\n            m.x[j, s] * ptime(j, mm) for j in m.J\n        )\n    model.later_machine_prev = pyo.Constraint(\n        model.S, model.M, rule=later_machine_prev_rule\n    )\n\n    # ---- Makespan links ---------------------------------------------------\n    last_m = machines[-1]\n\n    def makespan_rule(m, s):\n        return m.Cmax >= m.C[s, last_m]\n    model.makespan = pyo.Constraint(model.S, rule=makespan_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1194,
+      "completion_tokens": 1738
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2535,
+      "completion_tokens": 1244
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 12.102898359298706,
+   "position": 9,
+   "recipe_index": 1
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:50:03"
+}

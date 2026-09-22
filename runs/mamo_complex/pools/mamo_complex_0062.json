@@ -1,0 +1,265 @@
+{
+ "pid": "mamo_complex_0062",
+ "question": "In the bustling world of retail, SupplyChain Solutions is at a crossroads, deciding how best to structure its distribution network to efficiently supply nine retail stores scattered across the region. The company has narrowed down its choices to five potential distribution centers, each with its unique costs for opening and varying capacities for fulfilling store demands. Additionally, the transportation costs for shipping goods from these centers to the stores differ, making the decision all the more complex. The challenge lies in opening the right combination of distribution centers and planning the supply routes to minimize the total cost, which includes both the opening expenses of the distribution centers and the transportation costs of delivering goods to the stores.\n\nGiven Data:\n- Number of Potential Distribution Centers: 5\n- Number of Retail Stores to be Supplied: 9\n\nOpening Costs for Each Distribution Center (in dollars):\n- Center 1: $151,000\n- Center 2: $192,000\n- Center 3: $114,000\n- Center 4: $171,000\n- Center 5: $160,000\n\nTransportation Cost Per Unit from Each Distribution Center to Retail Stores (in dollars):\n- From Center 1: $5 to Store 1, $2 to Store 2, $3 to Store 3, $3 to Store 4, $3 to Store 5, $5 to Store 6, $4 to Store 7, $3 to Store 8, $5 to Store 9\n- From Center 2: $2 to Store 1, $4 to Store 2, $2 to Store 3, $4 to Store 4, $5 to Store 5, $1 to Store 6, $4 to Store 7, $2 to Store 8, $5 to Store 9\n- From Center 3: $4 to Store 1, $1 to Store 2, $1 to Store 3, $3 to Store 4, $3 to Store 5, $2 to Store 6, $4 to Store 7, $4 to Store 8, $3 to Store 9\n- From Center 4: $4 to Store 1, $4 to Store 2, $1 to Store 3, $3 to Store 4, $5 to Store 5, $3 to Store 6, $5 to Store 7, $1 to Store 8, $2 to Store 9\n- From Center 5: $4 to Store 1, $1 to Store 2, $4 to Store 3, $2 to Store 4, $2 to Store 5, $1 to Store 6, $2 to Store 7, $5 to Store 8, $2 to Store 9\n\nDemand of Each Retail Store (in units):\n- Store 1: 739\n- Store 2: 491\n- Store 3: 766\n- Store 4: 854\n- Store 5: 827\n- Store 6: 908\n- Store 7: 434\n- Store 8: 605\n- Store 9: 480\n\nSupply Capacity of Each Distribution Center (in units):\n- Center 1: 1,825\n- Center 2: 1,821\n- Center 3: 1,365\n- Center 4: 1,929\n- Center 5: 1,502\n\nQuestion:\nWhat is the optimal total cost for SupplyChain Solutions to open distribution centers and transport goods to meet all nine retail stores' demands, including both the opening costs of the centers and the transportation costs of supplying the stores?",
+ "templates": [
+  "Transportation"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_centers\": 5,\n    \"num_stores\": 9,\n    # Opening cost per center (index 1..5)\n    \"open_cost\": {\n        1: 151000, 2: 192000, 3: 114000, 4: 171000, 5: 160000,\n    },\n    # Transportation cost per unit center -> store (index 1..5, 1..9)\n    \"trans_cost\": {\n        1: {1: 5, 2: 2, 3: 3, 4: 3, 5: 3, 6: 5, 7: 4, 8: 3, 9: 5},\n        2: {1: 2, 2: 4, 3: 2, 4: 4, 5: 5, 6: 1, 7: 4, 8: 2, 9: 5},\n        3: {1: 4, 2: 1, 3: 1, 4: 3, 5: 3, 6: 2, 7: 4, 8: 4, 9: 3},\n        4: {1: 4, 2: 4, 3: 1, 4: 3, 5: 5, 6: 3, 7: 5, 8: 1, 9: 2},\n        5: {1: 4, 2: 1, 3: 4, 4: 2, 5: 2, 6: 1, 7: 2, 8: 5, 9: 2},\n    },\n    # Demand per store (index 1..9)\n    \"demand\": {\n        1: 739, 2: 491, 3: 766, 4: 854, 5: 827,\n        6: 908, 7: 434, 8: 605, 9: 480,\n    },\n    # Supply capacity per center (index 1..5)\n    \"capacity\": {\n        1: 1825, 2: 1821, 3: 1365, 4: 1929, 5: 1502,\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    centers = list(range(1, d[\"num_centers\"] + 1))\n    stores = list(range(1, d[\"num_stores\"] + 1))\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=centers, ordered=True)\n    model.J = pyo.Set(initialize=stores, ordered=True)\n\n    # Decision variables\n    model.y = pyo.Var(model.I, within=pyo.Binary)                      # open DC\n    model.x = pyo.Var(model.I, model.J, within=pyo.NonNegativeReals)   # units shipped\n\n    # Objective: opening cost + transportation cost\n    def obj_rule(m):\n        open_part = sum(d[\"open_cost\"][i] * m.y[i] for i in m.I)\n        trans_part = sum(\n            d[\"trans_cost\"][i][j] * m.x[i, j]\n            for i in m.I for j in m.J\n        )\n        return open_part + trans_part\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # (a) Each store's demand must be met\n    def demand_rule(m, j):\n        return sum(m.x[i, j] for i in m.I) >= d[\"demand\"][j]\n\n    model.demand_satisfied = pyo.Constraint(model.J, rule=demand_rule)\n\n    # (b) Center capacity only usable if opened (binary link with big-M = capacity)\n    def capacity_rule(m, i):\n        return sum(m.x[i, j] for j in m.J) <= d[\"capacity\"][i] * m.y[i]\n\n    model.capacity_link = pyo.Constraint(model.I, rule=capacity_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1617,
+      "completion_tokens": 1194
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.3290019035339355,
+   "position": 0,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "\"\"\"\nDistribution Network Design MILP (facility location + transportation)\n\nDecision variables\n  y[c]   Binary              1 if distribution centre c is opened, else 0\n  x[c,s] NonNegativeIntegers units shipped from centre c to store s\n\nObjective (minimize)\n  sum_c opencost[c]*y[c] + sum_{c,s} tcost[c][s]*x[c,s]\n  (total opening cost + total transportation cost)\n\nConstraints\n  (1) demand[s]   -> sum_c x[c,s] >= demand[s]        for all s\n      \"meet all nine retail stores' demands\"\n  (2) capacity[c] -> sum_s x[c,s] <= cap[c] * y[c]    for all c\n      \"capacity for fulfilling store demands, only if centre is opened\"\n      (big-M linear coupling of flow to the opening binary)\n\"\"\"\nimport pyomo.environ as pyo\n\nDATA = {\n    \"centers\": [1, 2, 3, 4, 5],\n    \"stores\":  [1, 2, 3, 4, 5, 6, 7, 8, 9],\n    \"opencost\": {1: 151000, 2: 192000, 3: 114000, 4: 171000, 5: 160000},\n    \"cap\":      {1: 1825,  2: 1821,  3: 1365,  4: 1929,  5: 1502},\n    \"demand\":   {1: 739, 2: 491, 3: 766, 4: 854, 5: 827, 6: 908, 7: 434, 8: 605, 9: 480},\n    \"tcost\": {\n        1: {1: 5, 2: 2, 3: 3, 4: 3, 5: 3, 6: 5, 7: 4, 8: 3, 9: 5},\n        2: {1: 2, 2: 4, 3: 2, 4: 4, 5: 5, 6: 1, 7: 4, 8: 2, 9: 5},\n        3: {1: 4, 2: 1, 3: 1, 4: 3, 5: 3, 6: 2, 7: 4, 8: 4, 9: 3},\n        4: {1: 4, 2: 4, 3: 1, 4: 3, 5: 5, 6: 3, 7: 5, 8: 1, 9: 2},\n        5: {1: 4, 2: 1, 3: 4, 4: 2, 5: 2, 6: 1, 7: 2, 8: 5, 9: 2},\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel(\"distribution_network_design\")\n\n    m.C = pyo.Set(initialize=d[\"centers\"])\n    m.S = pyo.Set(initialize=d[\"stores\"])\n\n    # y[c] = 1 if centre c is opened, 0 otherwise\n    m.y = pyo.Var(m.C, within=pyo.Binary)\n\n    # x[c,s] = units shipped from centre c to store s\n    m.x = pyo.Var(m.C, m.S, within=pyo.NonNegativeIntegers, bounds=(0, None))\n\n    # Objective: minimize opening + transportation cost\n    def obj_rule(mm):\n        open_cost = sum(d[\"opencost\"][c] * mm.y[c] for c in mm.C)\n        ship_cost = sum(d[\"tcost\"][c][s] * mm.x[c, s] for c in mm.C for s in mm.S)\n        return open_cost + ship_cost\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # (1) Demand satisfaction: every store receives at least its demand\n    def demand_rule(mm, s):\n        return sum(mm.x[c, s] for c in mm.C) >= d[\"demand\"][s]\n\n    m.demand_ok = pyo.Constraint(m.S, rule=demand_rule)\n\n    # (2) Capacity coupling: a centre can only ship up to its capacity if opened\n    def capacity_rule(mm, c):\n        return sum(mm.x[c, s] for s in mm.S) <= d[\"cap\"][c] * mm.y[c]\n\n    m.flow_per_dc = pyo.Constraint(m.C, rule=capacity_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1631,
+      "completion_tokens": 1495
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2761,
+      "completion_tokens": 1092
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 11.312321186065674,
+   "position": 1,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_centers\": 5,\n    \"num_stores\": 9,\n    \"opening_cost\": {1: 151000, 2: 192000, 3: 114000, 4: 171000, 5: 160000},\n    \"transport_cost\": {\n        (1, 1): 5, (1, 2): 2, (1, 3): 3, (1, 4): 3, (1, 5): 3,\n        (1, 6): 5, (1, 7): 4, (1, 8): 3, (1, 9): 5,\n        (2, 1): 2, (2, 2): 4, (2, 3): 2, (2, 4): 4, (2, 5): 5,\n        (2, 6): 1, (2, 7): 4, (2, 8): 2, (2, 9): 5,\n        (3, 1): 4, (3, 2): 1, (3, 3): 1, (3, 4): 3, (3, 5): 3,\n        (3, 6): 2, (3, 7): 4, (3, 8): 4, (3, 9): 3,\n        (4, 1): 4, (4, 2): 4, (4, 3): 1, (4, 4): 3, (4, 5): 5,\n        (4, 6): 3, (4, 7): 5, (4, 8): 1, (4, 9): 2,\n        (5, 1): 4, (5, 2): 1, (5, 3): 4, (5, 4): 2, (5, 5): 2,\n        (5, 6): 1, (5, 7): 2, (5, 8): 5, (5, 9): 2,\n    },\n    \"demand\": {1: 739, 2: 491, 3: 766, 4: 854, 5: 827,\n               6: 908, 7: 434, 8: 605, 9: 480},\n    \"capacity\": {1: 1825, 2: 1821, 3: 1365, 4: 1929, 5: 1502},\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    centers = list(range(1, d[\"num_centers\"] + 1))\n    stores = list(range(1, d[\"num_stores\"] + 1))\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=centers)\n    model.J = pyo.Set(initialize=stores)\n\n    model.open = pyo.Var(model.I, within=pyo.Binary)\n    model.ship = pyo.Var(model.I, model.J, within=pyo.NonNegativeReals)\n\n    def obj_rule(m):\n        opening = sum(d[\"opening_cost\"][i] * m.open[i] for i in m.I)\n        transport = sum(d[\"transport_cost\"][(i, j)] * m.ship[i, j]\n                        for i in m.I for j in m.J)\n        return opening + transport\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    def demand_rule(m, j):\n        return sum(m.ship[i, j] for i in m.I) >= d[\"demand\"][j]\n\n    model.demand_con = pyo.Constraint(model.J, rule=demand_rule)\n\n    def capacity_rule(m, i):\n        return sum(m.ship[i, j] for j in m.J) <= d[\"capacity\"][i] * m.open[i]\n\n    model.capacity_con = pyo.Constraint(model.I, rule=capacity_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1611,
+      "completion_tokens": 1236
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.164449214935303,
+   "position": 2,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_centers\": 5,\n    \"num_stores\": 9,\n    \"opening_cost\": {1: 151000, 2: 192000, 3: 114000, 4: 171000, 5: 160000},\n    \"transport_cost\": {\n        1: {1: 5, 2: 2, 3: 3, 4: 3, 5: 3, 6: 5, 7: 4, 8: 3, 9: 5},\n        2: {1: 2, 2: 4, 3: 2, 4: 4, 5: 5, 6: 1, 7: 4, 8: 2, 9: 5},\n        3: {1: 4, 2: 1, 3: 1, 4: 3, 5: 3, 6: 2, 7: 4, 8: 4, 9: 3},\n        4: {1: 4, 2: 4, 3: 1, 4: 3, 5: 5, 6: 3, 7: 5, 8: 1, 9: 2},\n        5: {1: 4, 2: 1, 3: 4, 4: 2, 5: 2, 6: 1, 7: 2, 8: 5, 9: 2},\n    },\n    \"demand\": {1: 739, 2: 491, 3: 766, 4: 854, 5: 827, 6: 908, 7: 434, 8: 605, 9: 480},\n    \"capacity\": {1: 1825, 2: 1821, 3: 1365, 4: 1929, 5: 1502},\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.RangeSet(1, d[\"num_centers\"])\n    model.J = pyo.RangeSet(1, d[\"num_stores\"])\n\n    # y[i] = 1 if center i is opened\n    model.y = pyo.Var(model.I, domain=pyo.Binary)\n    # x[i,j] = units shipped from center i to store j\n    model.x = pyo.Var(model.I, model.J, domain=pyo.NonNegativeReals)\n\n    # Objective: minimize opening costs + transportation costs\n    def obj_rule(m):\n        return (\n            sum(d[\"opening_cost\"][i] * m.y[i] for i in m.I)\n            + sum(d[\"transport_cost\"][i][j] * m.x[i, j] for i in m.I for j in m.J)\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand satisfaction: total shipped into store j >= demand[j]\n    def demand_rule(m, j):\n        return sum(m.x[i, j] for i in m.I) >= d[\"demand\"][j]\n\n    model.demand_con = pyo.Constraint(model.J, rule=demand_rule)\n\n    # Capacity: total shipped out of center i <= capacity[i] * y[i]\n    def cap_rule(m, i):\n        return sum(m.x[i, j] for j in m.J) <= d[\"capacity\"][i] * m.y[i]\n\n    model.cap_con = pyo.Constraint(model.I, rule=cap_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1627,
+      "completion_tokens": 1099
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.524457216262817,
+   "position": 3,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Number of Potential Distribution Centers: 5\n    \"num_centers\": 5,\n    # Number of Retail Stores to be Supplied: 9\n    \"num_stores\": 9,\n    # Opening Costs for Each Distribution Center (in dollars)\n    \"open_cost\": {1: 151000, 2: 192000, 3: 114000, 4: 171000, 5: 160000},\n    # Transportation Cost Per Unit from Each Distribution Center to Retail Stores (in dollars)\n    \"trans_cost\": {\n        1: {1: 5, 2: 2, 3: 3, 4: 3, 5: 3, 6: 5, 7: 4, 8: 3, 9: 5},\n        2: {1: 2, 2: 4, 3: 2, 4: 4, 5: 5, 6: 1, 7: 4, 8: 2, 9: 5},\n        3: {1: 4, 2: 1, 3: 1, 4: 3, 5: 3, 6: 2, 7: 4, 8: 4, 9: 3},\n        4: {1: 4, 2: 4, 3: 1, 4: 3, 5: 5, 6: 3, 7: 5, 8: 1, 9: 2},\n        5: {1: 4, 2: 1, 3: 4, 4: 2, 5: 2, 6: 1, 7: 2, 8: 5, 9: 2},\n    },\n    # Demand of Each Retail Store (in units)\n    \"demand\": {1: 739, 2: 491, 3: 766, 4: 854, 5: 827, 6: 908, 7: 434, 8: 605, 9: 480},\n    # Supply Capacity of Each Distribution Center (in units)\n    \"capacity\": {1: 1825, 2: 1821, 3: 1365, 4: 1929, 5: 1502},\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.I = pyo.RangeSet(1, d[\"num_centers\"])   # distribution centers\n    model.J = pyo.RangeSet(1, d[\"num_stores\"])    # retail stores\n\n    # Variables\n    model.y = pyo.Var(model.I, within=pyo.Binary)                       # open DC i\n    model.x = pyo.Var(model.I, model.J, within=pyo.NonNegativeIntegers)  # units shipped i->j\n\n    # Objective: minimize opening + transportation cost\n    def obj_rule(m):\n        open_part = sum(d[\"open_cost\"][i] * m.y[i] for i in m.I)\n        trans_part = sum(d[\"trans_cost\"][i][j] * m.x[i, j] for i in m.I for j in m.J)\n        return open_part + trans_part\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand satisfaction: each store's demand must be met\n    def demand_rule(m, j):\n        return sum(m.x[i, j] for i in m.I) >= d[\"demand\"][j]\n\n    model.demand_con = pyo.Constraint(model.J, rule=demand_rule)\n\n    # Capacity / linking: total shipped from DC i <= capacity[i] * y[i]\n    def capacity_rule(m, i):\n        return sum(m.x[i, j] for j in m.J) <= d[\"capacity\"][i] * m.y[i]\n\n    model.capacity_con = pyo.Constraint(model.I, rule=capacity_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1615,
+      "completion_tokens": 1169
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.935088157653809,
+   "position": 4,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"n_centers\": 5,\n    \"n_stores\": 9,\n    \"opening_cost\": {\n        1: 151000,\n        2: 192000,\n        3: 114000,\n        4: 171000,\n        5: 160000,\n    },\n    \"transport_cost\": {\n        1: {1: 5, 2: 2, 3: 3, 4: 3, 5: 3, 6: 5, 7: 4, 8: 3, 9: 5},\n        2: {1: 2, 2: 4, 3: 2, 4: 4, 5: 5, 6: 1, 7: 4, 8: 2, 9: 5},\n        3: {1: 4, 2: 1, 3: 1, 4: 3, 5: 3, 6: 2, 7: 4, 8: 4, 9: 3},\n        4: {1: 4, 2: 4, 3: 1, 4: 3, 5: 5, 6: 3, 7: 5, 8: 1, 9: 2},\n        5: {1: 4, 2: 1, 3: 4, 4: 2, 5: 2, 6: 1, 7: 2, 8: 5, 9: 2},\n    },\n    \"demand\": {\n        1: 739,\n        2: 491,\n        3: 766,\n        4: 854,\n        5: 827,\n        6: 908,\n        7: 434,\n        8: 605,\n        9: 480,\n    },\n    \"capacity\": {\n        1: 1825,\n        2: 1821,\n        3: 1365,\n        4: 1929,\n        5: 1502,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.centers = pyo.Set(initialize=list(range(1, d[\"n_centers\"] + 1)))\n    model.stores = pyo.Set(initialize=list(range(1, d[\"n_stores\"] + 1)))\n\n    # y[i] = 1 if distribution center i is opened\n    def opening_bounds(m, i):\n        return (0, 1)\n\n    model.y = pyo.Var(model.centers, within=pyo.Binary)\n\n    # x[i,j] = units shipped from center i to store j\n    def flow_bounds(m, i, j):\n        return (0, d[\"capacity\"][i])\n\n    model.x = pyo.Var(model.centers, model.stores,\n                      within=pyo.NonNegativeIntegers, bounds=flow_bounds)\n\n    # Objective: minimize opening costs + transportation costs\n    def obj_rule(m):\n        open_cost = sum(d[\"opening_cost\"][i] * m.y[i] for i in m.centers)\n        ship_cost = sum(d[\"transport_cost\"][i][j] * m.x[i, j]\n                        for i in m.centers for j in m.stores)\n        return open_cost + ship_cost\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand satisfaction: each store receives exactly its demand\n    def demand_rule(m, j):\n        return sum(m.x[i, j] for i in m.centers) == d[\"demand\"][j]\n\n    model.demand_con = pyo.Constraint(model.stores, rule=demand_rule)\n\n    # Capacity: total shipped from center i <= capacity * y[i]\n    def capacity_rule(m, i):\n        return sum(m.x[i, j] for j in m.stores) <= d[\"capacity\"][i] * m.y[i]\n\n    model.capacity_con = pyo.Constraint(model.centers, rule=capacity_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1617,
+      "completion_tokens": 935
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 3.9152746200561523,
+   "position": 5,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_centers\": 5,\n    \"num_stores\": 9,\n    \"opening_cost\": {\n        1: 151000, 2: 192000, 3: 114000, 4: 171000, 5: 160000,\n    },\n    \"transport_cost\": {\n        (1, 1): 5, (1, 2): 2, (1, 3): 3, (1, 4): 3, (1, 5): 3,\n        (1, 6): 5, (1, 7): 4, (1, 8): 3, (1, 9): 5,\n        (2, 1): 2, (2, 2): 4, (2, 3): 2, (2, 4): 4, (2, 5): 5,\n        (2, 6): 1, (2, 7): 4, (2, 8): 2, (2, 9): 5,\n        (3, 1): 4, (3, 2): 1, (3, 3): 1, (3, 4): 3, (3, 5): 3,\n        (3, 6): 2, (3, 7): 4, (3, 8): 4, (3, 9): 3,\n        (4, 1): 4, (4, 2): 4, (4, 3): 1, (4, 4): 3, (4, 5): 5,\n        (4, 6): 3, (4, 7): 5, (4, 8): 1, (4, 9): 2,\n        (5, 1): 4, (5, 2): 1, (5, 3): 4, (5, 4): 2, (5, 5): 2,\n        (5, 6): 1, (5, 7): 2, (5, 8): 5, (5, 9): 2,\n    },\n    \"demand\": {\n        1: 739, 2: 491, 3: 766, 4: 854, 5: 827,\n        6: 908, 7: 434, 8: 605, 9: 480,\n    },\n    \"capacity\": {\n        1: 1825, 2: 1821, 3: 1365, 4: 1929, 5: 1502,\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.RangeSet(1, d[\"num_centers\"])\n    model.J = pyo.RangeSet(1, d[\"num_stores\"])\n\n    # Decision variables\n    model.open_dc = pyo.Var(model.I, within=pyo.Binary)\n    model.ship = pyo.Var(model.I, model.J, within=pyo.NonNegativeReals)\n\n    # Objective: minimize opening + transportation cost\n    def obj_rule(m):\n        opening = sum(d[\"opening_cost\"][i] * m.open_dc[i] for i in m.I)\n        transport = sum(\n            d[\"transport_cost\"][(i, j)] * m.ship[i, j]\n            for i in m.I for j in m.J\n        )\n        return opening + transport\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand satisfaction: each store's demand must be met\n    def demand_rule(m, j):\n        return sum(m.ship[i, j] for i in m.I) >= d[\"demand\"][j]\n\n    model.demand_con = pyo.Constraint(model.J, rule=demand_rule)\n\n    # Capacity: flow out of a center limited by capacity, only if opened\n    def capacity_rule(m, i):\n        return sum(m.ship[i, j] for j in m.J) <= d[\"capacity\"][i] * m.open_dc[i]\n\n    model.capacity_con = pyo.Constraint(model.I, rule=capacity_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1611,
+      "completion_tokens": 1331
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.63925576210022,
+   "position": 6,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"Number of Potential Distribution Centers: 5\"\n    \"num_dcs\": 5,\n    # \"Number of Retail Stores to be Supplied: 9\"\n    \"num_stores\": 9,\n    # \"Opening Costs for Each Distribution Center (in dollars)\"\n    \"open_cost\": {1: 151000, 2: 192000, 3: 114000, 4: 171000, 5: 160000},\n    # \"Transportation Cost Per Unit from Each Distribution Center to Retail Stores\"\n    \"trans_cost\": {\n        1: {1: 5, 2: 2, 3: 3, 4: 3, 5: 3, 6: 5, 7: 4, 8: 3, 9: 5},\n        2: {1: 2, 2: 4, 3: 2, 4: 4, 5: 5, 6: 1, 7: 4, 8: 2, 9: 5},\n        3: {1: 4, 2: 1, 3: 1, 4: 3, 5: 3, 6: 2, 7: 4, 8: 4, 9: 3},\n        4: {1: 4, 2: 4, 3: 1, 4: 3, 5: 5, 6: 3, 7: 5, 8: 1, 9: 2},\n        5: {1: 4, 2: 1, 3: 4, 4: 2, 5: 2, 6: 1, 7: 2, 8: 5, 9: 2},\n    },\n    # \"Demand of Each Retail Store (in units)\"\n    \"demand\": {1: 739, 2: 491, 3: 766, 4: 854, 5: 827, 6: 908, 7: 434, 8: 605, 9: 480},\n    # \"Supply Capacity of Each Distribution Center (in units)\"\n    \"capacity\": {1: 1825, 2: 1821, 3: 1365, 4: 1929, 5: 1502},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.RangeSet(1, d[\"num_dcs\"])\n    model.J = pyo.RangeSet(1, d[\"num_stores\"])\n\n    # Decision: open DC i (binary)\n    model.y = pyo.Var(model.I, within=pyo.Binary)\n    # Decision: units shipped from DC i to store j\n    model.x = pyo.Var(model.I, model.J, within=pyo.NonNegativeReals)\n\n    # Objective: minimize opening + transportation costs\n    def obj_rule(m):\n        open_cost = sum(d[\"open_cost\"][i] * m.y[i] for i in m.I)\n        trans_cost = sum(\n            d[\"trans_cost\"][i][j] * m.x[i, j] for i in m.I for j in m.J\n        )\n        return open_cost + trans_cost\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand satisfaction: each store receives at least its demand\n    def demand_rule(m, j):\n        return sum(m.x[i, j] for i in m.I) >= d[\"demand\"][j]\n\n    model.demand_con = pyo.Constraint(model.J, rule=demand_rule)\n\n    # Capacity / linking: ship only if opened, up to capacity\n    def capacity_rule(m, i):\n        return sum(m.x[i, j] for j in m.J) <= d[\"capacity\"][i] * m.y[i]\n\n    model.capacity_con = pyo.Constraint(model.I, rule=capacity_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1615,
+      "completion_tokens": 1207
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.8957719802856445,
+   "position": 7,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_centers\": 5,\n    \"num_stores\": 9,\n    \"opening_cost\": {1: 151000, 2: 192000, 3: 114000, 4: 171000, 5: 160000},\n    \"transport_cost\": {\n        1: {1: 5, 2: 2, 3: 3, 4: 3, 5: 3, 6: 5, 7: 4, 8: 3, 9: 5},\n        2: {1: 2, 2: 4, 3: 2, 4: 4, 5: 5, 6: 1, 7: 4, 8: 2, 9: 5},\n        3: {1: 4, 2: 1, 3: 1, 4: 3, 5: 3, 6: 2, 7: 4, 8: 4, 9: 3},\n        4: {1: 4, 2: 4, 3: 1, 4: 3, 5: 5, 6: 3, 7: 5, 8: 1, 9: 2},\n        5: {1: 4, 2: 1, 3: 4, 4: 2, 5: 2, 6: 1, 7: 2, 8: 5, 9: 2},\n    },\n    \"demand\": {1: 739, 2: 491, 3: 766, 4: 854, 5: 827, 6: 908, 7: 434, 8: 605, 9: 480},\n    \"capacity\": {1: 1825, 2: 1821, 3: 1365, 4: 1929, 5: 1502},\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.RangeSet(1, d[\"num_centers\"])\n    model.J = pyo.RangeSet(1, d[\"num_stores\"])\n\n    # y[i] = 1 if distribution center i is opened\n    model.y = pyo.Var(model.I, within=pyo.Binary)\n\n    # x[i, j] = units shipped from center i to store j (bounded by store demand)\n    def x_bounds(m, i, j):\n        return (0, d[\"demand\"][j])\n\n    model.x = pyo.Var(model.I, model.J, within=pyo.NonNegativeReals, bounds=x_bounds)\n\n    # Objective: minimize opening + transportation costs\n    def obj_rule(m):\n        open_cost = sum(d[\"opening_cost\"][i] * m.y[i] for i in m.I)\n        ship_cost = sum(\n            d[\"transport_cost\"][i][j] * m.x[i, j] for i in m.I for j in m.J\n        )\n        return open_cost + ship_cost\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand satisfaction: total shipped into store j >= demand_j  (>=)\n    def demand_rule(m, j):\n        return sum(m.x[i, j] for i in m.I) >= d[\"demand\"][j]\n\n    model.demand_con = pyo.Constraint(model.J, rule=demand_rule)\n\n    # Capacity / linking: total shipped from center i <= capacity_i * y_i  (<=)\n    def capacity_rule(m, i):\n        return sum(m.x[i, j] for j in m.J) <= d[\"capacity\"][i] * m.y[i]\n\n    model.capacity_con = pyo.Constraint(model.I, rule=capacity_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1627,
+      "completion_tokens": 1242
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.962371826171875,
+   "position": 8,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA\n# ---------------------------------------------------------------------------\nDATA = {\n    \"num_dcs\": 5,\n    \"num_stores\": 9,\n    \"open_cost\": {\n        1: 151000,\n        2: 192000,\n        3: 114000,\n        4: 171000,\n        5: 160000,\n    },\n    \"capacity\": {\n        1: 1825,\n        2: 1821,\n        3: 1365,\n        4: 1929,\n        5: 1502,\n    },\n    \"demand\": {\n        1: 739,\n        2: 491,\n        3: 766,\n        4: 854,\n        5: 827,\n        6: 908,\n        7: 434,\n        8: 605,\n        9: 480,\n    },\n    \"transport_cost\": {\n        1: {1: 5, 2: 2, 3: 3, 4: 3, 5: 3, 6: 5, 7: 4, 8: 3, 9: 5},\n        2: {1: 2, 2: 4, 3: 2, 4: 4, 5: 5, 6: 1, 7: 4, 8: 2, 9: 5},\n        3: {1: 4, 2: 1, 3: 1, 4: 3, 5: 3, 6: 2, 7: 4, 8: 4, 9: 3},\n        4: {1: 4, 2: 4, 3: 1, 4: 3, 5: 5, 6: 3, 7: 5, 8: 1, 9: 2},\n        5: {1: 4, 2: 1, 3: 4, 4: 2, 5: 2, 6: 1, 7: 2, 8: 5, 9: 2},\n    },\n}\n\nGOLD_ANSWER = None\n\n\n# ---------------------------------------------------------------------------\n# Model\n# ---------------------------------------------------------------------------\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.RangeSet(1, d[\"num_dcs\"])\n    model.J = pyo.RangeSet(1, d[\"num_stores\"])\n\n    # Decision variables\n    model.open = pyo.Var(model.I, within=pyo.Binary)\n    model.ship = pyo.Var(model.I, model.J, within=pyo.NonNegativeReals)\n\n    # Objective: minimize opening + transportation cost\n    def obj_rule(m):\n        return sum(d[\"open_cost\"][i] * m.open[i] for i in m.I) + sum(\n            d[\"transport_cost\"][i][j] * m.ship[i, j] for i in m.I for j in m.J\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each store's demand must be met\n    def demand_rule(m, j):\n        return sum(m.ship[i, j] for i in m.I) >= d[\"demand\"][j]\n\n    model.demand_con = pyo.Constraint(model.J, rule=demand_rule)\n\n    # A distribution center can ship only if it is open, and only up to capacity\n    def capacity_rule(m, i):\n        return sum(m.ship[i, j] for j in m.J) <= d[\"capacity\"][i] * m.open[i]\n\n    model.capacity_con = pyo.Constraint(model.I, rule=capacity_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1631,
+      "completion_tokens": 3933
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 5484,
+      "completion_tokens": 852
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 31.26722812652588,
+   "position": 9,
+   "recipe_index": 4
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:57:45"
+}

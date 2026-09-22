@@ -17,7 +17,7 @@ from . import config as C
 
 
 def profile(values: list[float], dim: int = C.LP_PROFILE_DIM) -> np.ndarray:
-    v = sorted(float(x) for x in values)
+    v = sorted((float(x) for x in values), reverse=True)
     v = v[:dim] + [0.0] * max(0, dim - len(v))
     return np.asarray(v, dtype=float)
 

@@ -1,0 +1,269 @@
+{
+ "pid": "optmath_0072",
+ "question": "The problem involves assigning employees to shifts across two restaurants to minimize costs associated with unfulfilled positions and employee assignments. There are two restaurants, each with two shifts per day, and eight employees available for assignment. Each shift at each restaurant has specific staffing demands for a particular skill, and employees have varying availability and skill sets. Employees can only be assigned to shifts they are available for and to roles that match their skills. Each employee can be assigned to at most one shift across all restaurants. Assigning employees to shifts incurs specific costs: assigning Employee 0 to Skill 0 costs 1 unit, assigning Employee 3 to Skill 0 costs 2 units, and assigning Employee 4 to Skill 0 costs 3 units. If a restaurant cannot meet the demand for a specific skill in a shift, unfulfilled positions incur a penalty cost of 100 units per position. The goal is to minimize the total cost, which includes the penalty costs for unfulfilled positions and the costs of assigning employees to shifts. Constraints ensure that the total number of employees assigned to a shift at a restaurant, plus any unfulfilled positions, equals the demand for that shift. Employees can only be assigned to shifts they are available for and to roles that match their skills. Each employee can be assigned to at most one shift across all restaurants.",
+ "templates": [
+  "Workforce / Shift Scheduling",
+  "Assignment"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "\"\"\"\nWorkforce / Shift Assignment across two restaurants, two shifts, eight employees, two skills.\n\nDecision variables\n------------------\nx[e, r, s] : Binary  \u2014 1 if employee e is assigned to restaurant r, shift s; else 0.\nu[r, s, k] : NonNegativeIntegers \u2014 number of UNFILLED positions for skill k\n                        at (restaurant r, shift s).\n\nObjective (minimize)\n--------------------\nMinimize total cost:\n   sum over (r,s,k) of penalty_cost * u[r,s,k]      (unfulfilled penalty 100),\n   + assignment costs:\n       cost(0->skill0)=1 if emp 0 assigned to a shift requiring skill 0,\n       cost(3->skill0)=2 if emp 3 assigned to a shift requiring skill 0,\n       cost(4->skill0)=3 if emp 4 assigned to a shift requiring skill 0.\n\nConstraints\n-----------\n(1) Demand balance for each (r,s,k):\n        sum of employees assigned to (r,s) who have skill k\n        + u[r,s,k] = demand[r,s,k]\n(2) Each employee assigned to at most one shift across all restaurants.\n(3) Employees can only be assigned to shifts they are available for and\n    to roles that match their skills (enforced via variable domain / allowed set).\n\"\"\"\n\nimport pyomo.environ as pyo\n\nDATA = {\n    \"restaurants\": [0, 1],\n    \"shifts\": [0, 1],\n    \"employees\": [0, 1, 2, 3, 4, 5, 6, 7],\n    \"skills\": [0, 1],\n    # demand[r][s][k]\n    \"demand\": {\n        (0, 0, 0): 1, (0, 0, 1): 1,\n        (0, 1, 0): 1, (0, 1, 1): 1,\n        (1, 0, 0): 1, (1, 0, 1): 1,\n        (1, 1, 0): 1, (1, 1, 1): 1,\n    },\n    # employee skills: set of skills each employee possesses\n    \"emp_skills\": {\n        0: {0},\n        1: {0, 1},\n        2: {1},\n        3: {0},\n        4: {0},\n        5: {1},\n        6: {0, 1},\n        7: {1},\n    },\n    # availability: (employee, restaurant, shift) -> bool\n    \"availability\": {\n        (0, 0, 0): True, (0, 0, 1): True, (0, 1, 0): True, (0, 1, 1): True,\n        (1, 0, 0): True, (1, 0, 1): True, (1, 1, 0): True, (1, 1, 1): True,\n        (2, 0, 0): True, (2, 0, 1): True, (2, 1, 0): True, (2, 1, 1): True,\n        (3, 0, 0): True, (3, 0, 1): True, (3, 1, 0): True, (3, 1, 1): True,\n        (4, 0, 0): True, (4, 0, 1): True, (4, 1, 0): True, (4, 1, 1): True,\n        (5, 0, 0): True, (5, 0, 1): True, (5, 1, 0): True, (5, 1, 1): True,\n        (6, 0, 0): True, (6, 0, 1): True, (6, 1, 0): True, (6, 1, 1): True,\n        (7, 0, 0): True, (7, 0, 1): True, (7, 1, 0): True, (7, 1, 1): True,\n    },\n    # assignment cost for (employee, skill)\n    \"assign_cost\": {\n        (0, 0): 1,\n        (3, 0): 2,\n        (4, 0): 3,\n    },\n    \"penalty_cost\": 100,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.R = pyo.Set(initialize=d[\"restaurants\"])\n    model.S = pyo.Set(initialize=d[\"shifts\"])\n    model.E = pyo.Set(initialize=d[\"employees\"])\n    model.K = pyo.Set(initialize=d[\"skills\"])\n\n    # Allowed (employee, restaurant, shift) triples: available AND has at least one skill\n    allowed = []\n    for e in d[\"employees\"]:\n        for r in d[\"restaurants\"]:\n            for s in d[\"shifts\"]:\n                if d[\"availability\"].get((e, r, s), False) and d[\"emp_skills\"].get(e, set()):\n                    allowed.append((e, r, s))\n    model.ALLOWED = pyo.Set(initialize=allowed, dimen=3)\n\n    # x[e,r,s] binary on allowed triples\n    model.x = pyo.Var(model.ALLOWED, within=pyo.Binary)\n\n    # u[r,s,k] unfulfilled positions\n    model.u = pyo.Var(model.R, model.S, model.K, within=pyo.NonNegativeIntegers)\n\n    # Objective: penalty for unfulfilled + assignment costs\n    def obj_rule(m):\n        expr = 0\n        for r in m.R:\n            for s in m.S:\n                for k in m.K:\n                    expr += d[\"penalty_cost\"] * m.u[r, s, k]\n        for (e, r, s) in m.ALLOWED:\n            for k in d[\"emp_skills\"].get(e, set()):\n                if (e, k) in d[\"assign_cost\"]:\n                    expr += d[\"assign_cost\"][(e, k)] * m.x[e, r, s]\n        return expr\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # (1) Demand balance: sum of assigned employees with skill k at (r,s) + u = demand\n    def demand_rule(m, r, s, k):\n        assigned = 0\n        for e in d[\"employees\"]:\n            if (e, r, s) in allowed and k in d[\"emp_skills\"].get(e, set()):\n                assigned += m.x[e, r, s]\n        return assigned + m.u[r, s, k] == d[\"demand\"].get((r, s, k), 0)\n    model.demand_con = pyo.Constraint(model.R, model.S, model.K, rule=demand_rule)\n\n    # (2) Each employee assigned to at most one shift\n    def emp_rule(m, e):\n        total = 0\n        for (ee, r, s) in allowed:\n            if ee == e:\n                total += m.x[ee, r, s]\n        return total <= 1\n    model.emp_con = pyo.Constraint(model.E, rule=emp_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1255,
+      "completion_tokens": 3392
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1924,
+      "completion_tokens": 1662
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 25.974098920822144,
+   "position": 0,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Index sizes\n    \"num_employees\": 8,\n    \"num_restaurants\": 2,\n    \"num_shifts\": 2,\n    \"num_skills\": 1,\n\n    # Assignment cost c[i, k] -> cost of assigning employee i to skill k\n    # Only nonzero entries are given; all others cost 0.\n    \"assign_cost\": {\n        (0, 0): 1,\n        (3, 0): 2,\n        (4, 0): 3,\n    },\n\n    # Penalty for each unfulfilled position\n    \"penalty\": 100,\n\n    # Demand: demand[(r, s, k)] = required number of positions\n    # Both restaurants, both shifts, skill 0.\n    \"demand\": {\n        (0, 0, 0): 1,\n        (0, 1, 0): 1,\n        (1, 0, 0): 1,\n        (1, 1, 0): 1,\n    },\n\n    # Employee skill eligibility: skill_ok[(i, k)] = 1 if employee i has skill k\n    \"skill_ok\": {\n        (0, 0): 1,\n        (1, 0): 1,\n        (2, 0): 1,\n        (3, 0): 1,\n        (4, 0): 1,\n        (5, 0): 1,\n        (6, 0): 1,\n        (7, 0): 1,\n    },\n\n    # Availability: avail[(i, r, s)] = 1 if employee i can work restaurant r shift s\n    # Assume all employees available for all shifts unless restricted; here all available.\n    \"avail\": {\n        (i, r, s): 1\n        for i in range(8)\n        for r in range(2)\n        for s in range(2)\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # ---- Sets ----\n    m.I = pyo.RangeSet(0, d[\"num_employees\"] - 1)      # employees\n    m.R = pyo.RangeSet(0, d[\"num_restaurants\"] - 1)    # restaurants\n    m.S = pyo.RangeSet(0, d[\"num_shifts\"] - 1)         # shifts\n    m.K = pyo.RangeSet(0, d[\"num_skills\"] - 1)         # skills\n\n    # ---- Variables ----\n    # x[i,r,s,k] = 1 if employee i assigned to restaurant r, shift s, skill k\n    m.x = pyo.Var(m.I, m.R, m.S, m.K, within=pyo.Binary)\n\n    # u[r,s,k] = number of unfulfilled positions (penalty)\n    m.u = pyo.Var(m.R, m.S, m.K, within=pyo.NonNegativeIntegers)\n\n    # ---- Objective (minimize) ----\n    def obj_rule(m):\n        assign = sum(\n            d[\"assign_cost\"].get((i, k), 0) * m.x[i, r, s, k]\n            for i in m.I for r in m.R for s in m.S for k in m.K\n        )\n        penalty = sum(\n            d[\"penalty\"] * m.u[r, s, k]\n            for r in m.R for s in m.S for k in m.K\n        )\n        return assign + penalty\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---- Constraints ----\n\n    # Demand balance: assignments + unfulfilled == demand, per (r,s,k)\n    # direction: equality (every position filled or penalised)\n    def demand_rule(m, r, s, k):\n        assigned = sum(m.x[i, r, s, k] for i in m.I)\n        return assigned + m.u[r, s, k] == d[\"demand\"][(r, s, k)]\n\n    m.demand_con = pyo.Constraint(m.R, m.S, m.K, rule=demand_rule)\n\n    # Availability: employee may only be assigned to shifts they are available for\n    # direction: x must be 0 when avail == 0\n    def avail_rule(m, i, r, s, k):\n        if d[\"avail\"][(i, r, s)] == 1:\n            return pyo.Constraint.Skip\n        return m.x[i, r, s, k] == 0\n\n    m.avail_con = pyo.Constraint(m.I, m.R, m.S, m.K, rule=avail_rule)\n\n    # Skill match: employee may only be assigned to skills they possess\n    # direction: x must be 0 when skill_ok == 0\n    def skill_rule(m, i, r, s, k):\n        if d[\"skill_ok\"].get((i, k), 0) == 1:\n            return pyo.Constraint.Skip\n        return m.x[i, r, s, k] == 0\n\n    m.skill_con = pyo.Constraint(m.I, m.R, m.S, m.K, rule=skill_rule)\n\n    # Each employee at most one shift across all restaurants\n    # direction: <= 1\n    def one_shift_rule(m, i):\n        return sum(m.x[i, r, s, k] for r in m.R for s in m.S for k in m.K) <= 1\n\n    m.one_shift_con = pyo.Constraint(m.I, rule=one_shift_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1251,
+      "completion_tokens": 1669
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.081498146057129,
+   "position": 1,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # ---- sets (as ordered tuples) ----\n    \"restaurants\": [0, 1],           # two restaurants\n    \"shifts\": [0, 1],                # two shifts per day\n    \"skills\": [0, 1],                # two roles available; skill 0 is the demanded/costly one\n    \"employees\": [0, 1, 2, 3, 4, 5, 6, 7],\n\n    # ---- demand for each (restaurant, shift, skill) ----\n    \"demand\": {\n        (0, 0, 0): 1,\n        (0, 0, 1): 1,\n        (0, 1, 0): 1,\n        (0, 1, 1): 1,\n        (1, 0, 0): 1,\n        (1, 0, 1): 1,\n        (1, 1, 0): 1,\n        (1, 1, 1): 1,\n    },\n\n    # ---- availability: which (employee, shift) pairs are allowed ----\n    \"available\": {\n        (0, 0), (0, 1),\n        (1, 0), (1, 1),\n        (2, 0), (2, 1),\n        (3, 0),\n        (4, 0), (4, 1),\n        (5, 0), (5, 1),\n        (6, 0), (6, 1),\n        (7, 0), (7, 1),\n    },\n\n    # ---- skills: employee e can fill role s if listed ----\n    \"has_skill\": {\n        (0, 0), (0, 1),\n        (1, 0), (1, 1),\n        (2, 0), (2, 1),\n        (3, 0),\n        (4, 0),\n        (5, 0), (5, 1),\n        (6, 0),\n        (7, 0),\n    },\n\n    # ---- assignment cost c[e, s] ----\n    \"assign_cost\": {\n        (0, 0): 1,\n        (3, 0): 2,\n        (4, 0): 3,\n    },\n\n    # ---- unfulfilled/pentalty cost per unfilled position ----\n    \"unfulfilled_penalty\": 100,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # ---------------- Sets ----------------\n    model.R = pyo.Set(initialize=d[\"restaurants\"])\n    model.T = pyo.Set(initialize=d[\"shifts\"])\n    model.S = pyo.Set(initialize=d[\"skills\"])\n    model.E = pyo.Set(initialize=d[\"employees\"])\n\n    # Combined index set for shift variables\n    model.RTS = pyo.Set(\n        initialize=[(r, t, s)\n                    for r in d[\"restaurants\"]\n                    for t in d[\"shifts\"]\n                    for s in d[\"skills\"]]\n    )\n    model.ETS = pyo.Set(\n        initialize=[(e, r, t, s)\n                    for e in d[\"employees\"]\n                    for r in d[\"restaurants\"]\n                    for t in d[\"shifts\"]\n                    for s in d[\"skills\"]]\n    )\n\n    # ---------------- Helper data maps ----------------\n    def avail_map(e, t):\n        return tuple(sorted(d[\"available\"]))\n\n    AVAIL = set(d[\"available\"])\n    HAS_SKILL = set(d[\"has_skill\"])\n    ASSIGN_COST = d[\"assign_cost\"]\n    DEMAND = d[\"demand\"]\n    PEN = d[\"unfulfilled_penalty\"]\n\n    # Upper bounds capturing if-then availability/skill logic (no products used)\n    def _ub(m, e, r, t, s):\n        if (e, t) in AVAIL and (e, s) in HAS_SKILL:\n            return 1\n        return 0\n\n    # ---------------- Variables ----------------\n    model.x = pyo.Var(model.ETS,\n                      domain=pyo.Binary,\n                      bounds=lambda m, e, r, t, s: (0, _ub(m, e, r, t, s)))\n\n    model.u = pyo.Var(model.RTS,\n                      domain=pyo.NonNegativeIntegers,\n                      bounds=(0, None))\n\n    # ---------------- Objective ----------------\n    def obj_rule(m):\n        cost = 0.0\n        for (r, t, s) in m.RTS:\n            cost += PEN * m.u[r, t, s]\n        for (e, r, t, s) in m.ETS:\n            c = ASSIGN_COST.get((e, s), 0)\n            cost += c * m.x[e, r, t, s]\n        return cost\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---------------- Constraints ----------------\n    # Sentence: total assigned + unfulfilled = demand for that shift/role.\n    def demand_balance_rule(m, r, t, s):\n        assigned = 0\n        for e in m.E:\n            assigned += m.x[e, r, t, s]\n        return assigned + m.u[r, t, s] == DEMAND.get((r, t, s), 0)\n\n    model.demand_balance = pyo.Constraint(model.RTS, rule=demand_balance_rule)\n\n    # Sentence: each employee assigned to at most one shift overall.\n    def employee_once_rule(m, e):\n        total = 0\n        for (e2, r, t, s) in m.ETS:\n            if e2 == e:\n                total += m.x[e2, r, t, s]\n        return total <= 1\n\n    model.employee_once = pyo.Constraint(model.E, rule=employee_once_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1241,
+      "completion_tokens": 1642
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.692361831665039,
+   "position": 2,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"restaurants\": [0, 1],\n    \"shifts\": [0, 1],\n    \"skills\": [0, 1],\n    \"employees\": [0, 1, 2, 3, 4, 5, 6, 7],\n    # Demand for skill k at restaurant r, shift s: demand[(r, s, k)]\n    \"demand\": {\n        (0, 0, 0): 1, (0, 0, 1): 1,\n        (0, 1, 0): 1, (0, 1, 1): 1,\n        (1, 0, 0): 1, (1, 0, 1): 1,\n        (1, 1, 0): 1, (1, 1, 1): 1,\n    },\n    # Availability: employee e available for shift (r, s)\n    \"availability\": {\n        (0, 0, 0): True, (0, 0, 1): True, (0, 1, 0): True, (0, 1, 1): True,\n        (1, 0, 0): True, (1, 0, 1): True, (1, 1, 0): True, (1, 1, 1): True,\n        (2, 0, 0): True, (2, 0, 1): True, (2, 1, 0): True, (2, 1, 1): True,\n        (3, 0, 0): True, (3, 0, 1): True, (3, 1, 0): True, (3, 1, 1): True,\n        (4, 0, 0): True, (4, 0, 1): True, (4, 1, 0): True, (4, 1, 1): True,\n        (5, 0, 0): True, (5, 0, 1): True, (5, 1, 0): True, (5, 1, 1): True,\n        (6, 0, 0): True, (6, 0, 1): True, (6, 1, 0): True, (6, 1, 1): True,\n        (7, 0, 0): True, (7, 0, 1): True, (7, 1, 0): True, (7, 1, 1): True,\n    },\n    # Skill sets: employee e has skill k\n    \"skills_of\": {\n        0: [0],\n        1: [1],\n        2: [0, 1],\n        3: [0],\n        4: [0],\n        5: [1],\n        6: [0, 1],\n        7: [1],\n    },\n    # Assignment costs: cost[(e, k)] for assigning employee e to skill k\n    \"assign_cost\": {\n        (0, 0): 1,\n        (3, 0): 2,\n        (4, 0): 3,\n    },\n    \"default_assign_cost\": 0,\n    \"unfilled_penalty\": 100,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.R = pyo.Set(initialize=d[\"restaurants\"])\n    model.S = pyo.Set(initialize=d[\"shifts\"])\n    model.K = pyo.Set(initialize=d[\"skills\"])\n    model.E = pyo.Set(initialize=d[\"employees\"])\n\n    # Allowed assignment pairs (employee, restaurant, shift, skill)\n    allowed = []\n    for e in d[\"employees\"]:\n        for r in d[\"restaurants\"]:\n            for s in d[\"shifts\"]:\n                if d[\"availability\"].get((e, r, s), False):\n                    for k in d[\"skills_of\"][e]:\n                        allowed.append((e, r, s, k))\n    model.PAIRS = pyo.Set(initialize=allowed, dimen=4)\n\n    def cost_of(e, k):\n        return d[\"assign_cost\"].get((e, k), d[\"default_assign_cost\"])\n\n    # Decision variables\n    model.assign = pyo.Var(model.PAIRS, within=pyo.Binary)\n\n    model.unfilled = pyo.Var(\n        model.R, model.S, model.K, within=pyo.NonNegativeIntegers\n    )\n\n    # Objective: assignment costs + penalty for unfilled positions\n    def obj_rule(m):\n        assign_cost = sum(\n            cost_of(e, k) * m.assign[e, r, s, k]\n            for (e, r, s, k) in m.PAIRS\n        )\n        penalty = sum(\n            d[\"unfilled_penalty\"] * m.unfilled[r, s, k]\n            for r in m.R for s in m.S for k in m.K\n        )\n        return assign_cost + penalty\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # (a) Demand balance: assigned + unfilled == demand for each (r, s, k)\n    def demand_balance_rule(m, r, s, k):\n        assigned = sum(\n            m.assign[e, r, s, k]\n            for e in m.E\n            if (e, r, s, k) in m.PAIRS\n        )\n        return assigned + m.unfilled[r, s, k] == d[\"demand\"][(r, s, k)]\n\n    model.demand_balance = pyo.Constraint(\n        model.R, model.S, model.K, rule=demand_balance_rule\n    )\n\n    # (b) Each employee assigned to at most one shift overall\n    def one_shift_rule(m, e):\n        return sum(\n            m.assign[e, r, s, k]\n            for (ee, r, s, k) in m.PAIRS\n            if ee == e\n        ) <= 1\n\n    model.one_shift = pyo.Constraint(model.E, rule=one_shift_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1235,
+      "completion_tokens": 1701
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.710104703903198,
+   "position": 3,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"There are two restaurants\" -> restaurant indices 0,1\n    \"R\": [0, 1],\n    # \"each with two shifts per day\" -> shift indices 0,1\n    \"S\": [0, 1],\n    # \"eight employees available for assignment\" -> employee indices 0..7\n    \"E\": [0, 1, 2, 3, 4, 5, 6, 7],\n    # \"specific skill\" -> skill indices (Skill 0 explicitly referenced)\n    \"K\": [0],\n\n    # \"penalty cost of 100 units per position\"\n    \"penalty\": 100,\n\n    # \"assigning Employee 0 to Skill 0 costs 1 unit\"\n    # \"assigning Employee 3 to Skill 0 costs 2 units\"\n    # \"assigning Employee 4 to Skill 0 costs 3 units\"\n    # (other employees default to 0 cost since unspecified)\n    \"assign_cost\": {\n        (0,): 1,\n        (3,): 2,\n        (4,): 3,\n    },\n    \"default_assign_cost\": 0,\n\n    # \"specific staffing demands for a particular skill\" per (restaurant, shift, skill)\n    # demands for skill 0 across (restaurant, shift)\n    \"demand\": {\n        (0, 0, 0): 2,\n        (0, 1, 0): 1,\n        (1, 0, 0): 1,\n        (1, 1, 0): 2,\n    },\n\n    # \"employees have varying availability\" -> (employee, restaurant, shift) available\n    \"availability\": [\n        (0, 0, 0), (2, 0, 0), (3, 0, 0), (4, 0, 0),\n        (1, 0, 1), (2, 0, 1), (5, 0, 1), (6, 0, 1),\n        (0, 1, 0), (1, 1, 0), (4, 1, 0), (7, 1, 0),\n        (2, 1, 1), (3, 1, 1), (5, 1, 1), (6, 1, 1),\n    ],\n\n    # \"employees have varying ... skill sets\" -> (employee, skill) qualified\n    \"skills\": [\n        (0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0), (7, 0),\n    ],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    # ---- Sets ----\n    m.R = pyo.Set(initialize=d[\"R\"])\n    m.S = pyo.Set(initialize=d[\"S\"])\n    m.E = pyo.Set(initialize=d[\"E\"])\n    m.K = pyo.Set(initialize=d[\"K\"])\n\n    # Feasible (r,s,k,e) tuples: available for shift AND qualified for skill\n    avail_set = set(d[\"availability\"])\n    skill_set = set(d[\"skills\"])\n    feasible = [\n        (r, s, k, e)\n        for r in d[\"R\"]\n        for s in d[\"S\"]\n        for k in d[\"K\"]\n        for e in d[\"E\"]\n        if (e, r, s) in avail_set and (e, k) in skill_set\n    ]\n    m.RSKE = pyo.Set(initialize=feasible, dimen=4)\n\n    # ---- Variables ----\n    # assignment: employee e to skill k in shift s at restaurant r\n    m.x = pyo.Var(m.RSKE, within=pyo.Binary)\n\n    # unfulfilled positions for skill k in shift s at restaurant r\n    m.u = pyo.Var(m.R, m.S, m.K, within=pyo.NonNegativeIntegers)\n\n    # ---- Objective ----\n    def obj_rule(mm):\n        penalty = d[\"penalty\"] * sum(mm.u[r, s, k] for r in mm.R for s in mm.S for k in mm.K)\n        assign = 0\n        for (r, s, k, e) in mm.RSKE:\n            c = d[\"assign_cost\"].get((e,), d[\"default_assign_cost\"])\n            assign = assign + c * mm.x[r, s, k, e]\n        return penalty + assign\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---- Constraints ----\n    # (a) Demand balance: assigned + unfulfilled = demand\n    def demand_rule(mm, r, s, k):\n        assigned = sum(mm.x[r, s, k, e] for e in mm.E if (r, s, k, e) in mm.RSKE)\n        return assigned + mm.u[r, s, k] == d[\"demand\"][(r, s, k)]\n\n    m.demand_con = pyo.Constraint(m.R, m.S, m.K, rule=demand_rule)\n\n    # (b) Each employee at most one shift across all restaurants\n    def one_shift_rule(mm, e):\n        return sum(\n            mm.x[r, s, k, e]\n            for (r, s, k, ee) in mm.RSKE\n            if ee == e\n        ) <= 1\n\n    m.one_shift_con = pyo.Constraint(m.E, rule=one_shift_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1239,
+      "completion_tokens": 1668
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.890722990036011,
+   "position": 4,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "\"\"\"\nWorkforce / shift assignment MILP for two restaurants, two shifts per day,\neight employees, one skill (Skill 0).\n\nDecision variables\n------------------\nx[e, r, s]  in {0,1} : employee e assigned to restaurant r, shift s\n                      (only created for allowed (e,r,s) triples)\nu[r, s]     >= 0 int : number of unfulfilled positions for skill 0 at\n                      restaurant r, shift s\n\nObjective (minimize)\n--------------------\nsum over allowed (e,r,s) of cost[e] * x[e,r,s]\n  + penalty * sum over (r,s) of u[r,s]\n\nConstraints\n-----------\n(1) Demand balance, for each (r,s):\n        sum_e x[e,r,s] + u[r,s] == demand[r,s]\n    Source: \"the total number of employees assigned to a shift at a\n    restaurant, plus any unfulfilled positions, equals the demand for\n    that shift.\"\n(2) Each employee at most one shift across all restaurants:\n        sum_{r,s} x[e,r,s] <= 1   for each e\n    Source: \"Each employee can be assigned to at most one shift across\n    all restaurants.\"\n(3) Availability / skill eligibility is enforced by only creating\n    x[e,r,s] for allowed triples.\n    Source: \"Employees can only be assigned to shifts they are available\n    for and to roles that match their skills.\"\n\"\"\"\nimport pyomo.environ as pyo\n\nDATA = {\n    \"num_restaurants\": 2,\n    \"num_shifts\": 2,\n    \"employees\": tuple(range(8)),\n    \"restaurants\": tuple(range(2)),\n    \"shifts\": tuple(range(2)),\n    # demand for skill 0 at (restaurant, shift)\n    \"demand\": {\n        (0, 0): 1, (0, 1): 1,\n        (1, 0): 1, (1, 1): 1,\n    },\n    # assignment cost per employee (skill 0); unspecified employees cost 0\n    \"assign_cost\": {\n        0: 1,\n        3: 2,\n        4: 3,\n    },\n    \"penalty\": 100,\n    # allowed (employee, restaurant, shift) triples: availability AND skill match\n    \"allowed\": [\n        (0, 0, 0), (0, 0, 1), (0, 1, 0), (0, 1, 1),\n        (1, 0, 0), (1, 0, 1), (1, 1, 0), (1, 1, 1),\n        (2, 0, 0), (2, 0, 1), (2, 1, 0), (2, 1, 1),\n        (3, 0, 0), (3, 0, 1), (3, 1, 0), (3, 1, 1),\n        (4, 0, 0), (4, 0, 1), (4, 1, 0), (4, 1, 1),\n        (5, 0, 0), (5, 0, 1), (5, 1, 0), (5, 1, 1),\n        (6, 0, 0), (6, 0, 1), (6, 1, 0), (6, 1, 1),\n        (7, 0, 0), (7, 0, 1), (7, 1, 0), (7, 1, 1),\n    ],\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.employees = pyo.Set(initialize=list(d[\"employees\"]))\n    model.restaurants = pyo.Set(initialize=list(d[\"restaurants\"]))\n    model.shifts = pyo.Set(initialize=list(d[\"shifts\"]))\n    model.allowed = pyo.Set(\n        dimen=3, initialize=[tuple(t) for t in d[\"allowed\"]]\n    )\n    model.rs = pyo.Set(\n        dimen=2,\n        initialize=[(r, s) for r in d[\"restaurants\"] for s in d[\"shifts\"]],\n    )\n\n    def assign_cost(m, e, r, s):\n        return d[\"assign_cost\"].get(e, 0)\n\n    model.x = pyo.Var(\n        model.allowed, domain=pyo.Binary,\n        bounds=(0, 1),\n    )\n\n    model.u = pyo.Var(\n        model.rs, domain=pyo.NonNegativeIntegers,\n    )\n\n    # (1) demand balance\n    def demand_rule(m, r, s):\n        assigned = sum(\n            m.x[e, rr, ss]\n            for (e, rr, ss) in m.allowed\n            if rr == r and ss == s\n        )\n        return assigned + m.u[r, s] == d[\"demand\"][(r, s)]\n\n    model.demand_con = pyo.Constraint(model.rs, rule=demand_rule)\n\n    # (2) each employee at most one shift\n    def one_shift_rule(m, e):\n        return sum(\n            m.x[ee, r, s]\n            for (ee, r, s) in m.allowed\n            if ee == e\n        ) <= 1\n\n    model.one_shift_con = pyo.Constraint(\n        model.employees, rule=one_shift_rule\n    )\n\n    # objective\n    def obj_rule(m):\n        assign_term = sum(\n            assign_cost(m, e, r, s) * m.x[e, r, s]\n            for (e, r, s) in m.allowed\n        )\n        penalty_term = d[\"penalty\"] * sum(\n            m.u[r, s] for (r, s) in m.rs\n        )\n        return assign_term + penalty_term\n\n    model.obj = pyo.Objective(expr=obj_rule, sense=pyo.minimize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1255,
+      "completion_tokens": 1460
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "missing_constraints",
+      "missing_objective",
+      "missing_variables",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1453,
+      "completion_tokens": 1351
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 17.617721557617188,
+   "position": 5,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem lives here.\n# ---------------------------------------------------------------------------\nDATA = {\n    \"num_restaurants\": 2,          # two restaurants\n    \"num_shifts\": 2,               # two shifts per day\n    \"num_employees\": 8,            # eight employees\n    \"num_skills\": 1,               # skill dimension (Skill 0)\n    \"penalty\": 100,                # 100 units per unfulfilled position\n\n    # Demand for skill k in shift s at restaurant r: demand[(r, s, k)]\n    \"demand\": {\n        (0, 0, 0): 1, (0, 1, 0): 1,\n        (1, 0, 0): 1, (1, 1, 0): 1,\n    },\n\n    # Assignment cost for (employee, skill). Unlisted pairs default to 0\n    # (only the three mentioned pairs have explicit costs).\n    \"assign_cost\": {\n        (0, 0): 1,   # Employee 0 -> Skill 0 costs 1\n        (3, 0): 2,   # Employee 3 -> Skill 0 costs 2\n        (4, 0): 3,   # Employee 4 -> Skill 0 costs 3\n    },\n\n    # Employee skills: set of skills each employee possesses.\n    # All employees are assumed skilled for Skill 0 (only skill in problem).\n    \"emp_skills\": {\n        0: {0}, 1: {0}, 2: {0}, 3: {0},\n        4: {0}, 5: {0}, 6: {0}, 7: {0},\n    },\n\n    # Availability: (employee, restaurant, shift) -> bool.\n    # The problem states employees can only be assigned to shifts they are\n    # available for. Without an explicit availability table, all combinations\n    # are assumed available (the availability filter is enforced structurally).\n    \"availability\": None,   # None => all (e, r, s) combinations allowed.\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # ---- Sets -------------------------------------------------------------\n    m.R = pyo.RangeSet(0, d[\"num_restaurants\"] - 1)   # restaurants\n    m.S = pyo.RangeSet(0, d[\"num_shifts\"] - 1)        # shifts per day\n    m.E = pyo.RangeSet(0, d[\"num_employees\"] - 1)     # employees\n    m.K = pyo.RangeSet(0, d[\"num_skills\"] - 1)        # skills\n\n    def avail(e, r, s):\n        table = d[\"availability\"]\n        if table is None:\n            return True\n        return bool(table.get((e, r, s), False))\n\n    def skill_ok(e, k):\n        return k in d[\"emp_skills\"].get(e, set())\n\n    # ---- Variables --------------------------------------------------------\n    # x[r,s,e,k]: binary assignment variable, only for valid combos.\n    m.x = pyo.Var(m.R, m.S, m.E, m.K, within=pyo.Binary)\n\n    # u[r,s,k]: unfulfilled positions (non-negative integers).\n    m.u = pyo.Var(m.R, m.S, m.K, within=pyo.NonNegativeIntegers)\n\n    # ---- Objective (minimize assignment cost + penalty for unfilled) -----\n    def obj_rule(mm):\n        expr = 0\n        for r in mm.R:\n            for s in mm.S:\n                for k in mm.K:\n                    expr += d[\"penalty\"] * mm.u[r, s, k]\n        for (e, k), c in d[\"assign_cost\"].items():\n            for r in mm.R:\n                for s in mm.S:\n                    expr += c * mm.x[r, s, e, k]\n        return expr\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---- Constraint 1: demand fulfillment (equality) ----------------------\n    # total assigned + unfulfilled == demand for each (r, s, k)\n    def demand_rule(mm, r, s, k):\n        assigned = sum(mm.x[r, s, e, k] for e in mm.E)\n        return assigned + mm.u[r, s, k] == d[\"demand\"].get((r, s, k), 0)\n\n    m.demand_con = pyo.Constraint(m.R, m.S, m.K, rule=demand_rule)\n\n    # ---- Constraint 2: each employee assigned to at most one shift --------\n    def one_shift_rule(mm, e):\n        return sum(mm.x[r, s, e, k]\n                   for r in mm.R for s in mm.S for k in mm.K) <= 1\n\n    m.one_shift_con = pyo.Constraint(m.E, rule=one_shift_rule)\n\n    # ---- Constraint 3: block invalid (availability / skill) assignments ---\n    # Variables exist for every combo; forbid combos not matching availability\n    # or skills by forcing them to zero.\n    def valid_rule(mm, r, s, e, k):\n        if avail(e, r, s) and skill_ok(e, k):\n            return pyo.Constraint.Skip\n        return mm.x[r, s, e, k] == 0\n\n    m.valid_con = pyo.Constraint(m.R, m.S, m.E, m.K, rule=valid_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1251,
+      "completion_tokens": 1589
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.272137880325317,
+   "position": 6,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------\n# DATA: every numeric constant from the problem, with source comment.\n# ---------------------------------------------------------------------\nDATA = {\n    # \"There are two restaurants\" -> restaurants indexed 0,1\n    \"restaurants\": [0, 1],\n    # \"each with two shifts per day\" -> shifts indexed 0,1\n    \"shifts\": [0, 1],\n    # \"specific staffing demands for a particular skill\" -> skills 0,1\n    \"skills\": [0, 1],\n    # \"eight employees available for assignment\" -> employees 0..7\n    \"employees\": [0, 1, 2, 3, 4, 5, 6, 7],\n\n    # Staffing demand per (restaurant, shift, skill).\n    # \"Each shift at each restaurant has specific staffing demands\"\n    # (illustrative demand values; skill 0 and skill 1 demands per shift)\n    \"demand\": {\n        (0, 0, 0): 1,\n        (0, 0, 1): 1,\n        (0, 1, 0): 1,\n        (0, 1, 1): 1,\n        (1, 0, 0): 1,\n        (1, 0, 1): 1,\n        (1, 1, 0): 1,\n        (1, 1, 1): 1,\n    },\n\n    # \"unfulfilled positions incur a penalty cost of 100 units per position\"\n    \"unfilled_penalty\": 100,\n\n    # \"assigning Employee 0 to Skill 0 costs 1 unit\"\n    # \"assigning Employee 3 to Skill 0 costs 2 units\"\n    # \"assigning Employee 4 to Skill 0 costs 3 units\"\n    \"assign_cost\": {\n        (0, 0): 1,\n        (3, 0): 2,\n        (4, 0): 3,\n    },\n    # default cost for any other allowed assignment\n    \"default_assign_cost\": 0,\n\n    # Availability: (employee, restaurant, shift) pairs the employee can work.\n    # \"Employees can only be assigned to shifts they are available for\"\n    \"availability\": [\n        (0, 0, 0), (0, 0, 1), (0, 1, 0), (0, 1, 1),\n        (1, 0, 0), (1, 0, 1), (1, 1, 0), (1, 1, 1),\n        (2, 0, 0), (2, 0, 1), (2, 1, 0), (2, 1, 1),\n        (3, 0, 0), (3, 0, 1), (3, 1, 0), (3, 1, 1),\n        (4, 0, 0), (4, 0, 1), (4, 1, 0), (4, 1, 1),\n        (5, 0, 0), (5, 0, 1), (5, 1, 0), (5, 1, 1),\n        (6, 0, 0), (6, 0, 1), (6, 1, 0), (6, 1, 1),\n        (7, 0, 0), (7, 0, 1), (7, 1, 0), (7, 1, 1),\n    ],\n\n    # Skill sets: (employee, skill) pairs the employee is qualified for.\n    # \"and to roles that match their skills\"\n    \"skills_of_employee\": [\n        (0, 0), (0, 1),\n        (1, 0), (1, 1),\n        (2, 0), (2, 1),\n        (3, 0), (3, 1),\n        (4, 0), (4, 1),\n        (5, 0), (5, 1),\n        (6, 0), (6, 1),\n        (7, 0), (7, 1),\n    ],\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    restaurants = list(d[\"restaurants\"])\n    shifts = list(d[\"shifts\"])\n    skills = list(d[\"skills\"])\n    employees = list(d[\"employees\"])\n\n    demand = d[\"demand\"]\n    penalty = d[\"unfilled_penalty\"]\n    assign_cost = d[\"assign_cost\"]\n    default_cost = d[\"default_assign_cost\"]\n\n    avail_set = set(d[\"availability\"])\n    skill_set = set(d[\"skills_of_employee\"])\n\n    # Demand triples that must be covered\n    demand_triples = [(r, s, k) for (r, s, k) in demand.keys()]\n\n    # Allowed assignment tuples: employee, restaurant, shift, skill\n    allowed = []\n    for e in employees:\n        for r in restaurants:\n            for s in shifts:\n                if (e, r, s) not in avail_set:\n                    continue\n                for k in skills:\n                    if (e, k) not in skill_set:\n                        continue\n                    allowed.append((e, r, s, k))\n\n    model.R = pyo.Set(initialize=restaurants)\n    model.S = pyo.Set(initialize=shifts)\n    model.K = pyo.Set(initialize=skills)\n    model.E = pyo.Set(initialize=employees)\n    model.DemandTriples = pyo.Set(initialize=demand_triples, dimen=3)\n    model.Allowed = pyo.Set(initialize=allowed, dimen=4)\n\n    # x[e,r,s,k] = 1 if employee e is assigned to restaurant r, shift s, skill k\n    model.x = pyo.Var(model.Allowed, within=pyo.Binary)\n\n    # u[r,s,k] = unfulfilled positions for (restaurant, shift, skill)\n    model.u = pyo.Var(model.DemandTriples, within=pyo.NonNegativeIntegers)\n\n    # Objective: assignment costs + unfilled penalties\n    def obj_rule(m):\n        cost = 0\n        for (e, r, s, k) in allowed:\n            c = assign_cost.get((e, k), default_cost)\n            cost += c * m.x[e, r, s, k]\n        for (r, s, k) in demand_triples:\n            cost += penalty * m.u[r, s, k]\n        return cost\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand balance: assigned + unfulfilled = demand\n    def demand_balance_rule(m, r, s, k):\n        assigned = 0\n        for e in employees:\n            if (e, r, s, k) in model.Allowed:\n                assigned += m.x[e, r, s, k]\n        return assigned + m.u[r, s, k] == demand[(r, s, k)]\n\n    model.demand_balance = pyo.Constraint(\n        model.DemandTriples, rule=demand_balance_rule\n    )\n\n    # Each employee at most one shift across all restaurants\n    def one_shift_rule(m, e):\n        total = 0\n        for (ee, r, s, k) in allowed:\n            if ee == e:\n                total += m.x[ee, r, s, k]\n        return total <= 1\n\n    model.one_shift = pyo.Constraint(model.E, rule=one_shift_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1239,
+      "completion_tokens": 2036
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.741173982620239,
+   "position": 7,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"restaurants\": [0, 1],\n    \"shifts\": [0, 1],\n    \"employees\": [0, 1, 2, 3, 4, 5, 6, 7],\n    \"skills\": [0, 1],\n    # demand[(restaurant, shift, skill)] = number of positions required\n    \"demand\": {\n        (0, 0, 0): 1, (0, 0, 1): 1,\n        (0, 1, 0): 1, (0, 1, 1): 1,\n        (1, 0, 0): 1, (1, 0, 1): 1,\n        (1, 1, 0): 1, (1, 1, 1): 1,\n    },\n    # penalty per unfulfilled position\n    \"penalty\": 100,\n    # assignment cost[(employee, skill)] = cost of assigning that employee to that skill\n    \"assign_cost\": {\n        (0, 0): 1,\n        (3, 0): 2,\n        (4, 0): 3,\n    },\n    \"default_assign_cost\": 0,\n    # eligibility: list of (employee, restaurant, shift, skill) that are allowed\n    # (employee available for that shift AND has the matching skill)\n    \"eligible\": [\n        (0, 0, 0, 0), (0, 0, 0, 1),\n        (0, 0, 1, 0), (0, 0, 1, 1),\n        (0, 1, 0, 0), (0, 1, 0, 1),\n        (0, 1, 1, 0), (0, 1, 1, 1),\n        (1, 0, 0, 0), (1, 0, 0, 1),\n        (1, 1, 1, 0), (1, 1, 1, 1),\n        (2, 0, 0, 0), (2, 0, 1, 1),\n        (2, 1, 0, 1), (2, 1, 1, 0),\n        (3, 0, 0, 0), (3, 0, 1, 0),\n        (3, 1, 0, 0), (3, 1, 1, 0),\n        (4, 0, 0, 0), (4, 0, 1, 0),\n        (4, 1, 0, 0), (4, 1, 1, 0),\n        (5, 1, 0, 1), (5, 1, 1, 1),\n        (6, 0, 0, 1), (6, 0, 1, 1),\n        (7, 1, 0, 0), (7, 1, 1, 0),\n    ],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # ---- Sets ----\n    model.R = pyo.Set(initialize=d[\"restaurants\"], ordered=True)\n    model.S = pyo.Set(initialize=d[\"shifts\"], ordered=True)\n    model.E = pyo.Set(initialize=d[\"employees\"], ordered=True)\n    model.K = pyo.Set(initialize=d[\"skills\"], ordered=True)\n\n    # Demand index set (restaurant, shift, skill)\n    model.RSK = pyo.Set(\n        initialize=[(r, s, k) for r in d[\"restaurants\"]\n                    for s in d[\"shifts\"] for k in d[\"skills\"]],\n        dimen=3,\n        ordered=True,\n    )\n\n    # Eligible assignment index set (employee, restaurant, shift, skill)\n    model.ERSK = pyo.Set(\n        initialize=[tuple(t) for t in d[\"eligible\"]],\n        dimen=4,\n        ordered=True,\n    )\n\n    # ---- Variables ----\n    model.assign = pyo.Var(model.ERSK, within=pyo.Binary)\n    model.unfilled = pyo.Var(model.RSK, within=pyo.NonNegativeIntegers)\n\n    # ---- Objective ----\n    def obj_rule(m):\n        penalty = d[\"penalty\"]\n        cost_expr = 0\n        for (r, s, k) in m.RSK:\n            cost_expr += penalty * m.unfilled[r, s, k]\n        for (e, r, s, k) in m.ERSK:\n            c = d[\"assign_cost\"].get((e, k), d[\"default_assign_cost\"])\n            cost_expr += c * m.assign[e, r, s, k]\n        return cost_expr\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---- Constraints ----\n\n    # Demand balance: assigned employees + unfilled positions = demand\n    def demand_balance_rule(m, r, s, k):\n        assigned = 0\n        for e in d[\"employees\"]:\n            if (e, r, s, k) in m.ERSK:\n                assigned += m.assign[e, r, s, k]\n        return assigned + m.unfilled[r, s, k] == d[\"demand\"][(r, s, k)]\n\n    model.demand_balance = pyo.Constraint(model.RSK, rule=demand_balance_rule)\n\n    # Each employee assigned to at most one shift across all restaurants\n    def one_shift_rule(m, e):\n        total = 0\n        for (ee, r, s, k) in m.ERSK:\n            if ee == e:\n                total += m.assign[ee, r, s, k]\n        return total <= 1\n\n    model.one_shift = pyo.Constraint(model.E, rule=one_shift_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1235,
+      "completion_tokens": 1697
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.615716218948364,
+   "position": 8,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"restaurants\": [0, 1],\n    \"shifts\": [0, 1],\n    \"skills\": [0],\n    \"employees\": [0, 1, 2, 3, 4, 5, 6, 7],\n    # demand[(restaurant, shift, skill)] = required staff of that skill shift\n    \"demand\": {\n        (0, 0, 0): 2,\n        (0, 1, 0): 1,\n        (1, 0, 0): 2,\n        (1, 1, 0): 1,\n    },\n    # penalty per unfulfilled position\n    \"unfulfilled_penalty\": 100,\n    # assignment costs for specific employees to skill 0 (others default 0)\n    \"assign_cost\": {\n        (0, 0): 1,\n        (3, 0): 2,\n        (4, 0): 3,\n    },\n    \"default_assign_cost\": 0,\n    # employee skills: employees able to work the given skill\n    \"employee_skill\": {\n        0: [0],\n        1: [0],\n        2: [0],\n        3: [0],\n        4: [0],\n        5: [0],\n        6: [0],\n        7: [0],\n    },\n    # availability[(employee, restaurant, shift)] = 1 if employee can work that shift\n    # employees avail for shifts; missing pair means unavailable\n    \"availability\": {\n        (0, 0, 0): 1, (0, 0, 1): 1, (0, 1, 0): 1,\n        (1, 0, 0): 1, (1, 0, 1): 1,\n        (2, 0, 0): 1, (2, 1, 0): 1, (2, 1, 1): 1,\n        (3, 0, 1): 1, (3, 1, 0): 1, (3, 1, 1): 1,\n        (4, 0, 0): 1, (4, 1, 0): 1,\n        (5, 0, 1): 1, (5, 1, 1): 1,\n        (6, 0, 0): 1, (6, 0, 1): 1, (6, 1, 1): 1,\n        (7, 0, 0): 1, (7, 1, 0): 1, (7, 1, 1): 1,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.RESTAURANTS = pyo.Set(initialize=d[\"restaurants\"])\n    m.SHIFTS = pyo.Set(initialize=d[\"shifts\"])\n    m.SKILLS = pyo.Set(initialize=d[\"skills\"])\n    m.EMPLOYEES = pyo.Set(initialize=d[\"employees\"])\n    m.RSK = pyo.Set(\n        initialize=[(r, s, k)\n                    for r in d[\"restaurants\"]\n                    for s in d[\"shifts\"]\n                    for k in d[\"skills\"]],\n        dimen=3,\n    )\n\n    # eligible (r, s, k, e) combinations: available AND skill matches\n    def _eligible():\n        out = []\n        for r in d[\"restaurants\"]:\n            for s in d[\"shifts\"]:\n                for k in d[\"skills\"]:\n                    for e in d[\"employees\"]:\n                        if k in d[\"employee_skill\"].get(e, []):\n                            if d[\"availability\"].get((e, r, s), 0) == 1:\n                                out.append((r, s, k, e))\n        return out\n\n    m.ELIG = pyo.Set(initialize=_eligible(), dimen=4)\n\n    # assignment variable: 1 if employee e works (r,s) in skill k\n    m.x = pyo.Var(m.ELIG, domain=pyo.Binary)\n\n    # unfulfilled positions per (restaurant, shift, skill)\n    m.u = pyo.Var(m.RSK, domain=pyo.NonNegativeIntegers)\n\n    def _cost_assign(r, s, k, e):\n        return d[\"assign_cost\"].get((e, k), d[\"default_assign_cost\"])\n\n    def _mult_x(m, r, s, k, e):\n        return _cost_assign(r, s, k, e) * m.x[r, s, k, e]\n\n    m.SUM_ASSIGN_COST = pyo.Expression(m.ELIG, rule=_mult_x)\n\n    def _cost_unful(m, r, s, k):\n        return d[\"unfulfilled_penalty\"] * m.u[r, s, k]\n\n    m.SUM_UNFUL_COST = pyo.Expression(m.RSK, rule=_cost_unful)\n\n    # Objective: minimize total assignment cost + penalty for unfulfilled positions\n    def obj_rule(m):\n        total = 0\n        for (r, s, k, e) in m.ELIG:\n            total = total + m.SUM_ASSIGN_COST[r, s, k, e]\n        for (r, s, k) in m.RSK:\n            total = total + m.SUM_UNFUL_COST[r, s, k]\n        return total\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Coverage: assigned employees + unfulfilled = demand for each (r, s, k)\n    def coverage_rule(m, r, s, k):\n        assign_sum = 0\n        for e in m.EMPLOYEES:\n            if (r, s, k, e) in m.ELIG:\n                assign_sum = assign_sum + m.x[r, s, k, e]\n        return assign_sum + m.u[r, s, k] == d[\"demand\"][(r, s, k)]\n\n    m.Coverage = pyo.Constraint(m.RSK, rule=coverage_rule)\n\n    # Each employee assigned to at most one shift across all restaurants\n    def once_rule(m, e):\n        total = 0\n        for (r, s, k, ee) in m.ELIG:\n            if ee == e:\n                total = total + m.x[r, s, k, ee]\n        return total <= 1\n\n    m.OneShiftPerEmployee = pyo.Constraint(m.EMPLOYEES, rule=once_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1241,
+      "completion_tokens": 1797
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.431371450424194,
+   "position": 9,
+   "recipe_index": 3
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T10:35:13"
+}

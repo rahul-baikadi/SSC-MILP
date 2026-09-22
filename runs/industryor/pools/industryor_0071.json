@@ -1,0 +1,266 @@
+{
+ "pid": "industryor_0071",
+ "question": "Haus Toys can manufacture and sell toy trucks, toy planes, toy boats, and toy trains. The profit from selling one truck is $5, from one plane is $10, from one boat is $8, and from one train is $7. How many types of toys should Haus Toys manufacture to maximize profit?\n\nThere are 890 units of wood available. Manufacturing one truck requires 12 units of wood, one plane requires 20 units of wood, one boat requires 15 units of wood, and one train requires 10 units of wood.\n\nThere are 500 units of steel available. Manufacturing one plane requires 3 units of steel, one boat requires 5 units of steel, one train requires 4 units of steel, and one truck requires 6 units of steel.\n\nIf Haus Toys manufactures trucks, then they will not manufacture trains.\n\nHowever, if they manufacture boats, they will also manufacture planes.\n\nThe number of toy boats manufactured cannot exceed the number of toy trains manufactured.",
+ "templates": [
+  "Production Planning / Product Mix",
+  "Bin Packing / Cutting Stock"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"TOYS\": [\"truck\", \"plane\", \"boat\", \"train\"],\n    \"profit\": {\"truck\": 5, \"plane\": 10, \"boat\": 8, \"train\": 7},\n    \"wood_use\": {\"truck\": 12, \"plane\": 20, \"boat\": 15, \"train\": 10},\n    \"wood_avail\": 890,\n    \"steel_use\": {\"truck\": 6, \"plane\": 3, \"boat\": 5, \"train\": 4},\n    \"steel_avail\": 500,\n    \"big_M\": 10000,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    toys = d[\"TOYS\"]\n    M = d[\"big_M\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.Toys = pyo.Set(initialize=toys, ordered=True)\n\n    # Variables: integer production quantities (units are indivisible)\n    model.x = pyo.Var(model.Toys, within=pyo.NonNegativeIntegers)\n\n    # Auxiliary binaries for if-then logic\n    model.y_truck = pyo.Var(within=pyo.Binary)\n    model.y_boat = pyo.Var(within=pyo.Binary)\n\n    # Objective: maximize total profit\n    def obj_rule(m):\n        return sum(d[\"profit\"][t] * m.x[t] for t in m.Toys)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Wood availability constraint\n    def wood_rule(m):\n        return sum(d[\"wood_use\"][t] * m.x[t] for t in m.Toys) <= d[\"wood_avail\"]\n    model.wood_con = pyo.Constraint(rule=wood_rule)\n\n    # Steel availability constraint\n    def steel_rule(m):\n        return sum(d[\"steel_use\"][t] * m.x[t] for t in m.Toys) <= d[\"steel_avail\"]\n    model.steel_con = pyo.Constraint(rule=steel_rule)\n\n    # If trucks are manufactured (truck >= 1) then y_truck = 1\n    def truck_link_rule(m):\n        return m.x[\"truck\"] <= M * m.y_truck\n    model.truck_link = pyo.Constraint(rule=truck_link_rule)\n\n    # ... and then trains are not manufactured (train <= M*(1 - y_truck))\n    def no_train_rule(m):\n        return m.x[\"train\"] <= M * (1 - m.y_truck)\n    model.no_train_con = pyo.Constraint(rule=no_train_rule)\n\n    # If boats are manufactured (boat >= 1) then y_boat = 1\n    def boat_link_rule(m):\n        return m.x[\"boat\"] <= M * m.y_boat\n    model.boat_link = pyo.Constraint(rule=boat_link_rule)\n\n    # ... and then planes are also manufactured (plane >= 1)\n    def boat_implies_plane_rule(m):\n        return m.x[\"plane\"] >= m.y_boat\n    model.boat_implies_plane = pyo.Constraint(rule=boat_implies_plane_rule)\n\n    # Boats cannot exceed trains\n    def boat_le_train_rule(m):\n        return m.x[\"boat\"] <= m.x[\"train\"]\n    model.boat_le_train = pyo.Constraint(rule=boat_le_train_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": true,
+     "usage": {
+      "prompt_tokens": 1175,
+      "completion_tokens": 1196
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 2.4729976654052734,
+   "position": 0,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"truck\", \"plane\", \"boat\", \"train\"],\n    \"profit\": {\"truck\": 5, \"plane\": 10, \"boat\": 8, \"train\": 7},\n    \"wood_avail\": 890,\n    \"wood_use\": {\"truck\": 12, \"plane\": 20, \"boat\": 15, \"train\": 10},\n    \"steel_avail\": 500,\n    \"steel_use\": {\"truck\": 6, \"plane\": 3, \"boat\": 5, \"train\": 4},\n    # Big-M values: tight upper bounds on each quantity from the wood limit.\n    \"M_truck\": 890 // 12 + 1,\n    \"M_train\": 890 // 10 + 1,\n    \"M_boat\": 890 // 15 + 1,\n    \"M_plane\": 890 // 20 + 1,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    m.P = pyo.Set(initialize=d[\"products\"])\n\n    # Decision variables: number of each toy manufactured (integer units).\n    m.x = pyo.Var(m.P, within=pyo.NonNegativeIntegers)\n\n    # Binary: y_truck = 1 means \"trucks are the chosen side\" of the\n    # truck/train mutual-exclusion rule.\n    m.y_truck = pyo.Var(within=pyo.Binary)\n\n    # Binary: y_boat = 1 means \"boats are produced\", which forces planes.\n    m.y_boat = pyo.Var(within=pyo.Binary)\n\n    # Objective: maximize total profit.\n    def obj_rule(mm):\n        return sum(d[\"profit\"][i] * mm.x[i] for i in mm.P)\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Constraint 1: wood availability.\n    def wood_rule(mm):\n        return sum(d[\"wood_use\"][i] * mm.x[i] for i in mm.P) <= d[\"wood_avail\"]\n\n    m.wood = pyo.Constraint(rule=wood_rule)\n\n    # Constraint 2: steel availability.\n    def steel_rule(mm):\n        return sum(d[\"steel_use\"][i] * mm.x[i] for i in mm.P) <= d[\"steel_avail\"]\n\n    m.steel = pyo.Constraint(rule=steel_rule)\n\n    # Constraint 3: if trucks are manufactured, then trains are not.\n    # y_truck = 1 -> trains = 0 ; y_truck = 0 -> trucks = 0.\n    def truck_rule(mm):\n        return mm.x[\"truck\"] <= d[\"M_truck\"] * mm.y_truck\n\n    m.truck_link = pyo.Constraint(rule=truck_rule)\n\n    def train_rule(mm):\n        return mm.x[\"train\"] <= d[\"M_train\"] * (1 - mm.y_truck)\n\n    m.train_link = pyo.Constraint(rule=train_rule)\n\n    # Constraint 4: if boats are manufactured, then planes are also manufactured.\n    # y_boat = 1 -> boats may be positive and planes must be positive.\n    def boat_rule(mm):\n        return mm.x[\"boat\"] <= d[\"M_boat\"] * mm.y_boat\n\n    m.boat_link = pyo.Constraint(rule=boat_rule)\n\n    def plane_rule(mm):\n        return mm.x[\"plane\"] >= mm.y_boat\n\n    m.plane_link = pyo.Constraint(rule=plane_rule)\n\n    # Constraint 5: number of boats cannot exceed number of trains.\n    def boat_train_rule(mm):\n        return mm.x[\"boat\"] <= mm.x[\"train\"]\n\n    m.boat_train = pyo.Constraint(rule=boat_train_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": true,
+     "usage": {
+      "prompt_tokens": 1189,
+      "completion_tokens": 4469
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 5577,
+      "completion_tokens": 891
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.831944704055786,
+   "position": 1,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"truck\", \"plane\", \"boat\", \"train\"],\n    \"profit\": {\"truck\": 5, \"plane\": 10, \"boat\": 8, \"train\": 7},\n    \"wood_usage\": {\"truck\": 12, \"plane\": 20, \"boat\": 15, \"train\": 10},\n    \"steel_usage\": {\"truck\": 6, \"plane\": 3, \"boat\": 5, \"train\": 4},\n    \"wood_available\": 890,\n    \"steel_available\": 500,\n    # Big-M upper bounds on production (loose but valid given resource limits)\n    \"big_m\": {\n        \"truck\": 890 // 12 + 1,\n        \"plane\": 890 // 20 + 1,\n        \"boat\": 890 // 15 + 1,\n        \"train\": 890 // 10 + 1,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = d[\"products\"]\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=products)\n\n    # Production quantities (integer number of toys)\n    model.production = pyo.Var(\n        model.P, within=pyo.NonNegativeIntegers, bounds=(0, None)\n    )\n\n    # Binary \"is this product manufactured at all?\" indicators\n    model.makes_truck = pyo.Var(within=pyo.Binary)\n    model.makes_plane = pyo.Var(within=pyo.Binary)\n    model.makes_boat = pyo.Var(within=pyo.Binary)\n    model.makes_train = pyo.Var(within=pyo.Binary)\n\n    # Objective: maximize total profit\n    def obj_rule(m):\n        return sum(d[\"profit\"][p] * m.production[p] for p in m.P)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Wood availability\n    def wood_rule(m):\n        return sum(d[\"wood_usage\"][p] * m.production[p] for p in m.P) <= d[\"wood_available\"]\n\n    model.wood_limit = pyo.Constraint(rule=wood_rule)\n\n    # Steel availability\n    def steel_rule(m):\n        return sum(d[\"steel_usage\"][p] * m.production[p] for p in m.P) <= d[\"steel_available\"]\n\n    model.steel_limit = pyo.Constraint(rule=steel_rule)\n\n    # Linking constraints: production[p] <= bigM * makes_p\n    def link_truck_rule(m):\n        return m.production[\"truck\"] <= d[\"big_m\"][\"truck\"] * m.makes_truck\n\n    model.link_truck = pyo.Constraint(rule=link_truck_rule)\n\n    def link_plane_rule(m):\n        return m.production[\"plane\"] <= d[\"big_m\"][\"plane\"] * m.makes_plane\n\n    model.link_plane = pyo.Constraint(rule=link_plane_rule)\n\n    def link_boat_rule(m):\n        return m.production[\"boat\"] <= d[\"big_m\"][\"boat\"] * m.makes_boat\n\n    model.link_boat = pyo.Constraint(rule=link_boat_rule)\n\n    def link_train_rule(m):\n        return m.production[\"train\"] <= d[\"big_m\"][\"train\"] * m.makes_train\n\n    model.link_train = pyo.Constraint(rule=link_train_rule)\n\n    # If trucks are made, then trains are not made\n    def no_truck_train_rule(m):\n        return m.makes_truck + m.makes_train <= 1\n\n    model.no_truck_train = pyo.Constraint(rule=no_truck_train_rule)\n\n    # If boats are made, then planes are also made\n    def boat_implies_plane_rule(m):\n        return m.makes_boat <= m.makes_plane\n\n    model.boat_implies_plane = pyo.Constraint(rule=boat_implies_plane_rule)\n\n    # Number of boats cannot exceed number of trains\n    def boat_le_train_rule(m):\n        return m.production[\"boat\"] <= m.production[\"train\"]\n\n    model.boat_le_train = pyo.Constraint(rule=boat_le_train_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": true,
+     "usage": {
+      "prompt_tokens": 1169,
+      "completion_tokens": 1409
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 2.452312707901001,
+   "position": 2,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# Every numeric constant from the problem, with the source sentence as a comment.\nDATA = {\n    # \"The profit from selling one truck is $5, from one plane is $10,\n    #  from one boat is $8, and from one train is $7.\"\n    \"profit\": {\"truck\": 5, \"plane\": 10, \"boat\": 8, \"train\": 7},\n\n    # \"There are 890 units of wood available.\"\n    \"wood_avail\": 890,\n    # \"Manufacturing one truck requires 12 units of wood, one plane requires 20\n    #  units of wood, one boat requires 15 units of wood, and one train requires 10.\"\n    \"wood\": {\"truck\": 12, \"plane\": 20, \"boat\": 15, \"train\": 10},\n\n    # \"There are 500 units of steel available.\"\n    \"steel_avail\": 500,\n    # \"Manufacturing one plane requires 3 units of steel, one boat requires 5\n    #  units of steel, one train requires 4 units of steel, and one truck requires 6.\"\n    \"steel\": {\"truck\": 6, \"plane\": 3, \"boat\": 5, \"train\": 4},\n\n    # Big-M for linking x[p] <= M * y[p]; an upper bound on any single product's\n    # output. Wood is the tighter resource (890 units, min usage 10), steel 500\n    # (min usage 3). The wood limit 890 bounds each single-product quantity.\n    \"big_m\": 890,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    products = list(d[\"profit\"].keys())\n\n    model = pyo.ConcreteModel()\n\n    # ---- Sets ----\n    model.P = pyo.Set(initialize=products, ordered=True)\n\n    # ---- Variables ----\n    # Number of toys of each type manufactured (units are indivisible integers).\n    model.x = pyo.Var(model.P, domain=pyo.NonNegativeIntegers)\n\n    # Binary indicator: 1 if any of product p is manufactured, else 0.\n    model.y = pyo.Var(model.P, domain=pyo.Binary)\n\n    # ---- Objective: maximize total profit ----\n    def obj_rule(m):\n        return sum(d[\"profit\"][p] * m.x[p] for p in m.P)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # ---- Constraints ----\n\n    # Wood availability: sum_p wood[p] * x[p] <= 890\n    def wood_rule(m):\n        return sum(d[\"wood\"][p] * m.x[p] for p in m.P) <= d[\"wood_avail\"]\n\n    model.wood_limit = pyo.Constraint(rule=wood_rule)\n\n    # Steel availability: sum_p steel[p] * x[p] <= 500\n    def steel_rule(m):\n        return sum(d[\"steel\"][p] * m.x[p] for p in m.P) <= d[\"steel_avail\"]\n\n    model.steel_limit = pyo.Constraint(rule=steel_rule)\n\n    # Linking x and y: x[p] <= M * y[p]  (big-M linearisation)\n    def link_rule(m, p):\n        return m.x[p] <= d[\"big_m\"] * m.y[p]\n\n    model.link = pyo.Constraint(model.P, rule=link_rule)\n\n    # \"If Haus Toys manufactures trucks, then they will not manufacture trains.\"\n    def truck_not_train_rule(m):\n        return m.y[\"truck\"] + m.y[\"train\"] <= 1\n\n    model.truck_not_train = pyo.Constraint(rule=truck_not_train_rule)\n\n    # \"However, if they manufacture boats, they will also manufacture planes.\"\n    def boat_implies_plane_rule(m):\n        return m.y[\"boat\"] <= m.y[\"plane\"]\n\n    model.boat_implies_plane = pyo.Constraint(rule=boat_implies_plane_rule)\n\n    # \"The number of toy boats manufactured cannot exceed the number of toy trains.\"\n    def boat_le_train_rule(m):\n        return m.x[\"boat\"] <= m.x[\"train\"]\n\n    model.boat_le_train = pyo.Constraint(rule=boat_le_train_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": true,
+     "usage": {
+      "prompt_tokens": 1173,
+      "completion_tokens": 1320
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 2.3966081142425537,
+   "position": 3,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"truck\", \"plane\", \"boat\", \"train\"],\n    \"profit\": {\"truck\": 5, \"plane\": 10, \"boat\": 8, \"train\": 7},\n    \"wood_usage\": {\"truck\": 12, \"plane\": 20, \"boat\": 15, \"train\": 10},\n    \"steel_usage\": {\"truck\": 6, \"plane\": 3, \"boat\": 5, \"train\": 4},\n    \"wood_available\": 890,\n    \"steel_available\": 500,\n    \"big_m\": 1000,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.P = pyo.Set(initialize=d[\"products\"])\n\n    # Decision variables: integer quantities of each toy\n    model.x = pyo.Var(model.P, within=pyo.NonNegativeIntegers)\n\n    # Auxiliary binaries for if-then logic\n    model.y_truck = pyo.Var(within=pyo.Binary)  # 1 if any trucks made\n    model.y_boat = pyo.Var(within=pyo.Binary)   # 1 if any boats made\n\n    # Objective: maximize total profit\n    def obj_rule(m):\n        return sum(d[\"profit\"][p] * m.x[p] for p in m.P)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Wood availability: sum of wood usage <= 890   (<=)\n    def wood_rule(m):\n        return sum(d[\"wood_usage\"][p] * m.x[p] for p in m.P) <= d[\"wood_available\"]\n    model.wood = pyo.Constraint(rule=wood_rule)\n\n    # Steel availability: sum of steel usage <= 500   (<=)\n    def steel_rule(m):\n        return sum(d[\"steel_usage\"][p] * m.x[p] for p in m.P) <= d[\"steel_available\"]\n    model.steel = pyo.Constraint(rule=steel_rule)\n\n    # Truck XOR train: trucks made -> trains not made\n    # x_truck <= M * y_truck  and  x_train <= M * (1 - y_truck)\n    def truck_link_rule(m):\n        return m.x[\"truck\"] <= d[\"big_m\"] * m.y_truck\n    model.truck_link = pyo.Constraint(rule=truck_link_rule)\n\n    def train_link_rule(m):\n        return m.x[\"train\"] <= d[\"big_m\"] * (1 - m.y_truck)\n    model.train_link = pyo.Constraint(rule=train_link_rule)\n\n    # Boats imply planes: boats made -> planes >= 1\n    # x_boat <= M * y_boat  and  x_plane >= y_boat\n    def boat_link_rule(m):\n        return m.x[\"boat\"] <= d[\"big_m\"] * m.y_boat\n    model.boat_link = pyo.Constraint(rule=boat_link_rule)\n\n    def plane_link_rule(m):\n        return m.x[\"plane\"] >= m.y_boat\n    model.plane_link = pyo.Constraint(rule=plane_link_rule)\n\n    # Boats cannot exceed trains: x_boat <= x_train   (<=)\n    def boat_train_rule(m):\n        return m.x[\"boat\"] <= m.x[\"train\"]\n    model.boat_train = pyo.Constraint(rule=boat_train_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": true,
+     "usage": {
+      "prompt_tokens": 1185,
+      "completion_tokens": 1274
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 0.8322558403015137,
+   "position": 4,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Profits ($ per unit) \u2014 \"profit from selling one truck is $5, ... plane $10, ... boat $8, ... train $7\"\n    \"profit\": {\"truck\": 5, \"plane\": 10, \"boat\": 8, \"train\": 7},\n    # Wood usage per unit \u2014 \"one truck requires 12 units of wood, one plane 20, one boat 15, one train 10\"\n    \"wood_use\": {\"truck\": 12, \"plane\": 20, \"boat\": 15, \"train\": 10},\n    # \"There are 890 units of wood available.\"\n    \"wood_avail\": 890,\n    # Steel usage per unit \u2014 \"plane 3, boat 5, train 4, truck 6\"\n    \"steel_use\": {\"truck\": 6, \"plane\": 3, \"boat\": 5, \"train\": 4},\n    # \"There are 500 units of steel available.\"\n    \"steel_avail\": 500,\n    # Big-M: an upper bound on any single product's quantity (bounded by wood: 890/min_use=10 -> 89)\n    \"bigM\": 890,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = list(d[\"profit\"].keys())\n\n    model = pyo.ConcreteModel()\n    model.P = pyo.Set(initialize=products, ordered=True)\n\n    # Decision: number of units manufactured of each toy type\n    model.x = pyo.Var(model.P, within=pyo.NonNegativeIntegers)\n\n    # Binary indicators for if-then logic\n    # y = 1 means trucks are manufactured (forces no trains)\n    model.y = pyo.Var(within=pyo.Binary)\n    # z = 1 means boats are manufactured (forces planes >= 1)\n    model.z = pyo.Var(within=pyo.Binary)\n\n    # Objective: maximize total profit\n    def obj_rule(m):\n        return sum(d[\"profit\"][p] * m.x[p] for p in m.P)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Wood availability constraint\n    def wood_rule(m):\n        return sum(d[\"wood_use\"][p] * m.x[p] for p in m.P) <= d[\"wood_avail\"]\n    model.wood = pyo.Constraint(rule=wood_rule)\n\n    # Steel availability constraint\n    def steel_rule(m):\n        return sum(d[\"steel_use\"][p] * m.x[p] for p in m.P) <= d[\"steel_avail\"]\n    model.steel = pyo.Constraint(rule=steel_rule)\n\n    # \"If Haus Toys manufactures trucks, then they will not manufacture trains.\"\n    # truck <= M*y ; train <= M*(1 - y)\n    def truck_link_rule(m):\n        return m.x[\"truck\"] <= d[\"bigM\"] * m.y\n    model.truck_link = pyo.Constraint(rule=truck_link_rule)\n\n    def train_link_rule(m):\n        return m.x[\"train\"] <= d[\"bigM\"] * (1 - m.y)\n    model.train_link = pyo.Constraint(rule=train_link_rule)\n\n    # \"However, if they manufacture boats, they will also manufacture planes.\"\n    # boat <= M*z ; plane >= z  (planes at least 1 whenever boats produced)\n    def boat_link_rule(m):\n        return m.x[\"boat\"] <= d[\"bigM\"] * m.z\n    model.boat_link = pyo.Constraint(rule=boat_link_rule)\n\n    def plane_link_rule(m):\n        return m.x[\"plane\"] >= m.z\n    model.plane_link = pyo.Constraint(rule=plane_link_rule)\n\n    # \"The number of toy boats manufactured cannot exceed the number of toy trains manufactured.\"\n    def boats_le_trains_rule(m):\n        return m.x[\"boat\"] <= m.x[\"train\"]\n    model.boats_le_trains = pyo.Constraint(rule=boats_le_trains_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": true,
+     "usage": {
+      "prompt_tokens": 1173,
+      "completion_tokens": 1244
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 0.8568310737609863,
+   "position": 5,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"TOYS\": [\"truck\", \"plane\", \"boat\", \"train\"],\n    \"RESOURCES\": [\"wood\", \"steel\"],\n    \"profit\": {\"truck\": 5, \"plane\": 10, \"boat\": 8, \"train\": 7},\n    \"usage\": {\n        \"wood\":  {\"truck\": 12, \"plane\": 20, \"boat\": 15, \"train\": 10},\n        \"steel\": {\"truck\": 6,  \"plane\": 3,  \"boat\": 5,  \"train\": 4},\n    },\n    \"availability\": {\"wood\": 890, \"steel\": 500},\n    \"big_m\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.TOYS = pyo.Set(initialize=d[\"TOYS\"])\n    m.RESOURCES = pyo.Set(initialize=d[\"RESOURCES\"])\n\n    # Production quantities (whole toys)\n    m.produce = pyo.Var(m.TOYS, domain=pyo.NonNegativeIntegers)\n\n    # Binary \"is this toy being manufactured at all?\" indicators\n    m.makes_truck = pyo.Var(domain=pyo.Binary)\n    m.makes_plane = pyo.Var(domain=pyo.Binary)\n    m.makes_boat = pyo.Var(domain=pyo.Binary)\n    m.makes_train = pyo.Var(domain=pyo.Binary)\n\n    # Objective: maximize total profit\n    def obj_rule(mm):\n        return sum(d[\"profit\"][t] * mm.produce[t] for t in mm.TOYS)\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Resource capacity constraints\n    def wood_rule(mm):\n        return sum(d[\"usage\"][\"wood\"][t] * mm.produce[t] for t in mm.TOYS) \\\n            <= d[\"availability\"][\"wood\"]\n    m.wood_capacity = pyo.Constraint(rule=wood_rule)\n\n    def steel_rule(mm):\n        return sum(d[\"usage\"][\"steel\"][t] * mm.produce[t] for t in mm.TOYS) \\\n            <= d[\"availability\"][\"steel\"]\n    m.steel_capacity = pyo.Constraint(rule=steel_rule)\n\n    # Link production quantities to their \"makes\" indicators\n    def link_truck(mm):\n        return mm.produce[\"truck\"] <= d[\"big_m\"] * mm.makes_truck\n    m.link_truck = pyo.Constraint(rule=link_truck)\n\n    def link_plane(mm):\n        return mm.produce[\"plane\"] <= d[\"big_m\"] * mm.makes_plane\n    m.link_plane = pyo.Constraint(rule=link_plane)\n\n    def link_boat(mm):\n        return mm.produce[\"boat\"] <= d[\"big_m\"] * mm.makes_boat\n    m.link_boat = pyo.Constraint(rule=link_boat)\n\n    def link_train(mm):\n        return mm.produce[\"train\"] <= d[\"big_m\"] * mm.makes_train\n    m.link_train = pyo.Constraint(rule=link_train)\n\n    # If trucks are manufactured, then trains are not\n    def truck_no_train_a(mm):\n        return mm.produce[\"truck\"] <= d[\"big_m\"] * mm.makes_truck\n    m.truck_no_train_a = pyo.Constraint(rule=truck_no_train_a)\n\n    def truck_no_train_b(mm):\n        return mm.produce[\"train\"] <= d[\"big_m\"] * (1 - mm.makes_truck)\n    m.truck_no_train_b = pyo.Constraint(rule=truck_no_train_b)\n\n    # If boats are manufactured, then planes are also manufactured\n    def boat_implies_plane_a(mm):\n        return mm.produce[\"boat\"] <= d[\"big_m\"] * mm.makes_plane\n    m.boat_implies_plane_a = pyo.Constraint(rule=boat_implies_plane_a)\n\n    def boat_implies_plane_b(mm):\n        return mm.produce[\"plane\"] >= mm.makes_boat\n    m.boat_implies_plane_b = pyo.Constraint(rule=boat_implies_plane_b)\n\n    # Number of boats cannot exceed number of trains\n    def boats_le_trains(mm):\n        return mm.produce[\"boat\"] <= mm.produce[\"train\"]\n    m.boats_le_trains = pyo.Constraint(rule=boats_le_trains)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": true,
+     "usage": {
+      "prompt_tokens": 1169,
+      "completion_tokens": 1426
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 0.8597867488861084,
+   "position": 6,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# =============================================================================\n# PROBLEM: Haus Toys production planning\n# -----------------------------------------------------------------------------\n# DECISION VARIABLES\n#   x[p] = number of toys of type p manufactured, p in PRODUCTS\n#          domain: NonNegativeIntegers (toys are indivisible units)\n#   y[p] = binary indicator, 1 if any of product p is manufactured, else 0\n#          domain: Binary\n#\n# OBJECTIVE (maximize)\n#   Total profit = sum_p profit[p] * x[p]\n#\n# CONSTRAINTS\n#   (1) Wood availability:  sum_p wood[p] * x[p] <= wood_avail\n#   (2) Steel availability: sum_p steel[p] * x[p] <= steel_avail\n#   (3) If trucks are made, then no trains:  x[truck] <= M * (1 - y[train])\n#       (equivalently y[truck] + y[train] <= 1)\n#   (4) If boats are made, then planes are made:  y[boat] <= y[plane]\n#   (5) Boats cannot exceed trains:  x[boat] <= x[train]\n#   (6) Linking: x[p] <= M * y[p]  for all p\n# =============================================================================\n\nDATA = {\n    \"products\": [\"truck\", \"plane\", \"boat\", \"train\"],\n    \"profit\": {\"truck\": 5, \"plane\": 10, \"boat\": 8, \"train\": 7},\n    \"wood\": {\"truck\": 12, \"plane\": 20, \"boat\": 15, \"train\": 10},\n    \"steel\": {\"truck\": 6, \"plane\": 3, \"boat\": 5, \"train\": 4},\n    \"wood_avail\": 890,\n    \"steel_avail\": 500,\n    \"big_m\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = d[\"products\"]\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=products)\n\n    model.x = pyo.Var(model.P, within=pyo.NonNegativeIntegers)\n    model.y = pyo.Var(model.P, within=pyo.Binary)\n\n    # Objective: maximize total profit\n    def obj_rule(m):\n        return sum(d[\"profit\"][p] * m.x[p] for p in m.P)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # (1) Wood availability\n    def wood_rule(m):\n        return sum(d[\"wood\"][p] * m.x[p] for p in m.P) <= d[\"wood_avail\"]\n\n    model.wood_con = pyo.Constraint(rule=wood_rule)\n\n    # (2) Steel availability\n    def steel_rule(m):\n        return sum(d[\"steel\"][p] * m.x[p] for p in m.P) <= d[\"steel_avail\"]\n\n    model.steel_con = pyo.Constraint(rule=steel_rule)\n\n    # (3) If trucks are made, then no trains: y[truck] + y[train] <= 1\n    def truck_train_rule(m):\n        return m.y[\"truck\"] + m.y[\"train\"] <= 1\n\n    model.truck_train_con = pyo.Constraint(rule=truck_train_rule)\n\n    # (4) If boats are made, then planes are made: y[boat] <= y[plane]\n    def boat_plane_rule(m):\n        return m.y[\"boat\"] <= m.y[\"plane\"]\n\n    model.boat_plane_con = pyo.Constraint(rule=boat_plane_rule)\n\n    # (5) Boats cannot exceed trains: x[boat] <= x[train]\n    def boat_train_rule(m):\n        return m.x[\"boat\"] <= m.x[\"train\"]\n\n    model.boat_train_con = pyo.Constraint(rule=boat_train_rule)\n\n    # (6) Linking: x[p] <= M * y[p]\n    def link_rule(m, p):\n        return m.x[p] <= d[\"big_m\"] * m.y[p]\n\n    model.link_con = pyo.Constraint(model.P, rule=link_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": true,
+     "usage": {
+      "prompt_tokens": 1189,
+      "completion_tokens": 853
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": true,
+     "usage": {
+      "prompt_tokens": 1962,
+      "completion_tokens": 971
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 0.6923866271972656,
+   "position": 7,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem\n# ---------------------------------------------------------------------------\nDATA = {\n    \"products\": [\"truck\", \"plane\", \"boat\", \"train\"],\n    \"profit\": {\"truck\": 5, \"plane\": 10, \"boat\": 8, \"train\": 7},\n    # wood (resource 1)\n    \"wood_avail\": 890,\n    \"wood_use\": {\"truck\": 12, \"plane\": 20, \"boat\": 15, \"train\": 10},\n    # steel (resource 2)\n    \"steel_avail\": 500,\n    \"steel_use\": {\"truck\": 6, \"plane\": 3, \"boat\": 5, \"train\": 4},\n    # big-M for unit counts: upper bound never reached (most restrictive ratio\n    # wood gives <= 890; steel gives <= 500/3), so 890 is a safe bound.\n    \"big_M\": 890,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # ---- Sets -------------------------------------------------------------\n    model.P = pyo.Set(initialize=d[\"products\"])\n\n    # ---- Variables --------------------------------------------------------\n    model.x = pyo.Var(model.P, domain=pyo.NonNegativeIntegers)\n\n    # binary indicator: 1 if we manufacture trucks at all\n    model.z_truck = pyo.Var(domain=pyo.Binary)\n    # binary indicator: 1 if we manufacture boats at all\n    model.z_boat = pyo.Var(domain=pyo.Binary)\n\n    # ---- Objective --------------------------------------------------------\n    model.obj = pyo.Objective(\n        expr=sum(d[\"profit\"][p] * model.x[p] for p in model.P),\n        sense=pyo.maximize,\n    )\n\n    # ---- Constraints ------------------------------------------------------\n\n    # Wood availability\n    def wood_rule(m):\n        return sum(d[\"wood_use\"][p] * m.x[p] for p in m.P) <= d[\"wood_avail\"]\n    model.wood = pyo.Constraint(rule=wood_rule)\n\n    # Steel availability\n    def steel_rule(m):\n        return sum(d[\"steel_use\"][p] * m.x[p] for p in m.P) <= d[\"steel_avail\"]\n    model.steel = pyo.Constraint(rule=steel_rule)\n\n    # Link: products made -> product_pos made (truck)\n    def truck_pos_link(m):\n        return m.x[\"truck\"] <= d[\"big_M\"] * m.z_truck\n    model.truck_pos_link = pyo.Constraint(rule=truck_pos_link)\n\n    # If trucks made, then NOT trains (assumption-of-violation + indicator)\n    def trucks_forbid_trains(m):\n        return m.x[\"train\"] <= d[\"big_M\"] * (1 - m.z_truck)\n    model.trucks_forbid_trains = pyo.Constraint(rule=trucks_forbid_trains)\n\n    # Link: products made -> product_pos made (boat)\n    def boat_pos_link(m):\n        return m.x[\"boat\"] <= d[\"big_M\"] * m.z_boat\n    model.boat_pos_link = pyo.Constraint(rule=boat_pos_link)\n\n    # If boats made, then planes are also made\n    def boat_implies_plane(m):\n        return m.x[\"plane\"] >= m.z_boat\n    model.boat_implies_plane = pyo.Constraint(rule=boat_implies_plane)\n\n    # Boats cannot exceed trains\n    def boats_le_trains(m):\n        return m.x[\"boat\"] <= m.x[\"train\"]\n    model.boats_le_trains = pyo.Constraint(rule=boats_le_trains)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": true,
+     "usage": {
+      "prompt_tokens": 1175,
+      "completion_tokens": 1299
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 0.7121362686157227,
+   "position": 8,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"truck\", \"plane\", \"boat\", \"train\"],\n    \"profit\": {\"truck\": 5, \"plane\": 10, \"boat\": 8, \"train\": 7},\n    \"wood_usage\": {\"truck\": 12, \"plane\": 20, \"boat\": 15, \"train\": 10},\n    \"steel_usage\": {\"truck\": 6, \"plane\": 3, \"boat\": 5, \"train\": 4},\n    \"wood_avail\": 890,\n    \"steel_avail\": 500,\n    \"big_m\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.P = pyo.Set(initialize=d[\"products\"])\n\n    # x[p]: number of toys of type p manufactured (integer, nonnegative)\n    m.x = pyo.Var(m.P, domain=pyo.NonNegativeIntegers)\n\n    # Binary indicators for the if-then logic\n    m.y_truck = pyo.Var(domain=pyo.Binary)  # 1 iff trucks produced\n    m.y_boat = pyo.Var(domain=pyo.Binary)   # 1 iff boats produced\n\n    # Objective: maximize total profit\n    m.obj = pyo.Objective(\n        expr=sum(d[\"profit\"][p] * m.x[p] for p in m.P),\n        sense=pyo.maximize,\n    )\n\n    # Wood availability: total wood usage <= 890\n    m.wood = pyo.Constraint(\n        expr=sum(d[\"wood_usage\"][p] * m.x[p] for p in m.P) <= d[\"wood_avail\"]\n    )\n\n    # Steel availability: total steel usage <= 500\n    m.steel = pyo.Constraint(\n        expr=sum(d[\"steel_usage\"][p] * m.x[p] for p in m.P) <= d[\"steel_avail\"]\n    )\n\n    # If trucks are manufactured then trains are NOT manufactured.\n    # truck <= M * y_truck  (force y_truck=1 when trucks made)\n    # train <= M * (1 - y_truck)  (force train=0 when y_truck=1)\n    m.if_truck_then = pyo.Constraint(\n        expr=m.x[\"truck\"] <= d[\"big_m\"] * m.y_truck\n    )\n    m.if_truck_then_not_train = pyo.Constraint(\n        expr=m.x[\"train\"] <= d[\"big_m\"] * (1 - m.y_truck)\n    )\n\n    # If boats are manufactured then planes are also manufactured.\n    # boat <= M * y_boat ; plane >= y_boat (=> plane >= 1 when boat active)\n    m.if_boat_then = pyo.Constraint(\n        expr=m.x[\"boat\"] <= d[\"big_m\"] * m.y_boat\n    )\n    m.if_boat_then_plane = pyo.Constraint(\n        expr=m.x[\"plane\"] >= m.y_boat\n    )\n\n    # Number of boats cannot exceed number of trains.\n    m.boat_le_train = pyo.Constraint(\n        expr=m.x[\"boat\"] <= m.x[\"train\"]\n    )\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": true,
+     "usage": {
+      "prompt_tokens": 1185,
+      "completion_tokens": 1065
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 2.4270377159118652,
+   "position": 9,
+   "recipe_index": 2
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T10:34:27"
+}

@@ -1,0 +1,253 @@
+{
+ "pid": "optibench_0012",
+ "question": "A man on a strict diet only drinks meal replacement drinks from two brands, alpha and omega. The alpha brand drink contains 30 grams of protein, 20 grams of sugar, and 350 calories per bottle. The omega brand drink contains 20 grams of protein, 15 grams of sugar, and 300 calories per bottle. The man wants to get at least 100 grams of protein and 2000 calories. In addition, because the omega brand drink contains tiny amounts of caffeine, at most 35% of the drink should be omega brand. How many bottles of each should he drink to minimize his sugar intake?",
+ "templates": [
+  "Blending / Diet"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"brands\": [\"alpha\", \"omega\"],\n    # per-bottle contents: [protein_g, sugar_g, calories]\n    \"protein\": {\"alpha\": 30, \"omega\": 20},\n    \"sugar\":   {\"alpha\": 20, \"omega\": 15},\n    \"calories\": {\"alpha\": 350, \"omega\": 300},\n    # requirements\n    \"protein_min\": 100,\n    \"calories_min\": 2000,\n    # at most 35% of total bottles may be omega\n    \"omega_frac_max\": 0.35,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.BRANDS = pyo.Set(initialize=d[\"brands\"])\n\n    # x[b] = number of bottles of brand b to drink\n    model.bottles = pyo.Var(model.BRANDS, within=pyo.NonNegativeIntegers)\n\n    # Objective: minimize total sugar intake\n    def sugar_rule(m):\n        return sum(d[\"sugar\"][b] * m.bottles[b] for b in m.BRANDS)\n    model.obj = pyo.Objective(rule=sugar_rule, sense=pyo.minimize)\n\n    # Protein requirement: at least protein_min grams\n    def protein_rule(m):\n        return sum(d[\"protein\"][b] * m.bottles[b] for b in m.BRANDS) >= d[\"protein_min\"]\n    model.protein_req = pyo.Constraint(rule=protein_rule)\n\n    # Calorie requirement: at least calories_min\n    def calorie_rule(m):\n        return sum(d[\"calories\"][b] * m.bottles[b] for b in m.BRANDS) >= d[\"calories_min\"]\n    model.calorie_req = pyo.Constraint(rule=calorie_rule)\n\n    # Omega fraction: omega <= omega_frac_max * (alpha + omega)\n    # Linearised: (1 - frac)*omega - frac*alpha <= 0\n    def omega_frac_rule(m):\n        frac = d[\"omega_frac_max\"]\n        return (1 - frac) * m.bottles[\"omega\"] - frac * m.bottles[\"alpha\"] <= 0\n    model.omega_fraction = pyo.Constraint(rule=omega_frac_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 945,
+      "completion_tokens": 782
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 3.8329391479492188,
+   "position": 0,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ----------------------------------------------------------------------------\n# Decision variables (brands alpha, omega, indexed by the set DIET_BRANDS):\n#   x[brand] : number of bottles of that brand to drink\n#              domain: NonNegativeIntegers, no bounds given => 0..+inf\n#\n# Objective (words):\n#   Minimize total sugar (grams) =               min 20*x_alpha + 15*x_omega\n#\n# Constraints, each traced to a source sentence:\n#   (protein C1) \"at least 100 grams of protein\"\n#        30*x_alpha + 20*x_omega >= 100\n#    (calorie C2) \"and 2000 calories\"\n#        350*x_alpha + 300*x_omega >= 2000\n#   (share/..scaling) \"at most 35 % of the omega ... thus at most 35 %\n#                        of the drink should be omega brand\"\n#        x_omega <= 0.35*(x_alpha + x_omega)\n#        <- linearised without division, proven positive denominator total>0:\n#        0.65*x_omega - 0.35*x_alpha <= 0     (direction checked a second time)\n# ----------------------------------------------------------------------------\n\nDATA = {\n    \"brands\":          (\"alpha\", \"omega\"),\n    \"protein_g\":        {\"alpha\": 30,   \"omega\": 20},\n    \"sugar_g\":          {\"alpha\": 20,   \"omega\": 15},\n    \"calories_kcal\":    {\"alpha\": 350,  \"omega\": 300},\n    \"min_protein_g\":    100,\n    \"min_calories_kcal\": 2000,\n    \"omega_max_fraction\": 0.35,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data if data is not None else DATA\n\n    m = pyo.ConcreteModel()\n\n    # ------------------------------------------------------------------ Sets\n    m.BRANDS = pyo.Set(initialize=list(d[\"brands\"]))\n\n    # ------------------------------------------------------------- Variables\n    m.x = pyo.Var(\n        m.BRANDS,\n        domain=pyo.NonNegativeIntegers,\n        bounds=(0, None)\n    )\n\n    # -------------------------------------------------------------- Objective\n    def sugar_bal(m):\n        return sum(d[\"sugar_g\"][b] * m.x[b] for b in m.BRANDS)\n\n    m.obj = pyo.Objective(expr=sugar_bal(m), sense=pyo.minimize)\n\n    # ------------------------------------------------------------ Constraints\n    def min_protein_rule(m):\n        lhs = sum(d[\"protein_g\"][b] * m.x[b] for b in m.BRANDS)\n        return lhs >= d[\"min_protein_g\"]\n\n    def min_calories_rule(m):\n        lhs = sum(d[\"calories_kcal\"][b] * m.x[b] for b in m.BRANDS)\n        return lhs >= d[\"min_calories_kcal\"]\n\n    def omega_share_rule(m):\n        alpha = str([b for b in d[\"brands\"] if b != \"omega\"][0])  # \"alpha\"\n        lb     = d[\"omega_max_fraction\"]\n        lhs = m.x[\"omega\"] - lb * (m.x[alpha] + m.x[\"omega\"])      # x - fN<=0*\n        # *equivalently; expand linearly:\n        # m.x[\"omega\"] <= lb*(inside...) can leave explicit<= vs expanded:\n        return lhs <= 0.0\n\n    # add slack number bound doesn't overflow; write epsilon safe optional:\n    m.proteinConstraint  = pyo.Constraint(rule=min_protein_rule)      # was lamb.\n    m.caloriesConstraint = pyo.Constraint(rule=min_calories_rule)\n    m.omegaShareConstraint = pyo.Constraint(rule=omega_share_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 965,
+      "completion_tokens": 3485
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 21.803167819976807,
+   "position": 1,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"The alpha brand drink contains 30 grams of protein, 20 grams of sugar, and 350 calories per bottle.\"\n    \"protein_alpha\": 30,\n    \"sugar_alpha\": 20,\n    \"calories_alpha\": 350,\n    # \"The omega brand drink contains 20 grams of protein, 15 grams of sugar, and 300 calories per bottle.\"\n    \"protein_omega\": 20,\n    \"sugar_omega\": 15,\n    \"calories_omega\": 300,\n    # \"The man wants to get at least 100 grams of protein and 2000 calories.\"\n    \"protein_req\": 100,\n    \"calories_req\": 2000,\n    # \"at most 35% of the drink should be omega brand\"\n    \"omega_max_frac\": 0.35,\n    # brand labels\n    \"alpha\": \"alpha\",\n    \"omega\": \"omega\",\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    a = d[\"alpha\"]\n    o = d[\"omega\"]\n\n    model = pyo.ConcreteModel()\n\n    model.BRANDS = pyo.Set(initialize=[a, o])\n\n    # x[b] = number of bottles of brand b to drink\n    model.x = pyo.Var(model.BRANDS, within=pyo.NonNegativeIntegers)\n\n    # protein content per brand\n    protein = {a: d[\"protein_alpha\"], o: d[\"protein_omega\"]}\n    sugar = {a: d[\"sugar_alpha\"], o: d[\"sugar_omega\"]}\n    calories = {a: d[\"calories_alpha\"], o: d[\"calories_omega\"]}\n\n    # Objective: minimize total sugar intake\n    model.obj = pyo.Objective(\n        expr=sum(sugar[b] * model.x[b] for b in model.BRANDS),\n        sense=pyo.minimize,\n    )\n\n    # Protein requirement: >= 100 grams\n    def protein_rule(m):\n        return sum(protein[b] * m.x[b] for b in m.BRANDS) >= d[\"protein_req\"]\n    model.protein_con = pyo.Constraint(rule=protein_rule)\n\n    # Calorie requirement: >= 2000 calories\n    def calorie_rule(m):\n        return sum(calories[b] * m.x[b] for b in m.BRANDS) >= d[\"calories_req\"]\n    model.calorie_con = pyo.Constraint(rule=calorie_rule)\n\n    # Omega at most 35% of total bottles:\n    # x_o <= f * (x_a + x_o)  ->  (1 - f) * x_o - f * x_a <= 0\n    def omega_frac_rule(m):\n        f = d[\"omega_max_frac\"]\n        return (1 - f) * m.x[o] - f * m.x[a] <= 0\n    model.omega_frac_con = pyo.Constraint(rule=omega_frac_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 949,
+      "completion_tokens": 945
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.667296886444092,
+   "position": 2,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"The alpha brand drink contains 30 grams of protein ... per bottle\"\n    \"protein_alpha\": 30,\n    # \"The omega brand drink contains 20 grams of protein ... per bottle\"\n    \"protein_omega\": 20,\n    # \"The alpha brand drink contains ... 20 grams of sugar ... per bottle\"\n    \"sugar_alpha\": 20,\n    # \"The omega brand drink contains ... 15 grams of sugar ... per bottle\"\n    \"sugar_omega\": 15,\n    # \"The alpha brand drink contains ... 350 calories per bottle\"\n    \"calories_alpha\": 350,\n    # \"The omega brand drink contains ... 300 calories per bottle\"\n    \"calories_omega\": 300,\n    # \"The man wants to get at least 100 grams of protein\"\n    \"protein_min\": 100,\n    # \"The man wants to get at least ... 2000 calories\"\n    \"calories_min\": 2000,\n    # \"at most 35% of the drink should be omega brand\"\n    \"omega_max_fraction\": 0.35,\n    # brand names\n    \"brands\": [\"alpha\", \"omega\"],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # --- Set: brands ---\n    model.BRANDS = pyo.Set(initialize=d[\"brands\"])\n\n    # --- Variables: bottles of each brand (integer, nonnegative) ---\n    model.x = pyo.Var(model.BRANDS, within=pyo.NonNegativeIntegers)\n\n    # --- Objective: minimize total sugar intake ---\n    def obj_rule(m):\n        return (d[\"sugar_alpha\"] * m.x[\"alpha\"]\n                + d[\"sugar_omega\"] * m.x[\"omega\"])\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --- Protein requirement: >= 100 g ---\n    def protein_rule(m):\n        return (d[\"protein_alpha\"] * m.x[\"alpha\"]\n                + d[\"protein_omega\"] * m.x[\"omega\"]) >= d[\"protein_min\"]\n\n    model.protein_constraint = pyo.Constraint(rule=protein_rule)\n\n    # --- Calorie requirement: >= 2000 ---\n    def calorie_rule(m):\n        return (d[\"calories_alpha\"] * m.x[\"alpha\"]\n                + d[\"calories_omega\"] * m.x[\"omega\"]) >= d[\"calories_min\"]\n\n    model.calorie_constraint = pyo.Constraint(rule=calorie_rule)\n\n    # --- Omega at most 35% of total drink ---\n    # x_omega <= f * (x_alpha + x_omega)\n    # => x_omega - f*x_alpha - f*x_omega <= 0\n    # => (1 - f)*x_omega - f*x_alpha <= 0\n    def omega_ratio_rule(m):\n        f = d[\"omega_max_fraction\"]\n        return (1 - f) * m.x[\"omega\"] - f * m.x[\"alpha\"] <= 0\n\n    model.omega_ratio_constraint = pyo.Constraint(rule=omega_ratio_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 949,
+      "completion_tokens": 1090
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.1443798542022705,
+   "position": 3,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "\"\"\"\nDiet blending MILP \u2014 meal replacement drinks (alpha / omega)\n==========================================================\n\nDECISION VARIABLES\n  x[j] in NonNegativeIntegers, j \u2208 {alpha, omega}\n      : bottles consumed of brand j\n\nOBJECTIVE (minimize)\n  Total sugar intake (grams):\n      min  20 * x[alpha] + 15 * x[omega]\n\nCONSTRAINTS (each mapped to its source sentence)\n  (C1) Protein requirement  : \"at least 100 grams of protein\"\n        30 * x[alpha] + 20 * x[omega] >= 100\n  (C2) Calorie requirement  : \"at least ... 2000 calories\"\n        350 * x[alpha] + 300 * x[omega] >= 2000\n  (C3) Omega ratio          : \"at most 35% of the drink should be omega brand\"\n        x[omega] <= 0.35 * (x[alpha] + x[omega])\n        => linearised:  0.65 * x[omega] - 0.35 * x[alpha] <= 0\n\"\"\"\n\nimport pyomo.environ as pyo\n\nDATA = {\n    \"sets\": {\n        \"P\": [\"alpha\", \"omega\"],\n    },\n    \"sugar\": {\n        \"alpha\": 20,\n        \"omega\": 15,\n    },\n    \"protein\": {\n        \"alpha\": 30,\n        \"omega\": 20,\n    },\n    \"calories\": {\n        \"alpha\": 350,\n        \"omega\": 300,\n    },\n    \"protein_min\": 100,\n    \"calories_min\": 2000,\n    \"omega_ratio_max\": 0.35,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    p_list = list(d[\"sets\"][\"P\"])\n    model.P = pyo.Set(initialize=p_list)\n\n    sugar = d[\"sugar\"]\n    protein = d[\"protein\"]\n    calories = d[\"calories\"]\n\n    model.x = pyo.Var(model.P, within=pyo.NonNegativeIntegers)\n\n    def obj_rule(m):\n        return sum(sugar[j] * m.x[j] for j in m.P)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    def protein_rule(m):\n        return sum(protein[j] * m.x[j] for j in m.P) >= d[\"protein_min\"]\n\n    model.protein_req = pyo.Constraint(rule=protein_rule)\n\n    def calorie_rule(m):\n        return sum(calories[j] * m.x[j] for j in m.P) >= d[\"calories_min\"]\n\n    model.calorie_req = pyo.Constraint(rule=calorie_rule)\n\n    def omega_ratio_rule(m):\n        return (1 - d[\"omega_ratio_max\"]) * m.x[\"omega\"] - d[\"omega_ratio_max\"] * m.x[\"alpha\"] <= 0\n\n    model.omega_ratio = pyo.Constraint(rule=omega_ratio_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 965,
+      "completion_tokens": 3747
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1905,
+      "completion_tokens": 683
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 30.750200986862183,
+   "position": 4,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"brands\": [\"alpha\", \"omega\"],\n    # per-bottle content: [protein, sugar, calories]\n    \"protein_alpha\": 30,\n    \"sugar_alpha\": 20,\n    \"cal_alpha\": 350,\n    \"protein_omega\": 20,\n    \"sugar_omega\": 15,\n    \"cal_omega\": 300,\n    \"min_protein\": 100,\n    \"min_calories\": 2000,\n    \"max_omega_fraction\": 0.35,\n}\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # --- Sets ---\n    m.I = pyo.Set(initialize=d[\"brands\"])\n\n    # --- Data maps ---\n    protein = {\"alpha\": d[\"protein_alpha\"], \"omega\": d[\"protein_omega\"]}\n    sugar = {\"alpha\": d[\"sugar_alpha\"], \"omega\": d[\"sugar_omega\"]}\n    cal = {\"alpha\": d[\"cal_alpha\"], \"omega\": d[\"cal_omega\"]}\n\n    # --- Variables: bottles of each brand, non-negative integers ---\n    m.x = pyo.Var(m.I, within=pyo.NonNegativeIntegers, bounds=(0, None),\n                  initialize=0)\n\n    # --- Objective: minimize total sugar ---\n    # sugar intake = 20*x_alpha + 15*x_omega  -> minimize\n    m.obj = pyo.Objective(\n        expr=sum(sugar[i] * m.x[i] for i in m.I),\n        sense=pyo.minimize,\n    )\n\n    # --- Constraint: at least 100 g protein (>=) ---\n    m.protein_req = pyo.Constraint(\n        expr=sum(protein[i] * m.x[i] for i in m.I) >= d[\"min_protein\"],\n    )\n\n    # --- Constraint: at least 2000 calories (>=) ---\n    m.calorie_req = pyo.Constraint(\n        expr=sum(cal[i] * m.x[i] for i in m.I) >= d[\"min_calories\"],\n    )\n\n    # --- Constraint: omega fraction <= 35% ---\n    # x_omega <= 0.35*(x_alpha + x_omega)\n    # => (1-0.35)*x_omega - 0.35*x_alpha <= 0\n    frac = d[\"max_omega_fraction\"]\n    m.omega_ratio = pyo.Constraint(\n        expr=(1 - frac) * m.x[\"omega\"] - frac * m.x[\"alpha\"] <= 0,\n    )\n\n    return m\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 961,
+      "completion_tokens": 874
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.488986492156982,
+   "position": 5,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"brands\": [\"alpha\", \"omega\"],\n    \"protein\": {\"alpha\": 30, \"omega\": 20},      # grams per bottle\n    \"sugar\": {\"alpha\": 20, \"omega\": 15},        # grams per bottle\n    \"calories\": {\"alpha\": 350, \"omega\": 300},   # calories per bottle\n    \"min_protein\": 100,                          # grams required\n    \"min_calories\": 2000,                        # calories required\n    \"max_omega_fraction\": 0.35,                  # at most 35% omega\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.I = pyo.Set(initialize=d[\"brands\"])\n\n    # Variables: whole bottles of each brand\n    model.bottles = pyo.Var(model.I, within=pyo.NonNegativeIntegers)\n\n    # Objective: minimize total sugar\n    def obj_rule(m):\n        return sum(d[\"sugar\"][i] * m.bottles[i] for i in m.I)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Protein requirement\n    def protein_rule(m):\n        return sum(d[\"protein\"][i] * m.bottles[i] for i in m.I) >= d[\"min_protein\"]\n    model.protein_req = pyo.Constraint(rule=protein_rule)\n\n    # Calorie requirement\n    def calorie_rule(m):\n        return sum(d[\"calories\"][i] * m.bottles[i] for i in m.I) >= d[\"min_calories\"]\n    model.calorie_req = pyo.Constraint(rule=calorie_rule)\n\n    # Omega fraction <= 35%: bottles[omega] <= f*(bottles[alpha]+bottles[omega])\n    # linearised: (1-f)*bottles[omega] - f*bottles[alpha] <= 0\n    f = d[\"max_omega_fraction\"]\n\n    def omega_fraction_rule(m):\n        return (1 - f) * m.bottles[\"omega\"] - f * m.bottles[\"alpha\"] <= 0\n    model.omega_fraction = pyo.Constraint(rule=omega_fraction_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 945,
+      "completion_tokens": 837
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.427014112472534,
+   "position": 6,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"protein_alpha\": 30,\n    \"sugar_alpha\": 20,\n    \"cal_alpha\": 350,\n    \"protein_omega\": 20,\n    \"sugar_omega\": 15,\n    \"cal_omega\": 300,\n    \"protein_req\": 100,\n    \"cal_req\": 2000,\n    \"omega_max_frac\": 0.35,\n}\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Variables: bottles of each brand (integer counts)\n    model.x = pyo.Var(domain=pyo.NonNegativeIntegers)  # alpha\n    model.y = pyo.Var(domain=pyo.NonNegativeIntegers)  # omega\n\n    # Objective: minimize total sugar\n    model.obj = pyo.Objective(\n        expr=d[\"sugar_alpha\"] * model.x + d[\"sugar_omega\"] * model.y,\n        sense=pyo.minimize,\n    )\n\n    # Protein >= required  (>=)\n    model.protein = pyo.Constraint(\n        expr=d[\"protein_alpha\"] * model.x + d[\"protein_omega\"] * model.y >= d[\"protein_req\"]\n    )\n\n    # Calories >= required  (>=)\n    model.calories = pyo.Constraint(\n        expr=d[\"cal_alpha\"] * model.x + d[\"cal_omega\"] * model.y >= d[\"cal_req\"]\n    )\n\n    # Omega at most 35% of total:  y <= 0.35 (x + y)\n    # => (1 - 0.35) y - 0.35 x <= 0\n    model.omega_frac = pyo.Constraint(\n        expr=(1 - d[\"omega_max_frac\"]) * model.y - d[\"omega_max_frac\"] * model.x <= 0\n    )\n\n    return model\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 961,
+      "completion_tokens": 722
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 3.713287591934204,
+   "position": 7,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"protein_alpha\": 30,\n    \"protein_omega\": 20,\n    \"sugar_alpha\": 20,\n    \"sugar_omega\": 15,\n    \"cal_alpha\": 350,\n    \"cal_omega\": 300,\n    \"protein_req\": 100,\n    \"cal_req\": 2000,\n    \"omega_fraction_max\": 0.35,\n    \"brands\": [\"alpha\", \"omega\"],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.I = pyo.Set(initialize=d[\"brands\"])\n\n    m.x = pyo.Var(m.I, within=pyo.NonNegativeIntegers)\n\n    def sugar_rule(m):\n        return d[\"sugar_alpha\"] * m.x[\"alpha\"] + d[\"sugar_omega\"] * m.x[\"omega\"]\n    m.obj = pyo.Objective(expr=sugar_rule(m), sense=pyo.minimize)\n\n    def protein_rule(m):\n        return d[\"protein_alpha\"] * m.x[\"alpha\"] + d[\"protein_omega\"] * m.x[\"omega\"] >= d[\"protein_req\"]\n    m.protein = pyo.Constraint(expr=protein_rule(m))\n\n    def cal_rule(m):\n        return d[\"cal_alpha\"] * m.x[\"alpha\"] + d[\"cal_omega\"] * m.x[\"omega\"] >= d[\"cal_req\"]\n    m.calories = pyo.Constraint(expr=cal_rule(m))\n\n    def omega_share_rule(m):\n        f = d[\"omega_fraction_max\"]\n        return (1.0 - f) * m.x[\"omega\"] - f * m.x[\"alpha\"] <= 0.0\n    m.omega_share = pyo.Constraint(expr=omega_share_rule(m))\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 951,
+      "completion_tokens": 668
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 3.5655577182769775,
+   "position": 8,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------\n# Every numeric constant from the problem lives here.\n# ---------------------------------------------------------------\nDATA = {\n    \"brands\": [\"alpha\", \"omega\"],\n    \"protein_per_bottle\": {\"alpha\": 30, \"omega\": 20},\n    \"sugar_per_bottle\":   {\"alpha\": 20, \"omega\": 15},\n    \"calories_per_bottle\": {\"alpha\": 350, \"omega\": 300},\n    \"min_protein\": 100,          # grams\n    \"min_calories\": 2000,        # calories\n    \"max_omega_fraction\": 0.35,  # at most 35% of bottles are omega\n    \"max_bottles_ub\": None,      # no upper limit stated; lower bound 0 via domain\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # ---------------- Sets ----------------\n    model.I = pyo.Set(initialize=d[\"brands\"])\n\n    # ---------------- Variables ----------------\n    # Number of bottles of each brand to drink (integer, non-negative).\n    model.x = pyo.Var(\n        model.I,\n        within=pyo.NonNegativeIntegers,\n        bounds=(0, d[\"max_bottles_ub\"]),\n    )\n\n    # ---------------- Objective ----------------\n    # Minimise total sugar intake.\n    model.obj = pyo.Objective(\n        expr=sum(d[\"sugar_per_bottle\"][i] * model.x[i] for i in model.I),\n        sense=pyo.minimize,\n    )\n\n    # ---------------- Constraints ----------------\n    # Protein requirement: protein >= min_protein\n    def protein_rule(m):\n        return sum(d[\"protein_per_bottle\"][i] * m.x[i] for i in m.I) >= d[\"min_protein\"]\n\n    model.protein_req = pyo.Constraint(rule=protein_rule)\n\n    # Calorie requirement: calories >= min_calories\n    def calorie_rule(m):\n        return sum(d[\"calories_per_bottle\"][i] * m.x[i] for i in m.I) >= d[\"min_calories\"]\n\n    model.calorie_req = pyo.Constraint(rule=calorie_rule)\n\n    # Omega fraction cap: x_omega <= 0.35 * (x_alpha + x_omega)\n    # Linearised: (1 - 0.35) * x_omega - 0.35 * x_alpha <= 0\n    def omega_fraction_rule(m):\n        return (\n            (1 - d[\"max_omega_fraction\"]) * m.x[\"omega\"]\n            - d[\"max_omega_fraction\"] * m.x[\"alpha\"]\n            <= 0\n        )\n\n    model.omega_fraction_cap = pyo.Constraint(rule=omega_fraction_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 951,
+      "completion_tokens": 1065
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.38665771484375,
+   "position": 9,
+   "recipe_index": 8
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:50:20"
+}

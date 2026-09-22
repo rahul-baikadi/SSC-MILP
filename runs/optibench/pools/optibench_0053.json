@@ -1,0 +1,277 @@
+{
+ "pid": "optibench_0053",
+ "question": "Glueco produces three types of glue on two different production lines. Each line can be utilized by up to seven workers at a time. Workers are paid $500 per week on production line 1, and $900 per week on production line 2. A week of production costs $1,000 to set up production line 1 and $2,000 to set up production line 2. During a week on a production line, each worker produces the number of units of glue shown in Table: Glue Production Line 1, 2; the glue 1, 2, 3: (20, 30, 40), (50, 35, 45). Each week, at least 120 units of glue 1, at least 150 units of glue 2, and at least 200 units of glue 3 must be produced. Minimize the total cost of meeting weekly demands.",
+ "templates": [
+  "Production Planning / Product Mix"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"lines\": [1, 2],\n    \"glues\": [1, 2, 3],\n    # units produced per worker per week: rate[line][glue]\n    \"rate\": {\n        1: {1: 20, 2: 30, 3: 40},\n        2: {1: 50, 2: 35, 3: 45},\n    },\n    \"wage\": {1: 500, 2: 900},          # $ per worker per week\n    \"setup_cost\": {1: 1000, 2: 2000},  # $ per week to set up a line\n    \"max_workers\": 7,                  # per line\n    \"demand\": {1: 120, 2: 150, 3: 200},\n    \"bigM\": 100000,                    # large enough to relax linking constraints\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.L = pyo.Set(initialize=d[\"lines\"])\n    model.G = pyo.Set(initialize=d[\"glues\"])\n\n    # workers assigned to each line\n    model.workers = pyo.Var(\n        model.L,\n        within=pyo.NonNegativeIntegers,\n        bounds=(0, d[\"max_workers\"]),\n    )\n\n    # whether each line is set up\n    model.setup = pyo.Var(model.L, within=pyo.Binary)\n\n    # units of each glue produced on each line\n    model.production = pyo.Var(\n        model.L, model.G, within=pyo.NonNegativeIntegers\n    )\n\n    # Objective: minimize wages + setup costs\n    def obj_rule(m):\n        return (\n            sum(d[\"wage\"][l] * m.workers[l] for l in m.L)\n            + sum(d[\"setup_cost\"][l] * m.setup[l] for l in m.L)\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand satisfaction for each glue\n    def demand_rule(m, g):\n        return sum(m.production[l, g] for l in m.L) >= d[\"demand\"][g]\n\n    model.demand_con = pyo.Constraint(model.G, rule=demand_rule)\n\n    # Worker capacity: production on a line limited by workers * rate\n    def capacity_rule(m, l, g):\n        return m.production[l, g] <= d[\"rate\"][l][g] * m.workers[l]\n\n    model.capacity_con = pyo.Constraint(model.L, model.G, rule=capacity_rule)\n\n    # A line can produce only if it is set up\n    def setup_link_rule(m, l, g):\n        return m.production[l, g] <= d[\"bigM\"] * m.setup[l]\n\n    model.setup_link_con = pyo.Constraint(\n        model.L, model.G, rule=setup_link_rule\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1008,
+      "completion_tokens": 1049
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.002593755722046,
+   "position": 0,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"lines\": [1, 2],\n    \"glues\": [1, 2, 3],\n    \"max_workers\": 7,\n    \"wage\": {1: 500, 2: 900},            # $ per worker per week\n    \"setup\": {1: 1000, 2: 2000},          # $ per week to set up a line\n    \"rate\": {                             # units per worker per week\n        (1, 1): 20, (1, 2): 30, (1, 3): 40,\n        (2, 1): 50, (2, 2): 35, (2, 3): 45,\n    },\n    \"demand\": {1: 120, 2: 150, 3: 200},   # minimum weekly units\n    \"bigM\": 7,                             # = max_workers, linkage big-M\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.L = pyo.Set(initialize=d[\"lines\"])\n    model.G = pyo.Set(initialize=d[\"glues\"])\n\n    # w[l]: workers on line l (integer, 0..max_workers)\n    model.w = pyo.Var(model.L, within=pyo.NonNegativeIntegers,\n                      bounds=(0, d[\"max_workers\"]))\n    # y[l]: 1 if line l is set up this week\n    model.y = pyo.Var(model.L, within=pyo.Binary)\n    # x[l,g]: units of glue g produced on line l\n    model.x = pyo.Var(model.L, model.G, within=pyo.NonNegativeReals)\n\n    # Objective: setup + wages\n    def obj_rule(m):\n        return (sum(d[\"setup\"][l] * m.y[l] for l in m.L) +\n                sum(d[\"wage\"][l] * m.w[l] for l in m.L))\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Workers per line bounded by max workers\n    def worker_cap_rule(m, l):\n        return m.w[l] <= d[\"max_workers\"]        # <= 7 workers per line\n    model.worker_cap = pyo.Constraint(model.L, rule=worker_cap_rule)\n\n    # Line setup linkage: no workers (hence no output) if line not set up\n    def setup_link_rule(m, l):\n        return m.w[l] <= d[\"bigM\"] * m.y[l]\n    model.setup_link = pyo.Constraint(model.L, rule=setup_link_rule)\n\n    # Output limited by available workers: x[l,g] <= rate[l,g]*w[l]\n    def capacity_rule(m, l, g):\n        return m.x[l, g] <= d[\"rate\"][(l, g)] * m.w[l]\n    model.capacity = pyo.Constraint(model.L, model.G, rule=capacity_rule)\n\n    # Demand satisfaction per glue type (sum over lines) >= demand\n    def demand_rule(m, g):\n        return sum(m.x[l, g] for l in m.L) >= d[\"demand\"][g]\n    model.demand = pyo.Constraint(model.G, rule=demand_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1024,
+      "completion_tokens": 1024
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.081420183181763,
+   "position": 1,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   y[l]  in {0,1}          : 1 if production line l is set up this week\n#   w[l]  in [0,7] integer  : number of workers assigned to line l\n#   x[l,g] >= 0 integer     : units of glue g produced on line l\n#\n# Objective (minimize total weekly cost):\n#   setup cost  : 1000*y[1] + 2000*y[2]\n#   labour cost : 500*w[1]  + 900*w[2]\n#\n# Constraints\n#   (1) Demand for each glue g:  sum_l x[l,g] >= demand[g]\n#   (2) Worker capacity:         w[l] <= 7 * y[l]   (line must be set up to use workers)\n#   (3) Production capacity:     x[l,g] <= rate[l,g] * w[l]  (linearised via workers)\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"lines\": [1, 2],\n    \"glues\": [1, 2, 3],\n    \"max_workers\": 7,\n    \"wage\": {1: 500, 2: 900},\n    \"setup_cost\": {1: 1000, 2: 2000},\n    # rate[l][g] = units of glue g produced per worker per week on line l\n    \"rate\": {\n        1: {1: 20, 2: 30, 3: 40},\n        2: {1: 50, 2: 35, 3: 45},\n    },\n    \"demand\": {1: 120, 2: 150, 3: 200},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.L = pyo.Set(initialize=d[\"lines\"])\n    model.G = pyo.Set(initialize=d[\"glues\"])\n\n    # y[l]: line setup binary\n    model.y = pyo.Var(model.L, within=pyo.Binary)\n\n    # w[l]: workers on line l (0..7)\n    model.w = pyo.Var(model.L, within=pyo.NonNegativeIntegers,\n                      bounds=(0, d[\"max_workers\"]))\n\n    # x[l,g]: units of glue g produced on line l\n    model.x = pyo.Var(model.L, model.G, within=pyo.NonNegativeIntegers)\n\n    # Objective: minimize setup + labour cost\n    def obj_rule(m):\n        return (sum(d[\"setup_cost\"][l] * m.y[l] for l in m.L)\n                + sum(d[\"wage\"][l] * m.w[l] for l in m.L))\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # (1) Demand satisfaction for each glue\n    def demand_rule(m, g):\n        return sum(m.x[l, g] for l in m.L) >= d[\"demand\"][g]\n    model.demand_con = pyo.Constraint(model.G, rule=demand_rule)\n\n    # (2) Workers only if line is set up\n    def worker_setup_rule(m, l):\n        return m.w[l] <= d[\"max_workers\"] * m.y[l]\n    model.worker_setup_con = pyo.Constraint(model.L, rule=worker_setup_rule)\n\n    # (3) Production limited by workers * rate\n    def capacity_rule(m, l, g):\n        return m.x[l, g] <= d[\"rate\"][l][g] * m.w[l]\n    model.capacity_con = pyo.Constraint(model.L, model.G, rule=capacity_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1028,
+      "completion_tokens": 5995
+     },
+     "finish_reason": "length"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 952,
+      "completion_tokens": 853
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 48.9198100566864,
+   "position": 2,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"lines\": [1, 2],\n    \"glues\": [1, 2, 3],\n    \"max_workers\": 7,                       # workers per line at a time\n    \"wage\": {1: 500, 2: 900},               # $ per worker per week\n    \"setup_cost\": {1: 1000, 2: 2000},       # $ per week to set up line\n    # units of each glue produced per worker per week: rate[line][glue]\n    \"rate\": {\n        1: {1: 20, 2: 30, 3: 40},\n        2: {1: 50, 2: 35, 3: 45},\n    },\n    # minimum weekly demand per glue\n    \"demand\": {1: 120, 2: 150, 3: 200},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.L = pyo.Set(initialize=d[\"lines\"], ordered=True)\n    model.G = pyo.Set(initialize=d[\"glues\"], ordered=True)\n\n    # y[l]: line set up this week (binary)\n    model.y = pyo.Var(model.L, within=pyo.Binary)\n\n    # w[l]: workers assigned to line l (integer, bounded by worker cap)\n    model.w = pyo.Var(\n        model.L, within=pyo.NonNegativeIntegers, bounds=(0, d[\"max_workers\"])\n    )\n\n    # x[l,g]: units of glue g produced on line l (nonnegative integers)\n    model.x = pyo.Var(model.L, model.G, within=pyo.NonNegativeIntegers)\n\n    # Objective: minimize setup costs + worker wages\n    def obj_rule(m):\n        return (\n            sum(d[\"setup_cost\"][l] * m.y[l] for l in m.L)\n            + sum(d[\"wage\"][l] * m.w[l] for l in m.L)\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Workers only if line is set up; at most max_workers (<= direction)\n    def worker_limit_rule(m, l):\n        return m.w[l] <= d[\"max_workers\"] * m.y[l]\n\n    model.worker_limit = pyo.Constraint(model.L, rule=worker_limit_rule)\n\n    # Production limited by workers x per-worker rate (<= direction)\n    def capacity_rule(m, l, g):\n        return m.x[l, g] <= d[\"rate\"][l][g] * m.w[l]\n\n    model.capacity = pyo.Constraint(model.L, model.G, rule=capacity_rule)\n\n    # Demand must be met (>= direction)\n    def demand_rule(m, g):\n        return sum(m.x[l, g] for l in m.L) >= d[\"demand\"][g]\n\n    model.demand = pyo.Constraint(model.G, rule=demand_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1024,
+      "completion_tokens": 1087
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.9905290603637695,
+   "position": 3,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"Each line can be utilized by up to seven workers at a time.\"\n    \"max_workers_per_line\": 7,\n    # \"Workers are paid $500 per week on production line 1, and $900 per week on production line 2.\"\n    \"wage\": {1: 500, 2: 900},\n    # \"A week of production costs $1,000 to set up production line 1 and $2,000 to set up production line 2.\"\n    \"setup_cost\": {1: 1000, 2: 2000},\n    # \"each worker produces the number of units of glue shown in Table\"\n    # Line 1: glue1=20, glue2=30, glue3=40 ; Line 2: glue1=50, glue2=35, glue3=45\n    \"rate\": {\n        1: {1: 20, 2: 30, 3: 40},\n        2: {1: 50, 2: 35, 3: 45},\n    },\n    # \"at least 120 units of glue 1, at least 150 units of glue 2, and at least 200 units of glue 3\"\n    \"demand\": {1: 120, 2: 150, 3: 200},\n    # Big-M for the line-setup linking constraint (upper bound on any single\n    # line/glue production): max_workers * max rate over all lines/glues.\n    \"big_m\": 7 * 50,\n}\n\nLINES = [1, 2]\nGLUES = [1, 2, 3]\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.L = pyo.Set(initialize=LINES)\n    model.G = pyo.Set(initialize=GLUES)\n\n    # Workers assigned to each line\n    model.w = pyo.Var(\n        model.L,\n        within=pyo.NonNegativeIntegers,\n        bounds=(0, d[\"max_workers_per_line\"]),\n    )\n    # Binary: is line l set up / used this week\n    model.y = pyo.Var(model.L, within=pyo.Binary)\n    # Units of glue g produced on line l\n    model.x = pyo.Var(model.L, model.G, within=pyo.NonNegativeIntegers)\n\n    # Objective: minimize setup costs + wages\n    def obj_rule(m):\n        return (\n            sum(d[\"setup_cost\"][l] * m.y[l] for l in m.L)\n            + sum(d[\"wage\"][l] * m.w[l] for l in m.L)\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Capacity: production on a line bounded by workers * per-worker rate\n    def cap_rule(m, l, g):\n        return m.x[l, g] <= d[\"rate\"][l][g] * m.w[l]\n\n    model.cap = pyo.Constraint(model.L, model.G, rule=cap_rule)\n\n    # Setup linking: production implies the line is set up\n    def link_rule(m, l, g):\n        return m.x[l, g] <= d[\"big_m\"] * m.y[l]\n\n    model.link = pyo.Constraint(model.L, model.G, rule=link_rule)\n\n    # Demand satisfaction for each glue\n    def demand_rule(m, g):\n        return sum(m.x[l, g] for l in m.L) >= d[\"demand\"][g]\n\n    model.demand = pyo.Constraint(model.G, rule=demand_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1012,
+      "completion_tokens": 1191
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.479391574859619,
+   "position": 4,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"Workers are paid $500 per week on production line 1, and $900 per week on production line 2.\"\n    \"wage\": {1: 500, 2: 900},\n    # \"A week of production costs $1,000 to set up production line 1 and $2,000 to set up production line 2.\"\n    \"setup_cost\": {1: 1000, 2: 2000},\n    # \"Each line can be utilized by up to seven workers at a time.\"\n    \"max_workers\": 7,\n    # Table: units of glue per worker per week\n    # \"each worker produces the number of units of glue shown in Table: Glue Production Line 1,2; the glue 1,2,3: (20,30,40),(50,35,45)\"\n    \"rate\": {\n        1: {1: 20, 2: 30, 3: 40},\n        2: {1: 50, 2: 35, 3: 45},\n    },\n    # \"at least 120 units of glue 1, at least 150 units of glue 2, and at least 200 units of glue 3 must be produced.\"\n    \"demand\": {1: 120, 2: 150, 3: 200},\n    # index sets\n    \"lines\": [1, 2],\n    \"glues\": [1, 2, 3],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.L = pyo.Set(initialize=d[\"lines\"])\n    model.G = pyo.Set(initialize=d[\"glues\"])\n\n    # workers assigned to each line\n    model.workers = pyo.Var(\n        model.L,\n        within=pyo.NonNegativeIntegers,\n        bounds=(0, d[\"max_workers\"]),\n    )\n\n    # whether each line is set up / used (costs setup if used)\n    model.setup = pyo.Var(model.L, within=pyo.Binary)\n\n    # objective: minimize setup costs + wages\n    def obj_rule(m):\n        return sum(\n            d[\"setup_cost\"][l] * m.setup[l] + d[\"wage\"][l] * m.workers[l]\n            for l in m.L\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # demand satisfaction for each glue type\n    def demand_rule(m, g):\n        return sum(d[\"rate\"][l][g] * m.workers[l] for l in m.L) >= d[\"demand\"][g]\n\n    model.demand_con = pyo.Constraint(model.G, rule=demand_rule)\n\n    # a line can only employ workers if it is set up (also enforces the 7-worker cap)\n    def capacity_rule(m, l):\n        return m.workers[l] <= d[\"max_workers\"] * m.setup[l]\n\n    model.capacity_con = pyo.Constraint(model.L, rule=capacity_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1012,
+      "completion_tokens": 1072
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.118937969207764,
+   "position": 5,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------- DATA -------------------------------------------------------------\nDATA = {\n    # indices\n    \"lines\": [1, 2],\n    \"glues\": [1, 2, 3],\n\n    # line data\n    \"setup_cost\":  {1: 1000.0, 2: 2000.0},     # $ per week\n    \"worker_cost\": {1: 500.0,  2: 900.0},      # $ per worker per week\n    \"max_workers\": 7,                          # line can hold up to 7 workers per week\n\n    # production rate units per worker per week\n    \"rate\": {\n        (1, 1): 20, (1, 2): 30, (1, 3): 40,\n        (2, 1): 50, (2, 2): 35, (2, 3): 45,\n    },\n\n    # weekly demand (at least)\n    \"demand\": {1: 120, 2: 150, 3: 200},\n}\nGOLD_ANSWER = None\n\n# ---------- MODEL ------------------------------------------------------------\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # Sets\n    m.L = pyo.Set(initialize=d[\"lines\"], ordered=True)\n    m.G = pyo.Set(initialize=d[\"glues\"], ordered=True)\n\n    # Variables\n    m.workers = pyo.Var(m.L, domain=pyo.NonNegativeIntegers,\n                        bounds=(0, d[\"max_workers\"]))\n    m.setup = pyo.Var(m.L, domain=pyo.Binary)\n    m.units = pyo.Var(m.L, m.G, domain=pyo.NonNegativeIntegers)\n\n    # Objective: minimise worker wages + setup costs\n    def obj_rule(m):\n        return (sum(d[\"worker_cost\"][l] * m.workers[l] for l in m.L)\n                + sum(d[\"setup_cost\"][l] * m.setup[l] for l in m.L))\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand constraints: at least the required amount of each glue\n    def demand_rule(m, g):\n        return sum(m.units[l, g] for l in m.L) >= d[\"demand\"][g]\n    m.demand_con = pyo.Constraint(m.G, rule=demand_rule)\n\n    # Cannot employ workers without opening the line\n    def worker_setup_rule(m, l):\n        return m.workers[l] <= d[\"max_workers\"] * m.setup[l]\n    m.worker_setup_con = pyo.Constraint(m.L, rule=worker_setup_rule)\n\n    # Cannot produce on a line that is not set up\n    def prod_setup_rule(m, l, g):\n        return m.units[l, g] <= d[\"rate\"][l, g] * d[\"max_workers\"] * m.setup[l]\n    m.prod_setup_con = pyo.Constraint(m.L, m.G, rule=prod_setup_rule)\n\n    # Output cannot exceed what the hired workers can make (per glue type)\n    def worker_out_rule(m, l, g):\n        return m.units[l, g] <= d[\"rate\"][l, g] * m.workers[l]\n    m.worker_out_con = pyo.Constraint(m.L, m.G, rule=worker_out_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1014,
+      "completion_tokens": 1805
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2259,
+      "completion_tokens": 783
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 12.829387426376343,
+   "position": 6,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Production lines\n    \"lines\": [1, 2],\n    # Glue types\n    \"glues\": [1, 2, 3],\n    # Max workers per line per week\n    \"max_workers\": 7,\n    # Worker weekly wage per line\n    \"wage\": {1: 500, 2: 900},\n    # Weekly setup cost per line\n    \"setup_cost\": {1: 1000, 2: 2000},\n    # Units of glue g produced per worker per week on line l\n    \"units_per_worker\": {\n        (1, 1): 20, (1, 2): 30, (1, 3): 40,\n        (2, 1): 50, (2, 2): 35, (2, 3): 45,\n    },\n    # Minimum weekly demand per glue\n    \"demand\": {1: 120, 2: 150, 3: 200},\n    # Big-M for setup linking (max possible workers * max units per worker)\n    \"big_m\": 7 * 50,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.L = pyo.Set(initialize=d[\"lines\"])\n    model.G = pyo.Set(initialize=d[\"glues\"])\n\n    # Decision variables\n    # w[l]: number of workers assigned to line l (integer, 0..max_workers)\n    model.w = pyo.Var(\n        model.L,\n        within=pyo.NonNegativeIntegers,\n        bounds=(0, d[\"max_workers\"]),\n    )\n\n    # y[l]: 1 if line l is set up this week, else 0\n    model.y = pyo.Var(model.L, within=pyo.Binary)\n\n    # Objective: minimize total cost = wages + setup costs\n    def obj_rule(m):\n        return sum(\n            d[\"wage\"][l] * m.w[l] + d[\"setup_cost\"][l] * m.y[l]\n            for l in m.L\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint 1: demand satisfaction for each glue\n    # sum_l units_per_worker[l,g] * w[l] >= demand[g]\n    def demand_rule(m, g):\n        return sum(\n            d[\"units_per_worker\"][(l, g)] * m.w[l] for l in m.L\n        ) >= d[\"demand\"][g]\n\n    model.demand_con = pyo.Constraint(model.G, rule=demand_rule)\n\n    # Constraint 2: setup linking \u2014 if any workers on line l, line must be set up\n    # w[l] <= max_workers * y[l]\n    def setup_rule(m, l):\n        return m.w[l] <= d[\"max_workers\"] * m.y[l]\n\n    model.setup_con = pyo.Constraint(model.L, rule=setup_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1028,
+      "completion_tokens": 1674
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1033,
+      "completion_tokens": 698
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 15.36938738822937,
+   "position": 7,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"lines\": [1, 2],\n    \"glues\": [1, 2, 3],\n    \"wage\": {1: 500, 2: 900},\n    \"setup_cost\": {1: 1000, 2: 2000},\n    \"rate\": {\n        (1, 1): 20, (1, 2): 30, (1, 3): 40,\n        (2, 1): 50, (2, 2): 35, (2, 3): 45,\n    },\n    \"demand\": {1: 120, 2: 150, 3: 200},\n    \"max_workers\": 7,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.L = pyo.Set(initialize=d[\"lines\"], ordered=True)\n    model.G = pyo.Set(initialize=d[\"glues\"], ordered=True)\n    model.LG = pyo.Set(\n        dimen=2,\n        initialize=[(l, g) for l in d[\"lines\"] for g in d[\"glues\"]],\n    )\n\n    # Variables\n    model.workers = pyo.Var(\n        model.L,\n        within=pyo.NonNegativeIntegers,\n        bounds=(0, d[\"max_workers\"]),\n    )\n    model.setup = pyo.Var(model.L, within=pyo.Binary)\n    model.production = pyo.Var(model.LG, within=pyo.NonNegativeReals)\n\n    # Objective: minimize setup costs + wages\n    def obj_rule(m):\n        return sum(d[\"setup_cost\"][l] * m.setup[l] for l in m.L) + \\\n               sum(d[\"wage\"][l] * m.workers[l] for l in m.L)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand constraints\n    def demand_rule(m, g):\n        return sum(m.production[l, g] for l in m.L) >= d[\"demand\"][g]\n\n    model.demand_con = pyo.Constraint(model.G, rule=demand_rule)\n\n    # Capacity: production limited by workers * rate\n    def capacity_rule(m, l, g):\n        return m.production[l, g] <= d[\"rate\"][(l, g)] * m.workers[l]\n\n    model.capacity_con = pyo.Constraint(model.LG, rule=capacity_rule)\n\n    # Setup linking: workers > 0 implies setup = 1\n    def setup_rule(m, l):\n        return m.workers[l] <= d[\"max_workers\"] * m.setup[l]\n\n    model.setup_con = pyo.Constraint(model.L, rule=setup_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1008,
+      "completion_tokens": 1051
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.192869424819946,
+   "position": 8,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"lines\": [1, 2],\n    \"glues\": [1, 2, 3],\n    \"max_workers_per_line\": 7,\n    \"wage_cost\": {1: 500, 2: 900},\n    \"setup_cost\": {1: 1000, 2: 2000},\n    # units of glue produced per worker per week\n    \"rate\": {\n        1: {1: 20, 2: 30, 3: 40},\n        2: {1: 50, 2: 35, 3: 45},\n    },\n    \"demand\": {1: 120, 2: 150, 3: 200},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.L = pyo.Set(initialize=d[\"lines\"])\n    m.G = pyo.Set(initialize=d[\"glues\"])\n\n    # workers on each line (up to 7), and whether line is set up\n    m.workers = pyo.Var(\n        m.L,\n        within=pyo.NonNegativeIntegers,\n        bounds=(0, d[\"max_workers_per_line\"]),\n    )\n    m.run = pyo.Var(m.L, within=pyo.Binary)\n\n    # objective: minimize setup + wage costs\n    def obj_rule(m):\n        setup = sum(d[\"setup_cost\"][l] * m.run[l] for l in m.L)\n        wages = sum(d[\"wage_cost\"][l] * m.workers[l] for l in m.L)\n        return setup + wages\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # each line utilized by up to 7 workers\n    def max_workers_rule(m, l):\n        return m.workers[l] <= d[\"max_workers_per_line\"]\n\n    m.max_workers = pyo.Constraint(m.L, rule=max_workers_rule)\n\n    # weekly demand for each glue type must be met\n    def demand_rule(m, g):\n        return sum(d[\"rate\"][l][g] * m.workers[l] for l in m.L) >= d[\"demand\"][g]\n\n    m.demand = pyo.Constraint(m.G, rule=demand_rule)\n\n    # link setup flag to worker usage (big-M)\n    def setup_link_rule(m, l):\n        return m.workers[l] <= d[\"max_workers_per_line\"] * m.run[l]\n\n    m.setup_link = pyo.Constraint(m.L, rule=setup_link_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1014,
+      "completion_tokens": 978
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.932108640670776,
+   "position": 9,
+   "recipe_index": 3
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:58:19"
+}

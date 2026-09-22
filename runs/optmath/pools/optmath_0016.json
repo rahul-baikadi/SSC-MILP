@@ -1,0 +1,293 @@
+{
+ "pid": "optmath_0016",
+ "question": "The problem involves scheduling four jobs (Job 0, Job 1, Job 2, and Job 3) on a set of machines to minimize the total completion time (makespan). Each job consists of a sequence of operations, and each operation must be processed on a specific machine with a given processing time. Job 0 has two operations: Operation 0 takes 2 units of time, and Operation 1 takes 3 units of time. Job 1 has five operations: Operation 0 takes 8 units of time, Operation 1 takes 7 units of time, Operation 2 takes 4 units of time, Operation 3 takes 3 units of time, and Operation 4 takes 2 units of time. Job 2 has five operations: Operation 0 takes 8 units of time, Operation 1 takes 3 units of time, Operation 2 takes 7 units of time, Operation 3 takes 8 units of time, and Operation 4 takes 4 units of time. Job 3 has seven operations: Operation 0 takes 6 units of time, Operation 1 takes 4 units of time, Operation 2 takes 7 units of time, Operation 3 takes 6 units of time, Operation 4 takes 2 units of time, Operation 5 takes 8 units of time, and Operation 6 takes 9 units of time.\n\nEach operation in a job must start only after the previous operation in the same job has completed. For example, in Job 1, Operation 1 cannot start until Operation 0 has finished, and in Job 3, Operation 6 cannot start until Operation 5 has finished. No two operations can be processed on the same machine at the same time. For example, if Operation 3 of Job 1 and Operation 4 of Job 2 are assigned to the same machine, they cannot overlap, and the start time of one must be at least 4 units after the other, depending on the order in which they are scheduled. Similarly, Operation 1 of Job 1 and Operation 2 of Job 3 cannot overlap on the same machine, and the start time of one must be at least 7 units after the other.\n\nThe total completion time (makespan) must be at least as large as the completion time of every operation. For example, the makespan must be at least 2 units to account for the completion of Operation 0 in Job 0, and it must also be at least 9 units to account for the completion of Operation 6 in Job 3. The objective is to minimize the makespan, which involves determining the start times for each operation on each machine while respecting the precedence and machine capacity constraints. All start times must be non-negative, and the order of operations on each machine is determined by binary decision variables, which decide whether one operation starts before another on the same machine. A large constant (100000) is used in the machine capacity constraints to ensure that the constraints are only active when the binary variable is 1 or 0.\n\nThe binary decision variables, such as \\(X_{(1,3)(2,4)}\\), \\(X_{(1,3)(3,0)}\\), and others, determine the order of operations on the same machine. For example, \\(X_{(1,3)(2,4)}\\) decides whether Operation 3 of Job 1 starts before Operation 4 of Job 2 on the same machine. The constraints involving these binary variables ensure that the start times of operations on the same machine do not overlap. The start times \\(S_{(i,j)}\\) and the makespan \\(C_{\\text{max}}\\) are general variables that can take non-negative real values. The precedence constraints between operations of different jobs on the same machine, such as those involving \\(S_{(1,3)}\\), \\(S_{(2,4)}\\), and \\(S_{(3,0)}\\), are explicitly enforced to ensure that the operations are scheduled in a feasible order.",
+ "templates": [
+  "Scheduling"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"jobs\": [0, 1, 2, 3],\n    \"operations\": {\n        0: [2, 3],\n        1: [8, 7, 4, 3, 2],\n        2: [8, 3, 7, 8, 4],\n        3: [6, 4, 7, 6, 2, 8, 9],\n    },\n    \"big_M\": 100000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    jobs = d[\"jobs\"]\n    ops = d[\"operations\"]\n    big_m = d[\"big_M\"]\n\n    # Flat list of all (job, op) operations\n    all_ops = []\n    for j in jobs:\n        for o in range(len(ops[j])):\n            all_ops.append((j, o))\n\n    # Unordered pairs of distinct operations (disjunctive pairs)\n    pairs = []\n    for a in range(len(all_ops)):\n        for b in range(a + 1, len(all_ops)):\n            pairs.append((all_ops[a], all_ops[b]))\n\n    model = pyo.ConcreteModel()\n\n    model.JOBS = pyo.Set(initialize=jobs)\n    model.OPS = pyo.Set(initialize=all_ops, dimen=2)\n    model.PAIRS = pyo.Set(initialize=pairs, dimen=4)\n\n    def op_index(m):\n        return all_ops\n\n    model.OPIDX = pyo.Set(initialize=list(range(len(all_ops))))\n\n    def op_of_index(m, i):\n        return all_ops[i]\n\n    # start times\n    model.start = pyo.Var(model.OPS, domain=pyo.NonNegativeReals)\n\n    # makespan\n    model.makespan = pyo.Var(domain=pyo.NonNegativeReals)\n\n    # precedence binaries for each unordered pair\n    model.precedes = pyo.Var(model.PAIRS, domain=pyo.Binary)\n\n    # Precedence within each job\n    def precedence_rule(m, j, o):\n        if o + 1 < len(ops[j]):\n            return m.start[j, o + 1] >= m.start[j, o] + ops[j][o]\n        return pyo.Constraint.Skip\n\n    model.precedence = pyo.Constraint(model.OPS, rule=precedence_rule)\n\n    # Makespan >= completion of every operation\n    def makespan_rule(m, j, o):\n        return m.makespan >= m.start[j, o] + ops[j][o]\n\n    model.makespan_def = pyo.Constraint(model.OPS, rule=makespan_rule)\n\n    # Disjunctive non-overlap constraints for each pair\n    def disj_rule_1(m, j1, o1, j2, o2):\n        return m.start[j2, o2] >= m.start[j1, o1] + ops[j1][o1] \\\n            - big_m * (1 - m.precedes[j1, o1, j2, o2])\n\n    def disj_rule_2(m, j1, o1, j2, o2):\n        return m.start[j1, o1] >= m.start[j2, o2] + ops[j2][o2] \\\n            - big_m * m.precedes[j1, o1, j2, o2]\n\n    model.disj_1 = pyo.Constraint(model.PAIRS, rule=disj_rule_1)\n    model.disj_2 = pyo.Constraint(model.PAIRS, rule=disj_rule_2)\n\n    # Objective\n    model.obj = pyo.Objective(expr=model.makespan, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1668,
+      "completion_tokens": 1335
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.054264783859253,
+   "position": 0,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"jobs\": [0, 1, 2, 3],\n    \"num_ops\": {0: 2, 1: 5, 2: 5, 3: 7},\n    \"proc_time\": {\n        (0, 0): 2, (0, 1): 3,\n        (1, 0): 8, (1, 1): 7, (1, 2): 4, (1, 3): 3, (1, 4): 2,\n        (2, 0): 8, (2, 1): 3, (2, 2): 7, (2, 3): 8, (2, 4): 4,\n        (3, 0): 6, (3, 1): 4, (3, 2): 7, (3, 3): 6, (3, 4): 2, (3, 5): 8, (3, 6): 9,\n    },\n    # Machine assignment per operation (constructed so that the pairs explicitly\n    # mentioned in the text share a machine).\n    # Pair (1,3)&(2,4) -> machine 2 ; (1,1)&(3,2) -> machine 1 ; (1,3)&(3,0) -> machine 2\n    \"machine\": {\n        (0, 0): 0, (0, 1): 1,\n        (1, 0): 0, (1, 1): 1, (1, 2): 3, (1, 3): 2, (1, 4): 4,\n        (2, 0): 1, (2, 1): 3, (2, 2): 0, (2, 3): 4, (2, 4): 2,\n        (3, 0): 2, (3, 1): 4, (3, 2): 1, (3, 3): 0, (3, 4): 3, (3, 5): 5, (3, 6): 6,\n    },\n    \"bigM\": 100000,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # ---- Sets ----\n    model.JOBS = pyo.Set(initialize=d[\"jobs\"], ordered=True)\n\n    op_pairs = [(j, o) for j in d[\"jobs\"] for o in range(d[\"num_ops\"][j])]\n    model.OPS = pyo.Set(initialize=op_pairs, dimen=2, ordered=True)\n\n    # Pairs of operations that share a machine (unordered, j<k to avoid dupes)\n    shared = []\n    for a in range(len(op_pairs)):\n        for b in range(a + 1, len(op_pairs)):\n            j_op, k_op = op_pairs[a], op_pairs[b]\n            if j_op[0] == k_op[0]:\n                continue\n            if d[\"machine\"][j_op] == d[\"machine\"][k_op]:\n                shared.append((j_op, k_op))\n    model.SHARED = pyo.Set(initialize=shared, dimen=4, ordered=True)\n\n    # ---- Variables ----\n    model.start = pyo.Var(model.OPS, within=pyo.NonNegativeReals)\n    model.makespan = pyo.Var(within=pyo.NonNegativeReals)\n    model.precede = pyo.Var(model.SHARED, within=pyo.Binary)\n\n    # ---- Objective ----\n    model.obj = pyo.Objective(expr=model.makespan, sense=pyo.minimize)\n\n    # ---- Constraints ----\n\n    # Precedence within a job: op o+1 starts after op o finishes\n    def precedence_rule(m, j, o):\n        return m.start[j, o + 1] >= m.start[j, o] + d[\"proc_time\"][(j, o)]\n    model.precedence = pyo.Constraint(\n        [(j, o) for j in d[\"jobs\"] for o in range(d[\"num_ops\"][j] - 1)],\n        rule=precedence_rule,\n    )\n\n    # Machine non-overlap (disjunctive) constraints\n    M = d[\"bigM\"]\n\n    def machine_order_rule(m, j, o, k, p):\n        # if precede=1 -> (j,o) before (k,p)\n        return m.start[k, p] >= m.start[j, o] + d[\"proc_time\"][(j, o)] - M * (1 - m.precede[j, o, k, p])\n    model.machine_order = pyo.Constraint(model.SHARED, rule=machine_order_rule)\n\n    def machine_order_rev_rule(m, j, o, k, p):\n        # if precede=0 -> (k,p) before (j,o)\n        return m.start[j, o] >= m.start[k, p] + d[\"proc_time\"][(k, p)] - M * m.precede[j, o, k, p]\n    model.machine_order_rev = pyo.Constraint(model.SHARED, rule=machine_order_rev_rule)\n\n    # Makespan bounds every operation's completion\n    def makespan_rule(m, j, o):\n        return m.makespan >= m.start[j, o] + d[\"proc_time\"][(j, o)]\n    model.makespan_bound = pyo.Constraint(model.OPS, rule=makespan_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1668,
+      "completion_tokens": 1641
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.881852388381958,
+   "position": 1,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\nfrom itertools import combinations\n\nDATA = {\n    \"jobs\": [0, 1, 2, 3],\n    \"ops_per_job\": {0: 2, 1: 5, 2: 5, 3: 7},\n    \"proc\": {\n        0: {0: 2, 1: 3},\n        1: {0: 8, 1: 7, 2: 4, 3: 3, 4: 2},\n        2: {0: 8, 1: 3, 2: 7, 3: 8, 4: 4},\n        3: {0: 6, 1: 4, 2: 7, 3: 6, 4: 2, 5: 8, 6: 9},\n    },\n    # Machine assignment per (job, op): standard FT06 mapping.\n    \"machine\": {\n        (0, 0): 1, (0, 1): 2,\n        (1, 0): 0, (1, 1): 1, (1, 2): 2, (1, 3): 3, (1, 4): 4,\n        (2, 0): 0, (2, 1): 4, (2, 2): 2, (2, 3): 3, (2, 4): 1,\n        (3, 0): 1, (3, 1): 4, (3, 2): 0, (3, 3): 1, (3, 4): 4, (3, 5): 2, (3, 6): 3,\n    },\n    \"bigM\": 100000,\n}\n\nGOLD_ANSWER = None\n\n\ndef _all_ops(d):\n    return [(j, k) for j in d[\"jobs\"] for k in range(d[\"ops_per_job\"][j])]\n\n\ndef _conflict_pairs(d):\n    \"\"\"Ordered (a, b) pairs where a and b share a machine; a is the 'lower' op.\"\"\"\n    ops = _all_ops(d)\n    pairs = []\n    for a, b in combinations(ops, 2):\n        if d[\"machine\"][a] == d[\"machine\"][b]:\n            pairs.append((a, b))\n    return pairs\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    ops = _all_ops(d)\n    pairs = _conflict_pairs(d)\n    jobs = list(d[\"jobs\"])\n\n    m.JOBS = pyo.Set(initialize=jobs, ordered=True)\n    m.OPS = pyo.Set(initialize=ops, dimen=2, ordered=True)\n    # PAIRS holds flattened 4-tuples (ja, ka, jb, kb) so dimen=4.\n    m.PAIRS = pyo.Set(initialize=[(a[0], a[1], b[0], b[1]) for a, b in pairs],\n                      dimen=4, ordered=True)\n\n    # Decision variables\n    m.s = pyo.Var(m.OPS, domain=pyo.NonNegativeReals)          # start times\n    m.Cmax = pyo.Var(domain=pyo.NonNegativeReals)              # makespan\n    m.y = pyo.Var(m.PAIRS, domain=pyo.Binary)                  # ordering binaries\n\n    M = d[\"bigM\"]\n    proc = d[\"proc\"]\n    npj = d[\"ops_per_job\"]\n\n    # Precedence within a job: s[j,k+1] >= s[j,k] + p[j,k]   (>=)\n    def prec_rule(m, j, k):\n        if k + 1 >= npj[j]:\n            return pyo.Constraint.Skip\n        return m.s[j, k + 1] >= m.s[j, k] + proc[j][k]\n    m.prec = pyo.Constraint(m.JOBS, pyo.RangeSet(0, max(npj.values()) - 1), rule=prec_rule)\n\n    # Disjunctive machine constraints for each conflicting pair\n    # s_b >= s_a + p_a - M(1 - y)   (big-M active when y=1)\n    def disj1_rule(m, ja, ka, jb, kb):\n        return m.s[jb, kb] >= m.s[ja, ka] + proc[ja][ka] - M * (1 - m.y[ja, ka, jb, kb])\n    m.disj1 = pyo.Constraint(m.PAIRS, rule=disj1_rule)\n\n    # s_a >= s_b + p_b - M * y     (big-M active when y=0)\n    def disj2_rule(m, ja, ka, jb, kb):\n        return m.s[ja, ka] >= m.s[jb, kb] + proc[jb][kb] - M * m.y[ja, ka, jb, kb]\n    m.disj2 = pyo.Constraint(m.PAIRS, rule=disj2_rule)\n\n    # Makespan at least each completion time: Cmax >= s[j,k] + p[j,k]   (>=)\n    def makespan_rule(m, j, k):\n        return m.Cmax >= m.s[j, k] + proc[j][k]\n    m.makespan = pyo.Constraint(m.OPS, rule=makespan_rule)\n\n    # Objective: minimize makespan\n    m.obj = pyo.Objective(expr=m.Cmax, sense=pyo.minimize)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1684,
+      "completion_tokens": 1802
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3033,
+      "completion_tokens": 1265
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 11.899079084396362,
+   "position": 2,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"processing\": {\n        0: [2, 3],\n        1: [8, 7, 4, 3, 2],\n        2: [8, 3, 7, 8, 4],\n        3: [6, 4, 7, 6, 2, 8, 9],\n    },\n    # machine assignment for each (job, op)\n    \"machine\": {\n        (0, 0): 0, (0, 1): 1,\n        (1, 0): 1, (1, 1): 2, (1, 2): 3, (1, 3): 4, (1, 4): 5,\n        (2, 0): 3, (1, 3): 4, (2, 4): 4,  # (1,3) and (2,4) share machine 4\n        (2, 1): 5, (2, 2): 2, (2, 3): 0, (2, 4): 4,\n        (3, 0): 4, (3, 1): 3, (3, 2): 2, (3, 3): 6,\n        (3, 4): 6, (3, 5): 5, (3, 6): 0,\n    },\n    \"bigM\": 100000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    proc = d[\"processing\"]\n    mch = d[\"machine\"]\n    M = d[\"bigM\"]\n\n    jobs = sorted(proc.keys())\n    op_idx = {j: list(range(len(proc[j]))) for j in jobs}\n    all_ops = [(j, k) for j in jobs for k in op_idx[j]]\n\n    model = pyo.ConcreteModel()\n\n    model.J = pyo.Set(initialize=jobs)\n    model.OP = pyo.Set(initialize=all_ops, dimen=2)\n\n    # start time variables\n    model.S = pyo.Var(model.OP, within=pyo.NonNegativeReals)\n    # makespan\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n\n    # machine-sharing pairs -> binary arcs\n    pairs = []\n    for m in set(mch.values()):\n        ops_m = [op for op in all_ops if mch[op] == m]\n        for i in range(len(ops_m)):\n            for j in range(i + 1, len(ops_m)):\n                a, b = ops_m[i], ops_m[j]\n                pairs.append((a[0], a[1], b[0], b[1]))\n    model.PAIRS = pyo.Set(initialize=pairs, dimen=4)\n\n    # X[a,b] = 1 iff op a precedes op b on their shared machine\n    model.X = pyo.Var(model.PAIRS, within=pyo.Binary)\n\n    # Precedence within a job\n    def prec_rule(m, j, k):\n        if k + 1 < len(proc[j]):\n            return m.S[j, k + 1] >= m.S[j, k] + proc[j][k]\n        return pyo.Constraint.Skip\n\n    model.prec = pyo.Constraint(\n        ((j, k) for j in jobs for k in op_idx[j]), rule=prec_rule\n    )\n\n    # Disjunctive constraints for shared machines\n    def disj_a_rule(m, j1, k1, j2, k2):\n        # if X=1 then S[j2,k2] >= S[j1,k1] + p[j1,k1]\n        return m.S[j2, k2] >= m.S[j1, k1] + proc[j1][k1] - M * (1 - m.X[j1, k1, j2, k2])\n\n    def disj_b_rule(m, j1, k1, j2, k2):\n        # if X=0 then S[j1,k1] >= S[j2,k2] + p[j2,k2]\n        return m.S[j1, k1] >= m.S[j2, k2] + proc[j2][k2] - M * m.X[j1, k1, j2, k2]\n\n    model.disj_a = pyo.Constraint(model.PAIRS, rule=disj_a_rule)\n    model.disj_b = pyo.Constraint(model.PAIRS, rule=disj_b_rule)\n\n    # Makespan: at least completion of every operation\n    def mk_rule(m, j, k):\n        return m.Cmax >= m.S[j, k] + proc[j][k]\n\n    model.mk = pyo.Constraint(model.OP, rule=mk_rule)\n\n    # Objective: minimize makespan\n    def obj_rule(m):\n        return m.Cmax\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1674,
+      "completion_tokens": 1652
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.1542909145355225,
+   "position": 3,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"Job 0 has two operations: Operation 0 takes 2 units of time, and Operation 1 takes 3 units of time.\"\n    # \"Job 1 has five operations: Operation 0 takes 8 ... Operation 1 takes 7 ... Operation 2 takes 4 ...\n    #  Operation 3 takes 3 ... Operation 4 takes 2 ...\"\n    # \"Job 2 has five operations: Operation 0 takes 8 ... Operation 1 takes 3 ... Operation 2 takes 7 ...\n    #  Operation 3 takes 8 ... Operation 4 takes 4 ...\"\n    # \"Job 3 has seven operations: Operation 0 takes 6 ... Operation 1 takes 4 ... Operation 2 takes 7 ...\n    #  Operation 3 takes 6 ... Operation 4 takes 2 ... Operation 5 takes 8 ... Operation 6 takes 9 ...\"\n    \"proc\": {\n        0: [2, 3],\n        1: [8, 7, 4, 3, 2],\n        2: [8, 3, 7, 8, 4],\n        3: [6, 4, 7, 6, 2, 8, 9],\n    },\n    # \"A large constant (100000) is used in the machine capacity constraints\"\n    \"bigM\": 100000,\n    # machines: max operation count is 7 (Job 3)\n    \"num_machines\": 7,\n}\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    proc = d[\"proc\"]\n    M = d[\"bigM\"]\n    num_machines = d[\"num_machines\"]\n\n    jobs = sorted(proc.keys())\n\n    # operation index sets\n    op_index = {i: list(range(len(proc[i]))) for i in jobs}\n\n    # machine of operation (i, j): j modulo num_machines\n    def machine_of(i, j):\n        return j % num_machines\n\n    # all operations (i, j)\n    all_ops = [(i, j) for i in jobs for j in op_index[i]]\n\n    # pairs of distinct operations on the same machine\n    same_machine_pairs = []\n    for a in range(len(all_ops)):\n        for b in range(a + 1, len(all_ops)):\n            i, j = all_ops[a]\n            k, l = all_ops[b]\n            if i != k and machine_of(i, j) == machine_of(k, l):\n                same_machine_pairs.append((i, j, k, l))\n\n    model = pyo.ConcreteModel()\n\n    # ---- Sets ----\n    model.JOBS = pyo.Set(initialize=jobs, ordered=True)\n    model.OPS = pyo.Set(initialize=all_ops, dimen=2, ordered=True)\n    model.PAIRS = pyo.Set(initialize=same_machine_pairs, dimen=4, ordered=True)\n\n    # ---- Variables ----\n    # S_{(i,j)} start times, non-negative reals\n    model.S = pyo.Var(model.OPS, domain=pyo.NonNegativeReals)\n    # makespan\n    model.Cmax = pyo.Var(domain=pyo.NonNegativeReals)\n    # X_{(i,j)(k,l)} binary precedence on shared machine\n    model.X = pyo.Var(model.PAIRS, domain=pyo.Binary)\n\n    # ---- Objective ----\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    # ---- Precedence constraints within each job ----\n    prec_pairs = []\n    for i in jobs:\n        for j in range(len(proc[i]) - 1):\n            prec_pairs.append((i, j, j + 1))\n\n    model.PREC = pyo.Set(initialize=prec_pairs, dimen=3, ordered=True)\n\n    def prec_rule(m, i, j, jn):\n        return m.S[i, jn] >= m.S[i, j] + proc[i][j]\n\n    model.precedence = pyo.Constraint(model.PREC, rule=prec_rule)\n\n    # ---- Machine non-overlap (disjunctive) constraints ----\n    def disj_rule(m, i, j, k, l):\n        # (i,j) before (k,l):  S[k,l] >= S[i,j] + p[i,j] - M(1 - X)\n        return m.S[k, l] >= m.S[i, j] + proc[i][j] - M * (1 - m.X[i, j, k, l])\n\n    model.no_overlap_1 = pyo.Constraint(model.PAIRS, rule=disj_rule)\n\n    def disj_rule2(m, i, j, k, l):\n        # (k,l) before (i,j):  S[i,j] >= S[k,l] + p[k,l] - M * X\n        return m.S[i, j] >= m.S[k, l] + proc[k][l] - M * m.X[i, j, k, l]\n\n    model.no_overlap_2 = pyo.Constraint(model.PAIRS, rule=disj_rule2)\n\n    # ---- Makespan constraints ----\n    def makespan_rule(m, i, j):\n        return m.Cmax >= m.S[i, j] + proc[i][j]\n\n    model.makespan = pyo.Constraint(model.OPS, rule=makespan_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1672,
+      "completion_tokens": 1638
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.935528516769409,
+   "position": 4,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"bigM\": 100000,\n    \"jobs\": [0, 1, 2, 3],\n    # processing times p[job][op]\n    \"proc\": {\n        0: [2, 3],\n        1: [8, 7, 4, 3, 2],\n        2: [8, 3, 7, 8, 4],\n        3: [6, 4, 7, 6, 2, 8, 9],\n    },\n    # machine assignment machine[job][op] (constructed so cited pairs share a machine)\n    # (1,3)&(2,4) share machine; (1,1)&(3,2) share machine.\n    \"machine\": {\n        0: [0, 1],\n        1: [0, 1, 2, 3, 4],   # op3 -> machine 3\n        2: [2, 3, 4, 3, 3],   # op4 -> machine 3 (shares with (1,3))\n        3: [0, 1, 2, 3, 4, 5, 5],  # op2 -> machine 2 ... note (1,1) machine1,\n                                   # need (3,2) share with (1,1): set machine[3][2]=1\n    },\n}\n\n# Fix machine maps to satisfy the problem's stated shared-machine pairs:\n# (1,3) and (2,4) same machine; (1,1) and (3,2) same machine.\nDATA[\"machine\"] = {\n    0: [0, 1],\n    1: [0, 1, 2, 3, 4],       # (1,1) -> machine 1 ; (1,3) -> machine 3\n    2: [2, 3, 4, 3, 3],       # (2,4) -> machine 3  (shares with (1,3))\n    3: [0, 1, 1, 3, 4, 5, 5], # (3,2) -> machine 1  (shares with (1,1))\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    jobs = d[\"jobs\"]\n    proc = d[\"proc\"]\n    mach = d[\"machine\"]\n\n    # ---- Sets ----\n    # Ops set: (job, op)\n    ops_list = [(j, o) for j in jobs for o in range(len(proc[j]))]\n    model.OPS = pyo.Set(initialize=ops_list, dimen=2)\n\n    # Pairs of operations that share a machine (undirected -> list a strictly-less ordering)\n    pair_list = []\n    for i in range(len(ops_list)):\n        for k in range(i + 1, len(ops_list)):\n            a = ops_list[i]\n            b = ops_list[k]\n            if mach[a[0]][a[1]] == mach[b[0]][b[1]]:\n                pair_list.append((a, b))\n    model.PAIRS = pyo.Set(initialize=pair_list, dimen=4)\n\n    # ---- Variables ----\n    model.s = pyo.Var(model.OPS, within=pyo.NonNegativeReals)\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n    model.y = pyo.Var(model.PAIRS, within=pyo.Binary)\n\n    # ---- Objective ----\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    # ---- Constraints ----\n    # Precedence within each job: s[j,o+1] >= s[j,o] + proc[j][o]\n    prec_list = [(j, o) for j in jobs for o in range(len(proc[j]) - 1)]\n    model.PREC = pyo.Set(initialize=prec_list, dimen=2)\n\n    def prec_rule(m, j, o):\n        return m.s[j, o + 1] >= m.s[j, o] + proc[j][o]\n    model.precedence = pyo.Constraint(model.PREC, rule=prec_rule)\n\n    # Machine non-overlap (disjunctive) for each shared-machine pair:\n    # s_b >= s_a + p_a - M(1 - y)   and   s_a >= s_b + p_b - M*y\n    def nonoverlap_a_rule(m, j, o, k, p):\n        return m.s[k, p] >= (m.s[j, o] + proc[j][o]\n                             - d[\"bigM\"] * (1 - m.y[j, o, k, p]))\n    model.nonoverlap_a = pyo.Constraint(model.PAIRS, rule=nonoverlap_a_rule)\n\n    def nonoverlap_b_rule(m, j, o, k, p):\n        return m.s[j, o] >= (m.s[k, p] + proc[k][p]\n                             - d[\"bigM\"] * m.y[j, o, k, p])\n    model.nonoverlap_b = pyo.Constraint(model.PAIRS, rule=nonoverlap_b_rule)\n\n    # Makespan: Cmax >= completion time of every operation\n    def makespan_rule(m, j, o):\n        return m.Cmax >= m.s[j, o] + proc[j][o]\n    model.makespan = pyo.Constraint(model.OPS, rule=makespan_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1684,
+      "completion_tokens": 1650
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.211788654327393,
+   "position": 5,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"jobs\": [0, 1, 2, 3],\n    \"proc\": {\n        (0, 0): 2, (0, 1): 3,\n        (1, 0): 8, (1, 1): 7, (1, 2): 4, (1, 3): 3, (1, 4): 2,\n        (2, 0): 8, (2, 1): 3, (2, 2): 7, (2, 3): 8, (2, 4): 4,\n        (3, 0): 6, (3, 1): 4, (3, 2): 7, (3, 3): 6, (3, 4): 2,\n        (3, 5): 8, (3, 6): 9,\n    },\n    \"prec_pairs\": [\n        ((0, 0), (0, 1)),\n        ((1, 0), (1, 1)), ((1, 1), (1, 2)), ((1, 2), (1, 3)), ((1, 3), (1, 4)),\n        ((2, 0), (2, 1)), ((2, 1), (2, 2)), ((2, 2), (2, 3)), ((2, 3), (2, 4)),\n        ((3, 0), (3, 1)), ((3, 1), (3, 2)), ((3, 2), (3, 3)),\n        ((3, 3), (3, 4)), ((3, 4), (3, 5)), ((3, 5), (3, 6)),\n    ],\n    \"machine_pairs\": [\n        ((1, 3), (2, 4)),\n        ((1, 1), (3, 2)),\n    ],\n    \"last_ops\": [(0, 1), (1, 4), (2, 4), (3, 6)],\n    \"bigM\": 100000,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    proc = d[\"proc\"]\n    bigM = d[\"bigM\"]\n\n    model = pyo.ConcreteModel()\n\n    model.OPS = pyo.Set(initialize=list(proc.keys()), dimen=2, ordered=True)\n    model.PREC = pyo.Set(\n        initialize=[(a[0], a[1], b[0], b[1]) for (a, b) in d[\"prec_pairs\"]],\n        dimen=4, ordered=True,\n    )\n    model.MPAIR = pyo.Set(\n        initialize=[(p[0], p[1], q[0], q[1]) for (p, q) in d[\"machine_pairs\"]],\n        dimen=4, ordered=True,\n    )\n    model.LASTOPS = pyo.Set(\n        initialize=d[\"last_ops\"], dimen=2, ordered=True,\n    )\n\n    model.S = pyo.Var(model.OPS, within=pyo.NonNegativeReals)\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n    model.X = pyo.Var(model.MPAIR, within=pyo.Binary)\n\n    def prec_rule(m, i1, j1, i2, j2):\n        return m.S[i2, j2] >= m.S[i1, j1] + proc[(i1, j1)]\n    model.prec = pyo.Constraint(model.PREC, rule=prec_rule)\n\n    def morder_rule(m, i1, j1, i2, j2):\n        return m.S[i2, j2] >= m.S[i1, j1] + proc[(i1, j1)] - bigM * (1 - m.X[i1, j1, i2, j2])\n    model.morder = pyo.Constraint(model.MPAIR, rule=morder_rule)\n\n    def morder_rev_rule(m, i1, j1, i2, j2):\n        return m.S[i1, j1] >= m.S[i2, j2] + proc[(i2, j2)] - bigM * m.X[i1, j1, i2, j2]\n    model.morder_rev = pyo.Constraint(model.MPAIR, rule=morder_rev_rule)\n\n    def makespan_rule(m, i, j):\n        return m.Cmax >= m.S[i, j] + proc[(i, j)]\n    model.makespan = pyo.Constraint(model.LASTOPS, rule=makespan_rule)\n\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1674,
+      "completion_tokens": 3752
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "missing_objective",
+      "sandbox_no_objective"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2683,
+      "completion_tokens": 1084
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 16.99881649017334,
+   "position": 6,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA\n# ---------------------------------------------------------------------------\n# Processing times: DATA[\"proc\"][job][op] = duration.\n# Jobs are indexed 0..3; operations within a job are indexed 0..len-1.\n# The problem text gives only durations and precedence; machine assignments\n# are not fully specified, so we model the general job-shop disjunctive\n# structure: every pair of operations that could share a machine is treated\n# as a potential conflict pair, enforced with big-M either/or constraints.\n# ---------------------------------------------------------------------------\nDATA = {\n    \"proc\": {\n        0: [2, 3],\n        1: [8, 7, 4, 3, 2],\n        2: [8, 3, 7, 8, 4],\n        3: [6, 4, 7, 6, 2, 8, 9],\n    },\n    \"bigM\": 100000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    proc = d[\"proc\"]\n    bigM = d[\"bigM\"]\n\n    # Flatten operations into a list of (job, op) tuples.\n    ops = []\n    for j in sorted(proc.keys()):\n        for o in range(len(proc[j])):\n            ops.append((j, o))\n\n    model = pyo.ConcreteModel()\n\n    # ------------------------------------------------------------------\n    # Sets\n    # ------------------------------------------------------------------\n    model.OPS = pyo.Set(initialize=ops, dimen=2)\n\n    # Precedence pairs: (job, op) -> (job, op+1)\n    prec_pairs = []\n    for j in sorted(proc.keys()):\n        for o in range(len(proc[j]) - 1):\n            prec_pairs.append(((j, o), (j, o + 1)))\n    model.PREC = pyo.Set(initialize=prec_pairs, dimen=4)\n\n    # Conflict pairs: all unordered pairs of distinct operations.\n    conflict_pairs = []\n    for a in range(len(ops)):\n        for b in range(a + 1, len(ops)):\n            conflict_pairs.append((ops[a], ops[b]))\n    model.CONF = pyo.Set(initialize=conflict_pairs, dimen=4)\n\n    # ------------------------------------------------------------------\n    # Variables\n    # ------------------------------------------------------------------\n    # Start time of each operation.\n    model.s = pyo.Var(model.OPS, domain=pyo.NonNegativeReals)\n\n    # Makespan.\n    model.Cmax = pyo.Var(domain=pyo.NonNegativeReals)\n\n    # Binary ordering variable for each conflict pair: 1 if first op\n    # precedes second op, 0 otherwise.\n    model.y = pyo.Var(model.CONF, domain=pyo.Binary)\n\n    # ------------------------------------------------------------------\n    # Objective: minimize makespan\n    # ------------------------------------------------------------------\n    def obj_rule(m):\n        return m.Cmax\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ------------------------------------------------------------------\n    # Constraints\n    # ------------------------------------------------------------------\n    # Precedence within a job: s[j,o+1] >= s[j,o] + p[j,o]\n    def prec_rule(m, j1, o1, j2, o2):\n        return m.s[j2, o2] >= m.s[j1, o1] + proc[j1][o1]\n\n    model.precedence = pyo.Constraint(model.PREC, rule=prec_rule)\n\n    # Disjunctive (non-overlap) constraints for each conflict pair.\n    # If y = 1: first before second.\n    #   s_b >= s_a + p_a - M (1 - y)\n    # If y = 0: second before first.\n    #   s_a >= s_b + p_b - M y\n    def disj1_rule(m, j1, o1, j2, o2):\n        return m.s[j2, o2] >= m.s[j1, o1] + proc[j1][o1] - bigM * (1 - m.y[j1, o1, j2, o2])\n\n    def disj2_rule(m, j1, o1, j2, o2):\n        return m.s[j1, o1] >= m.s[j2, o2] + proc[j2][o2] - bigM * m.y[j1, o1, j2, o2]\n\n    model.disj1 = pyo.Constraint(model.CONF, rule=disj1_rule)\n    model.disj2 = pyo.Constraint(model.CONF, rule=disj2_rule)\n\n    # Makespan must dominate every operation's completion time.\n    def makespan_rule(m, j, o):\n        return m.Cmax >= m.s[j, o] + proc[j][o]\n\n    model.makespan = pyo.Constraint(model.OPS, rule=makespan_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1688,
+      "completion_tokens": 1947
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3554,
+      "completion_tokens": 1095
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 19.426299571990967,
+   "position": 7,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------\n# DATA: every numeric constant from the problem, with source quotes.\n# ---------------------------------------------------------------------\nDATA = {\n    # \"four jobs (Job 0, Job 1, Job 2, and Job 3)\"\n    \"jobs\": [0, 1, 2, 3],\n\n    # Processing times per job, in operation order.\n    # Job 0: \"Operation 0 takes 2 units of time, and Operation 1 takes 3\"\n    \"p_job0\": [2, 3],\n    # Job 1: \"8, 7, 4, 3, and 2\"\n    \"p_job1\": [8, 7, 4, 3, 2],\n    # Job 2: \"8, 3, 7, 8, and 4\"\n    \"p_job2\": [8, 3, 7, 8, 4],\n    # Job 3: \"6, 4, 7, 6, 2, 8, and 9\"\n    \"p_job3\": [6, 4, 7, 6, 2, 8, 9],\n\n    # \"A large constant (100000) is used in the machine capacity constraints\"\n    \"bigM\": 100000,\n}\n\n# Assemble processing-time dictionary keyed by (job, operation).\nP = {\n    (0, 0): DATA[\"p_job0\"][0], (0, 1): DATA[\"p_job0\"][1],\n    (1, 0): DATA[\"p_job1\"][0], (1, 1): DATA[\"p_job1\"][1],\n    (1, 2): DATA[\"p_job1\"][2], (1, 3): DATA[\"p_job1\"][3],\n    (1, 4): DATA[\"p_job1\"][4],\n    (2, 0): DATA[\"p_job2\"][0], (2, 1): DATA[\"p_job2\"][1],\n    (2, 2): DATA[\"p_job2\"][2], (2, 3): DATA[\"p_job2\"][3],\n    (2, 4): DATA[\"p_job2\"][4],\n    (3, 0): DATA[\"p_job3\"][0], (3, 1): DATA[\"p_job3\"][1],\n    (3, 2): DATA[\"p_job3\"][2], (3, 3): DATA[\"p_job3\"][3],\n    (3, 4): DATA[\"p_job3\"][4], (3, 5): DATA[\"p_job3\"][5],\n    (3, 6): DATA[\"p_job3\"][6],\n}\nDATA[\"processing_times\"] = P\n\n# Ordered list of all operations.\nALL_OPS = sorted(P.keys())\n\n# Ordered pairs of operations belonging to DIFFERENT jobs (machine-sharing candidates).\nPAIRS = [(a, b) for a in ALL_OPS for b in ALL_OPS if a[0] < b[0]]\n\n# Within-job precedence pairs (consecutive operations).\nPREC = []\nfor j in DATA[\"jobs\"]:\n    n = len(DATA[\"p_job%d\" % j])\n    for o in range(n - 1):\n        PREC.append(((j, o), (j, o + 1)))\nDATA[\"precedence_pairs\"] = PREC\nDATA[\"machine_pairs\"] = PAIRS\n\n\ndef build_model(data=None):\n    d = data or DATA\n    P = d[\"processing_times\"]\n    M = d[\"bigM\"]\n\n    model = pyo.ConcreteModel()\n\n    # ---- Sets -------------------------------------------------------\n    model.OPS = pyo.Set(initialize=sorted(P.keys()), dimen=2)\n    model.PAIRS = pyo.Set(initialize=d[\"machine_pairs\"], dimen=4)\n    model.PREC = pyo.Set(initialize=d[\"precedence_pairs\"], dimen=4)\n\n    # ---- Variables --------------------------------------------------\n    # \"The start times S_(i,j) ... non-negative real values\"\n    model.S = pyo.Var(model.OPS, within=pyo.NonNegativeReals)\n    # \"the makespan C_max are general variables that can take non-negative real values\"\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n    # \"binary decision variables ... determine the order of operations on the same machine\"\n    model.X = pyo.Var(model.PAIRS, within=pyo.Binary)\n\n    # ---- Objective --------------------------------------------------\n    # \"The objective is to minimize the makespan\"\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    # ---- Precedence within a job ------------------------------------\n    # \"Each operation in a job must start only after the previous operation\n    #  in the same job has completed.\"\n    def precedence_rule(m, j, o, j2, o2):\n        return m.S[j2, o2] >= m.S[j, o] + P[(j, o)]\n    model.precedence = pyo.Constraint(model.PREC, rule=precedence_rule)\n\n    # ---- Machine non-overlap (disjunctive) --------------------------\n    # \"No two operations can be processed on the same machine at the same time.\"\n    # Big-M linearisation of either/or ordering.\n    def nonoverlap_a_rule(m, j, o, k, p):\n        return m.S[k, p] >= m.S[j, o] + P[(j, o)] - M * (1 - m.X[j, o, k, p])\n    model.nonoverlap_a = pyo.Constraint(model.PAIRS, rule=nonoverlap_a_rule)\n\n    def nonoverlap_b_rule(m, j, o, k, p):\n        return m.S[j, o] >= m.S[k, p] + P[(k, p)] - M * m.X[j, o, k, p]\n    model.nonoverlap_b = pyo.Constraint(model.PAIRS, rule=nonoverlap_b_rule)\n\n    # ---- Makespan definition ----------------------------------------\n    # \"The total completion time (makespan) must be at least as large as the\n    #  completion time of every operation.\"\n    def makespan_rule(m, j, o):\n        return m.Cmax >= m.S[j, o] + P[(j, o)]\n    model.makespan = pyo.Constraint(model.OPS, rule=makespan_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1672,
+      "completion_tokens": 1902
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.864365100860596,
+   "position": 8,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   S[(j, o)]  : start time of operation o of job j            (NonNegativeReals)\n#   Cmax       : makespan (total completion time)              (NonNegativeReals)\n#   X[(j,o),(k,p)] : binary, 1 if op (j,o) precedes op (k,p) on the shared\n#                    machine, 0 otherwise                      (Binary)\n#\n# Objective (minimize): minimize Cmax\n#\n# Constraints\n#   1. Precedence within a job: S[(j,o+1)] >= S[(j,o)] + p[(j,o)]\n#   2. Machine non-overlap (disjunctive) for every pair of operations that\n#      share a machine:\n#         S[(k,p)] >= S[(j,o)] + p[(j,o)] - M*(1 - X[(j,o),(k,p)])\n#         S[(j,o)] >= S[(k,p)] + p[(k,p)] - M*X[(j,o),(k,p)]\n#   3. Makespan: Cmax >= S[(j,o)] + p[(j,o)] for every operation\n# ---------------------------------------------------------------------------\n\nDATA = {\n    # processing times p[(job, op)]\n    \"p\": {\n        (0, 0): 2, (0, 1): 3,\n        (1, 0): 8, (1, 1): 7, (1, 2): 4, (1, 3): 3, (1, 4): 2,\n        (2, 0): 8, (2, 1): 3, (2, 2): 7, (2, 3): 8, (2, 4): 4,\n        (3, 0): 6, (3, 1): 4, (3, 2): 7, (3, 3): 6, (3, 4): 2,\n        (3, 5): 8, (3, 6): 9,\n    },\n    # machine assignment m[(job, op)]\n    \"m\": {\n        (0, 0): 0, (0, 1): 1,\n        (1, 0): 0, (1, 1): 1, (1, 2): 2, (1, 3): 3, (1, 4): 4,\n        (2, 0): 0, (2, 1): 1, (2, 2): 2, (2, 3): 3, (2, 4): 4,\n        (3, 0): 0, (3, 1): 1, (3, 2): 2, (3, 3): 3, (3, 4): 4,\n        (3, 5): 5, (3, 6): 6,\n    },\n    \"M\": 100000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    p = d[\"p\"]\n    mach = d[\"m\"]\n    M = d[\"M\"]\n\n    ops = sorted(p.keys())\n\n    model = pyo.ConcreteModel()\n\n    model.OPS = pyo.Set(initialize=ops, dimen=2)\n\n    # start times\n    model.S = pyo.Var(model.OPS, within=pyo.NonNegativeReals)\n\n    # makespan\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n\n    # pairs of operations sharing a machine\n    pairs = []\n    for i in range(len(ops)):\n        for j in range(i + 1, len(ops)):\n            a = ops[i]\n            b = ops[j]\n            if mach[a] == mach[b]:\n                pairs.append((a, b))\n\n    model.PAIRS = pyo.Set(initialize=pairs, dimen=4)\n\n    # binary ordering variables\n    model.X = pyo.Var(model.PAIRS, within=pyo.Binary)\n\n    # 1. precedence within a job\n    def prec_rule(m, j, o):\n        if (j, o + 1) in p:\n            return m.S[(j, o + 1)] >= m.S[(j, o)] + p[(j, o)]\n        return pyo.Constraint.Skip\n\n    model.prec = pyo.Constraint(model.OPS, rule=prec_rule)\n\n    # 2. machine non-overlap\n    def disj_rule(m, j, o, k, q):\n        return m.S[(k, q)] >= m.S[(j, o)] + p[(j, o)] - M * (1 - m.X[(j, o, k, q)])\n\n    model.disj1 = pyo.Constraint(model.PAIRS, rule=disj_rule)\n\n    def disj_rule2(m, j, o, k, q):\n        return m.S[(j, o)] >= m.S[(k, q)] + p[(k, q)] - M * m.X[(j, o, k, q)]\n\n    model.disj2 = pyo.Constraint(model.PAIRS, rule=disj_rule2)\n\n    # 3. makespan\n    def cmax_rule(m, j, o):\n        return m.Cmax >= m.S[(j, o)] + p[(j, o)]\n\n    model.cmax = pyo.Constraint(model.OPS, rule=cmax_rule)\n\n    # objective\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1688,
+      "completion_tokens": 3241
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "missing_constraints",
+      "missing_objective",
+      "missing_variables",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1665,
+      "completion_tokens": 1264
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 27.797868013381958,
+   "position": 9,
+   "recipe_index": 9
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:51:37"
+}

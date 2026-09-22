@@ -1,0 +1,295 @@
+{
+ "pid": "industryor_0096",
+ "question": "Assume a paper mill receives three orders for rolls of paper with specified widths and lengths as shown in Table 1.2.\n\nTable 1.2\n\n| Order Number | Width (m) | Length (m) |\n| :---: | :---: | :---: |\n| 1 | 0.5 | 1000 |\n| 2 | 0.7 | 3000 |\n| 3 | 0.9 | 2000 |\n\nThe mill produces rolls of paper with two standard widths: 1 meter and 2 meters. Assuming the length of the rolls is unlimited, meaning they can be continuously connected to achieve the required length, how should the rolls be cut to minimize the area lost during cutting?",
+ "templates": [
+  "Bin Packing / Cutting Stock"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Table 1.2: order widths (m) and lengths (m)\n    \"order_width\": {1: 0.5, 2: 0.7, 3: 0.9},   # \"Width (m)\" column\n    \"order_length\": {1: 1000, 2: 3000, 3: 2000},  # \"Length (m)\" column\n    # \"The mill produces rolls of paper with two standard widths: 1 meter and 2 meters.\"\n    \"stock_widths\": [1.0, 2.0],\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    I = list(d[\"order_width\"].keys())\n    S = list(d[\"stock_widths\"])\n\n    model = pyo.ConcreteModel()\n    model.I = pyo.Set(initialize=I)\n    model.S = pyo.Set(initialize=S)\n\n    # Number of stock rolls of width s used to satisfy order i\n    model.cut = pyo.Var(model.I, model.S,\n                        within=pyo.NonNegativeIntegers)\n\n    # Objective: minimize total stock area (= total length * width) consumed,\n    # equivalently minimize lost area since required order area is fixed.\n    def obj_rule(m):\n        return sum(d[\"stock_widths\"][S.index(s)] * m.cut[i, s]\n                   for i in m.I for s in m.S)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand: enough strips (of length = stock roll length) to cover each order's length.\n    # Cutting a width-s roll into order-width w_i yields floor(s / w_i) usable strips.\n    def demand_rule(m, i):\n        wi = d[\"order_width\"][i]\n        return sum(int(d[\"stock_widths\"][S.index(s)] / wi) * m.cut[i, s]\n                   for s in m.S) >= d[\"order_length\"][i]\n    model.demand = pyo.Constraint(model.I, rule=demand_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 972,
+      "completion_tokens": 851
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.295863628387451,
+   "position": 0,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA\n# ---------------------------------------------------------------------------\n# Orders: id -> (width m, length m required)\nORDERS = {\n    1: (0.5, 1000),\n    2: (0.7, 3000),\n    3: (0.9, 2000),\n}\n\n# Standard stock widths available (metres) -- unlimited length\nSTOCK_WIDTHS = [1.0, 2.0]\n\n# Tolerance for the per-metre feasibility check\nTOL = 1e-9\n\n\ndef _enumerate_patterns():\n    \"\"\"Enumerate all feasible cutting patterns per stock width.\n\n    A pattern is a multiset of item widths whose total per-metre length\n    does not exceed the stock width.  We enumerate per metre of stock.\n    Returns list of (stock_width, pattern_tuple, counts_tuple, waste_per_metre)\n    where counts_tuple[k] = number of pieces of order k+1 per metre.\n    \"\"\"\n    items = sorted(ORDERS.keys())          # [1, 2, 3]\n    widths = {k: ORDERS[k][0] for k in items}\n    patterns = []\n    for sw in STOCK_WIDTHS:\n        # enumerate counts of each item using bounded DFS\n        limits = [int(sw // widths[k] + 1e-9) for k in items]\n        for c1 in range(limits[0] + 1):\n            for c2 in range(limits[1] + 1):\n                for c3 in range(limits[2] + 1):\n                    used = (c1 * widths[1]\n                            + c2 * widths[2]\n                            + c3 * widths[3])\n                    if used <= sw + TOL and (c1 + c2 + c3) > 0:\n                        counts = (c1, c2, c3)\n                        waste = sw - used\n                        patterns.append((sw, counts, waste))\n    return patterns\n\n\n_PATTERNS = _enumerate_patterns()\n\nDATA = {\n    \"orders\": ORDERS,                # id -> (width, length)\n    \"stock_widths\": STOCK_WIDTHS,    # [1.0, 2.0]\n    \"patterns\": _PATTERNS,           # list of (stock_width, counts, waste)\n    \"tol\": TOL,\n}\n\n\n# ---------------------------------------------------------------------------\n# MODEL\n# ---------------------------------------------------------------------------\ndef build_model(data=None):\n    d = data or DATA\n\n    orders = d[\"orders\"]\n    patterns = d[\"patterns\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets ------------------------------------------------------------------\n    model.I = pyo.Set(initialize=sorted(orders.keys()), ordered=True,\n                      doc=\"orders\")\n    model.P = pyo.Set(initialize=range(len(patterns)), ordered=True,\n                      doc=\"cutting patterns\")\n\n    # Precomputed constants ------------------------------------------------\n    pat_counts = {p: patterns[p][1] for p in range(len(patterns))}\n    pat_waste = {p: patterns[p][2] for p in range(len(patterns))}\n\n    # Variables -------------------------------------------------------------\n    # metres of stock run with pattern p  (continuous)\n    model.x = pyo.Var(model.P, domain=pyo.NonNegativeReals,\n                      doc=\"metres of stock cut using pattern p\")\n\n    # Objective: minimise total wasted area --------------------------------\n    def obj_rule(m):\n        return sum(pat_waste[p] * m.x[p] for p in m.P)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraints: meet every order's required length ----------------------\n    # For each order i, sum over patterns of (pieces of i per metre)*metres\n    # must be >= required length.  Direction: >= (must satisfy the order).\n    def demand_rule(m, i):\n        idx = list(sorted(orders.keys())).index(i)  # 0-based position in tuple\n        return sum(pat_counts[p][idx] * m.x[p] for p in m.P) >= orders[i][1]\n\n    model.demand = pyo.Constraint(model.I, rule=demand_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 984,
+      "completion_tokens": 1325
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.046206474304199,
+   "position": 1,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "\"\"\"\nPaper-mill cutting stock model.\n\nThe mill produces rolls of standard widths 1 m and 2 m (length unlimited).\nOrders require specified *lengths* of finished rolls of widths 0.5, 0.7, 0.9 m.\nBecause stock is a continuous strip, if we cut a stock strip of width w along\nits length, each \"1-metre length\" of stock yields one piece of each finished\nwidth per lane occupied by that pattern.  We therefore choose the length of\nstock (in metres) cut with each feasible cutting pattern.\n\nObjective: minimise total wasted area = sum over patterns of\n           (leftover width of that pattern) * (metres of stock cut with it).\n\"\"\"\n\nimport pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant of the problem.\n# ---------------------------------------------------------------------------\nDATA = {\n    # finished (order) widths, metres\n    \"order_widths\": [0.5, 0.7, 0.9],\n    # required finished lengths, metres\n    \"order_lengths\": [1000.0, 3000.0, 2000.0],\n    # standard stock widths available, metres\n    \"stock_widths\": [1.0, 2.0],\n}\n\n\ndef _generate_patterns():\n    \"\"\"Enumerate all feasible cutting patterns for every stock width.\n\n    A pattern is (n1, n2, n3): number of lanes of each finished width cut\n    into a single 1-metre length of stock.  A pattern is feasible when the\n    used width does not exceed the stock width.\n    \"\"\"\n    pats = []\n    for w in DATA[\"stock_widths\"]:\n        # max number of lanes of each width that could possibly fit\n        max1 = int(w / DATA[\"order_widths\"][0] + 1e-9)\n        max2 = int(w / DATA[\"order_widths\"][1] + 1e-9)\n        max3 = int(w / DATA[\"order_widths\"][2] + 1e-9)\n        for n1 in range(0, max1 + 1):\n            for n2 in range(0, max2 + 1):\n                for n3 in range(0, max3 + 1):\n                    used = (n1 * DATA[\"order_widths\"][0]\n                            + n2 * DATA[\"order_widths\"][1]\n                            + n3 * DATA[\"order_widths\"][2])\n                    # non-trivial and fits within the stock width\n                    if used > 1e-9 and used <= w + 1e-9:\n                        pats.append({\n                            \"w\": w,\n                            \"a\": (n1, n2, n3),\n                            \"waste\": w - used,\n                        })\n    return pats\n\n\nDATA[\"patterns\"] = _generate_patterns()\n\n\n# ---------------------------------------------------------------------------\n# Model\n# ---------------------------------------------------------------------------\ndef build_model(data=None):\n    d = data or DATA\n    n_orders = len(d[\"order_widths\"])\n    patterns = d[\"patterns\"]\n    n_pat = len(patterns)\n\n    model = pyo.ConcreteModel()\n\n    # ---- Sets -------------------------------------------------------------\n    # finished order types (0 = 0.5 m, 1 = 0.7 m, 2 = 0.9 m)\n    model.I = pyo.RangeSet(0, n_orders - 1)\n    # cutting patterns\n    model.P = pyo.RangeSet(0, n_pat - 1)\n\n    # ---- Variables --------------------------------------------------------\n    # metres of stock cut with each pattern (continuous, length is unlimited)\n    model.x = pyo.Var(model.P, within=pyo.NonNegativeReals)\n\n    # ---- Constraints ------------------------------------------------------\n    # Each order must receive at least the required length of finished roll.\n    def demand_rule(m, i):\n        # sum over patterns of (lanes of order i) * (metres cut) >= required length\n        return sum(patterns[p][\"a\"][i] * m.x[p]\n                   for p in range(n_pat)) >= d[\"order_lengths\"][i]\n\n    model.demand = pyo.Constraint(model.I, rule=demand_rule)\n\n    # ---- Objective --------------------------------------------------------\n    # Minimise total wasted area (leftover width * metres cut).\n    def obj_rule(m):\n        return sum(patterns[p][\"waste\"] * m.x[p] for p in range(n_pat))\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 984,
+      "completion_tokens": 4093
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 18.55329394340515,
+   "position": 2,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Problem: paper mill cutting stock / trim-loss minimisation.\n#\n# Standard stock rolls have widths 1 m and 2 m; length is unlimited, so a\n# \"cutting pattern\" is a way of slicing a unit length of a stock roll into\n# finished rolls of the ordered widths (0.5, 0.7, 0.9 m).  We choose how many\n# unit-length pieces of each stock width to cut with each feasible pattern so\n# that the ordered total lengths are met, minimising the wasted area.\n#\n# Decision variables\n#   x[p]  : number of unit-length stock pieces cut with pattern p\n#           (index set P = feasible patterns, domain NonNegativeReals)\n#   w[p]  : waste (m of width) per unit length of pattern p  -- data, not var\n#\n# Objective (minimise total lost area = total waste width * unit length):\n#   min  sum_p  waste[p] * x[p]\n#\n# Constraints\n#   (1) For each order i: total length produced of width i must be >= ordered\n#       length.  sum_{p} count[p,i] * x[p] >= length[i]\n#   (2) Each pattern p is cut from exactly one stock width; the sum of the\n#       finished widths in the pattern must not exceed that stock width\n#       (enforced by construction of the pattern list).\n# ---------------------------------------------------------------------------\n\nDATA = {\n    # ordered widths (m) and lengths (m)\n    \"orders\": [1, 2, 3],\n    \"width\": {1: 0.5, 2: 0.7, 3: 0.9},\n    \"length\": {1: 1000, 2: 3000, 3: 2000},\n    # available standard stock widths (m)\n    \"stock_widths\": [1.0, 2.0],\n    # feasible cutting patterns: for each pattern, the number of rolls of each\n    # ordered width obtained from one unit length of a stock roll.\n    # Patterns are enumerated so that the sum of widths <= stock width.\n    \"patterns\": {\n        # stock width 1.0 m\n        \"A\": {\"stock\": 1.0, \"counts\": {1: 2, 2: 0, 3: 0}},  # 2*0.5 = 1.0\n        \"B\": {\"stock\": 1.0, \"counts\": {1: 0, 2: 0, 3: 1}},  # 1*0.9 = 0.9\n        # stock width 2.0 m\n        \"C\": {\"stock\": 2.0, \"counts\": {1: 4, 2: 0, 3: 0}},  # 4*0.5 = 2.0\n        \"D\": {\"stock\": 2.0, \"counts\": {1: 0, 2: 2, 3: 0}},  # 2*0.7 = 1.4\n        \"E\": {\"stock\": 2.0, \"counts\": {1: 0, 2: 0, 3: 2}},  # 2*0.9 = 1.8\n        \"F\": {\"stock\": 2.0, \"counts\": {1: 1, 2: 1, 3: 1}},  # .5+.7+.9 = 2.1 > 2 -> infeasible, excluded\n        \"G\": {\"stock\": 2.0, \"counts\": {1: 2, 2: 1, 3: 0}},  # 1.0+0.7 = 1.7\n        \"H\": {\"stock\": 2.0, \"counts\": {1: 2, 2: 0, 3: 1}},  # 1.0+0.9 = 1.9\n        \"I\": {\"stock\": 2.0, \"counts\": {1: 0, 2: 1, 3: 1}},  # 0.7+0.9 = 1.6\n        \"J\": {\"stock\": 2.0, \"counts\": {1: 1, 2: 0, 3: 1}},  # 0.5+0.9 = 1.4\n        \"K\": {\"stock\": 2.0, \"counts\": {1: 1, 2: 1, 3: 0}},  # 0.5+0.7 = 1.2\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.orders = pyo.Set(initialize=d[\"orders\"])\n    model.patterns = pyo.Set(initialize=list(d[\"patterns\"].keys()))\n\n    # Precompute waste per pattern (m of width lost per unit length)\n    waste = {}\n    for p, info in d[\"patterns\"].items():\n        used = sum(d[\"width\"][i] * info[\"counts\"][i] for i in d[\"orders\"])\n        waste[p] = info[\"stock\"] - used\n\n    # Decision variables: number of unit-length stock pieces per pattern\n    model.x = pyo.Var(model.patterns, within=pyo.NonNegativeReals)\n\n    # Objective: minimise total lost area\n    def obj_rule(m):\n        return sum(waste[p] * m.x[p] for p in m.patterns)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint (1): meet ordered length for each width\n    def demand_rule(m, i):\n        return sum(d[\"patterns\"][p][\"counts\"][i] * m.x[p] for p in m.patterns) >= d[\"length\"][i]\n\n    model.demand = pyo.Constraint(model.orders, rule=demand_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 988,
+      "completion_tokens": 2330
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "missing_constraints",
+      "missing_objective",
+      "missing_variables",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1094,
+      "completion_tokens": 1370
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 24.123389720916748,
+   "position": 3,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem statement.\n# ---------------------------------------------------------------------------\nDATA = {\n    # Table 1.2: order widths (m)\n    \"order_width\": {1: 0.5, 2: 0.7, 3: 0.9},\n    # Table 1.2: order lengths (m)\n    \"order_length\": {1: 1000, 2: 3000, 3: 2000},\n    # \"two standard widths: 1 meter and 2 meters\"\n    \"stock_width\": {1: 1.0, 2: 2.0},\n}\n\n# Ordered index sets\nORDER_IDS = tuple(DATA[\"order_width\"].keys())\nSTOCK_IDS = tuple(DATA[\"stock_width\"].keys())\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # --- Sets ---------------------------------------------------------------\n    model.ORDER = pyo.Set(initialize=list(d[\"order_width\"].keys()), ordered=True)\n    model.STOCK = pyo.Set(initialize=list(d[\"stock_width\"].keys()), ordered=True)\n\n    # --- Variables ----------------------------------------------------------\n    # n[o, s] : number of standard rolls of width s dedicated to order o.\n    # Continuous (rolls connect continuously) and non-negative.\n    model.n = pyo.Var(model.ORDER, model.STOCK,\n                      within=pyo.NonNegativeReals, bounds=(0, None))\n\n    # --- Objective ----------------------------------------------------------\n    # Minimize total area of standard stock used; equivalently minimize waste\n    # since required order area is a constant.\n    def obj_rule(m):\n        return sum(m.n[o, s] * d[\"stock_width\"][s]\n                   for o in m.ORDER for s in m.STOCK)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --- Constraints --------------------------------------------------------\n    # Each order's length requirement must be met: the number of standard\n    # rolls (of any width) dedicated to order o must cover L_o, because each\n    # roll supplies one continuous strip of the required order width.\n    def demand_rule(m, o):\n        return sum(m.n[o, s] for s in m.STOCK) >= d[\"order_length\"][o]\n    model.demand = pyo.Constraint(model.ORDER, rule=demand_rule)\n\n    # A stock roll of width s can only be cut to an order width w_o <= s.\n    # Enforce this by forbidding allocation where w_o > s via an upper bound.\n    def fit_rule(m, o, s):\n        if d[\"order_width\"][o] <= d[\"stock_width\"][s]:\n            return pyo.Constraint.Skip\n        return m.n[o, s] == 0\n    model.fit = pyo.Constraint(model.ORDER, model.STOCK, rule=fit_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 972,
+      "completion_tokens": 1399
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.491272449493408,
+   "position": 4,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"orders\": [1, 2, 3],\n    \"order_width\": {1: 0.5, 2: 0.7, 3: 0.9},\n    \"order_length\": {1: 1000, 2: 3000, 3: 2000},\n    \"stock_widths\": [1, 2],\n    # Feasible cutting patterns: (stock_width, {order: count}) where count is\n    # number of order-width strips cut side-by-side from one stock roll.\n    # Length produced per roll for order o = count * stock_width / order_width[o]\n    # (strips are cut lengthwise; length of stock roll is treated as unlimited\n    #  by continuous connection, so each strip yields stock_width/order_width[o]\n    #  times the roll length; the \"count\" is how many strips of that width fit).\n    \"patterns\": [\n        {\"stock\": 1, \"yield\": {1: 2, 2: 0, 3: 0}},\n        {\"stock\": 1, \"yield\": {1: 0, 2: 1, 3: 0}},\n        {\"stock\": 1, \"yield\": {1: 0, 2: 0, 3: 1}},\n        {\"stock\": 1, \"yield\": {1: 1, 2: 0, 3: 0}},\n        {\"stock\": 2, \"yield\": {1: 4, 2: 0, 3: 0}},\n        {\"stock\": 2, \"yield\": {1: 0, 2: 2, 3: 0}},\n        {\"stock\": 2, \"yield\": {1: 0, 2: 0, 3: 2}},\n        {\"stock\": 2, \"yield\": {1: 2, 2: 1, 3: 0}},\n        {\"stock\": 2, \"yield\": {1: 2, 2: 0, 3: 1}},\n        {\"stock\": 2, \"yield\": {1: 0, 2: 1, 3: 1}},\n        {\"stock\": 2, \"yield\": {1: 1, 2: 2, 3: 0}},\n        {\"stock\": 2, \"yield\": {1: 1, 2: 0, 3: 2}},\n    ],\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.ORDERS = pyo.Set(initialize=d[\"orders\"])\n    model.PATTERNS = pyo.Set(initialize=range(len(d[\"patterns\"])))\n\n    # Number of stock rolls cut with each pattern\n    model.rolls = pyo.Var(model.PATTERNS, within=pyo.NonNegativeIntegers)\n\n    # Total stock area used (each stock roll has area stock_width * roll_length;\n    # roll_length is the same for all, so minimize sum of stock widths used)\n    def obj_rule(m):\n        return sum(\n            d[\"patterns\"][p][\"stock\"] * m.rolls[p] for p in m.PATTERNS\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Length produced per roll for order o from pattern p:\n    #   count * stock_width / order_width[o]  (times a common roll length L)\n    # Demand must be met.\n    def demand_rule(m, o):\n        return sum(\n            d[\"patterns\"][p][\"yield\"][o]\n            * d[\"patterns\"][p][\"stock\"]\n            / d[\"order_width\"][o]\n            * m.rolls[p]\n            for p in m.PATTERNS\n        ) >= d[\"order_length\"][o]\n\n    model.demand = pyo.Constraint(model.ORDERS, rule=demand_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 968,
+      "completion_tokens": 1238
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.14502477645874,
+   "position": 5,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# All numeric values taken from the problem statement.\n# ---------------------------------------------------------------------------\nDATA = {\n    # identifiers of the three orders\n    \"orders\": [1, 2, 3],\n    # order width (m)\n    \"w\": {1: 0.5, 2: 0.7, 3: 0.9},\n    # order required length (m of that strip)\n    \"L\": {1: 1000.0, 2: 3000.0, 3: 2000.0},\n    # stock (parent) roll widths available (m)\n    \"stock_widths\": [1.0, 2.0],\n    # patterns are generated below from the order widths\n    \"patterns\": None,\n}\n\n\ndef _generate_patterns():\n    \"\"\"Enumerate every combination of strips of orders 1,2,3 that fits\n    at most the widest stock roll (2 m).\"\"\"\n    w1, w2, w3 = DATA[\"w\"][1], DATA[\"w\"][2], DATA[\"w\"][3]\n    widest = max(DATA[\"stock_widths\"])\n    patterns = []\n    for n1 in range(int(widest // w1) + 1):\n        for n2 in range(int(widest // w2) + 1):\n            for n3 in range(int(widest // w3) + 1):\n                used = n1 * w1 + n2 * w2 + n3 * w3\n                if 1e-9 < used <= widest + 1e-9:\n                    patterns.append({\"n1\": n1, \"n2\": n2, \"n3\": n3, \"used\": used})\n    return patterns\n\n\nDATA[\"patterns\"] = _generate_patterns()\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    # ---- Sets -------------------------------------------------------------\n    m.K = pyo.Set(initialize=list(range(len(d[\"stock_widths\"]))), ordered=True)\n    m.P = pyo.Set(initialize=list(range(len(d[\"patterns\"]))), ordered=True)\n    m.I = pyo.Set(initialize=list(d[\"orders\"]), ordered=True)\n\n    # plain python lookups (not model components)\n    supp = {k: d[\"stock_widths\"][k] for k in range(len(d[\"stock_widths\"]))}\n    pat = {p: d[\"patterns\"][p] for p in range(len(d[\"patterns\"]))}\n\n    W_ONE_IDX = list(d[\"stock_widths\"]).index(1.0)\n    W_TWO_IDX = list(d[\"stock_widths\"]).index(2.0)\n\n    # ---- Allowed (stock, pattern) pairs -----------------------------------\n    one_allowed = {\n        p for p in range(len(d[\"patterns\"]))\n        if pat[p][\"used\"] <= supp[W_ONE_IDX] + 1e-9\n    }\n    two_allowed = {\n        p for p in range(len(d[\"patterns\"]))\n        if pat[p][\"used\"] <= supp[W_TWO_IDX] + 1e-9\n    }\n    allowed = sorted(\n        {(W_ONE_IDX, p) for p in one_allowed}\n        | {(W_TWO_IDX, p) for p in two_allowed}\n    )\n    m.KP = pyo.Set(initialize=allowed, dimen=2, ordered=True)\n\n    # ---- Variables --------------------------------------------------------\n    m.x = pyo.Var(m.KP, within=pyo.NonNegativeReals, bounds=(0, None))\n\n    # ---- Objective: minimise area of stock roll consumed ------------------\n    def obj_rule(mo):\n        return sum(mo.x[k, p] * supp[k] for (k, p) in mo.KP)\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---- Demand constraints ----------------------------------------------\n    def rule_demand(mo, i):\n        produced = 0\n        for (k, p) in mo.KP:\n            if i == 1:\n                face = pat[p][\"n1\"]\n            elif i == 2:\n                face = pat[p][\"n2\"]\n            else:\n                face = pat[p][\"n3\"]\n            produced += face * mo.x[k, p]\n        return produced >= d[\"L\"][i]\n\n    m.demand = pyo.Constraint(m.I, rule=rule_demand)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 974,
+      "completion_tokens": 3282
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2401,
+      "completion_tokens": 993
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 22.357188940048218,
+   "position": 6,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"orders\": [1, 2, 3],\n    \"width\": {1: 0.5, 2: 0.7, 3: 0.9},\n    \"length\": {1: 1000, 2: 3000, 3: 2000},\n    \"stock_widths\": [1, 2],\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    orders = d[\"orders\"]\n    stocks = d[\"stock_widths\"]\n    width = d[\"width\"]\n    length = d[\"length\"]\n\n    # Feasible patterns: max pieces of order i per stock roll of width s\n    max_pieces = {}\n    for i in orders:\n        for s in stocks:\n            max_pieces[(i, s)] = int(s // width[i])\n\n    # Build pattern index sets (k = number of pieces per roll, 0..max_pieces)\n    patterns = {}\n    for i in orders:\n        for s in stocks:\n            patterns[(i, s)] = list(range(max_pieces[(i, s)] + 1))\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=orders)\n    model.S = pyo.Set(initialize=stocks)\n\n    # Rolls of stock width s allocated to order i\n    model.cut = pyo.Var(model.I, model.S, within=pyo.NonNegativeIntegers)\n\n    # use[i,s,k]: rolls of width s used for order i with k pieces per roll\n    model.use = pyo.Var(\n        [(i, s, k) for i in orders for s in stocks for k in patterns[(i, s)]],\n        within=pyo.NonNegativeIntegers,\n    )\n\n    # Objective: minimize total stock area consumed\n    def obj_rule(m):\n        return sum(\n            m.cut[i, s] * s * length[i]\n            for i in m.I\n            for s in m.S\n        )\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand: total length produced for order i equals required length\n    def demand_rule(m, i):\n        return sum(\n            m.use[i, s, k] * k * length[i]\n            for s in stocks\n            for k in patterns[(i, s)]\n        ) == length[i]\n    model.demand = pyo.Constraint(model.I, rule=demand_rule)\n\n    # Link cut[i,s] to the pattern usage variables\n    def link_rule(m, i, s):\n        return m.cut[i, s] == sum(\n            m.use[i, s, k] for k in patterns[(i, s)]\n        )\n    model.link = pyo.Constraint(model.I, model.S, rule=link_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 968,
+      "completion_tokens": 1000
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.710936546325684,
+   "position": 7,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   x[s, j] : number of standard rolls of width SW[s] assigned to order j\n#             (index s in Ns, j in Nj, domain NonNegativeIntegers)\n#   y[s]    : number of standard rolls of width SW[s] used (NonNegativeIntegers)\n#\n# Objective (minimize): total area lost during cutting\n#   lost area = total area of standard rolls used - total area of ordered rolls\n#             = sum_s SW[s]*y[s]*Lmax - sum_j W[j]*L[j]\n#   Since sum_j W[j]*L[j] is constant, minimizing lost area is equivalent to\n#   minimizing sum_s SW[s]*y[s]*Lmax, i.e. minimizing total standard-roll area.\n#\n# Constraints\n#   (1) Order length satisfaction: for each order j, the total length of\n#       standard-roll strips of width W[j] assigned to j must be at least L[j].\n#       Each standard roll of width SW[s] has length Lmax (rolls are cut\n#       lengthwise into strips; length is unlimited/continuous).\n#         sum_s x[s,j] * Lmax >= L[j]        for all j\n#   (2) Roll usage linking: the number of strips of width SW[s] cut from\n#       standard rolls of width SW[s] cannot exceed the number of such rolls\n#       used, times the maximum number of strips of width SW[s] that fit\n#       across a roll of width SW[s] (floor(SW[s]/SW[s]) = 1 for s=1,2).\n#         sum_j x[s,j] <= MAXSTRIPS[s] * y[s]   for all s\n#   (3) Width feasibility: strips assigned to a standard roll must fit within\n#       its width.  For standard width 1.0 m, only order widths <= 1.0 fit;\n#       for standard width 2.0 m, order widths <= 2.0 fit.  This is enforced\n#       by restricting the assignment set.\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"W\": {1: 0.5, 2: 0.7, 3: 0.9},          # order widths (m)\n    \"L\": {1: 1000, 2: 3000, 3: 2000},        # order lengths (m)\n    \"SW\": {1: 1.0, 2: 2.0},                  # standard roll widths (m)\n    \"Lmax\": 1000.0,                          # reference roll length (m)\n    \"Ns\": [1, 2],\n    \"Nj\": [1, 2, 3],\n    # maximum number of strips of width SW[s] that fit across a roll of SW[s]\n    \"MAXSTRIPS\": {1: 1, 2: 1},\n    # assignment feasibility: which orders can be cut from which standard width\n    \"FEAS\": {\n        1: [1, 2, 3],   # 1.0 m roll can supply 0.5, 0.7, 0.9 m strips\n        2: [1, 2, 3],   # 2.0 m roll can supply 0.5, 0.7, 0.9 m strips\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.Ns = pyo.Set(initialize=d[\"Ns\"])\n    model.Nj = pyo.Set(initialize=d[\"Nj\"])\n\n    # feasible (standard width, order) pairs\n    feas_pairs = [(s, j) for s in d[\"Ns\"] for j in d[\"FEAS\"][s]]\n    model.Pairs = pyo.Set(initialize=feas_pairs, dimen=2)\n\n    # x[s,j]: number of strips of order j cut from standard rolls of width SW[s]\n    model.x = pyo.Var(model.Pairs, within=pyo.NonNegativeIntegers)\n\n    # y[s]: number of standard rolls of width SW[s] used\n    model.y = pyo.Var(model.Ns, within=pyo.NonNegativeIntegers)\n\n    # (1) order length satisfaction\n    def order_length_rule(m, j):\n        return sum(m.x[s, j] * d[\"Lmax\"] for s in d[\"Ns\"] if (s, j) in feas_pairs) >= d[\"L\"][j]\n    model.order_length = pyo.Constraint(model.Nj, rule=order_length_rule)\n\n    # (2) roll usage linking\n    def roll_usage_rule(m, s):\n        return sum(m.x[s, j] for j in d[\"FEAS\"][s]) <= d[\"MAXSTRIPS\"][s] * m.y[s]\n    model.roll_usage = pyo.Constraint(model.Ns, rule=roll_usage_rule)\n\n    # objective: minimize total standard-roll area used (equivalent to lost area)\n    def obj_rule(m):\n        return sum(d[\"SW\"][s] * d[\"Lmax\"] * m.y[s] for s in d[\"Ns\"])\n    model.obj = pyo.Objective(expr=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 988,
+      "completion_tokens": 2210
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "missing_constraints",
+      "missing_objective",
+      "missing_variables",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1129,
+      "completion_tokens": 1184
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 23.45992612838745,
+   "position": 8,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nGOLD_ANSWER = None\n\nDATA = {\n    \"orders\": [1, 2, 3],\n    \"widths\": {1: 0.5, 2: 0.7, 3: 0.9},           # Order widths (m)\n    \"lengths\": {1: 1000.0, 2: 3000.0, 3: 2000.0},  # Order lengths (m)\n    \"stock\": [1, 2],\n    \"stock_width\": {1: 1.0, 2: 2.0},               # Standard widths (m)\n    \"tol\": 1e-9,\n    \"max_count\": 20,                               # max slivers of one width per cut\n}\n\n\ndef _enum_patterns(d):\n    \"\"\"Enumerate feasible cutting patterns for each stock roll.\n\n    A pattern is a tuple of counts (one per order width).  It is feasible on a\n    stock roll if the summed width of the slivers does not exceed the stock width.\n    \"\"\"\n    import itertools\n\n    orders = list(d[\"orders\"])\n    widths = d[\"widths\"]\n    stock = list(d[\"stock\"])\n    stock_width = d[\"stock_width\"]\n    max_count = d[\"max_count\"]\n    tol = d[\"tol\"]\n\n    patterns = {}\n    idx = 0\n    ranges = [range(0, max_count + 1) for _ in orders]\n    for combo in itertools.product(*ranges):\n        if not any(c > 0 for c in combo):\n            continue\n        used = sum(combo[t] * widths[orders[t]] for t in range(len(orders)))\n        fits = [s for s in stock if used <= stock_width[s] + tol]\n        if fits:\n            patterns[idx] = {\"counts\": combo, \"fits\": fits}\n            idx += 1\n    return patterns\n\n\ndef build_model(data=None):\n    d = data or DATA\n    orders = list(d[\"orders\"])\n    widths = d[\"widths\"]\n    lengths = d[\"lengths\"]\n    stock = list(d[\"stock\"])\n    stock_width = d[\"stock_width\"]\n\n    pat_dict = _enum_patterns(d)\n    pat_keys = sorted(pat_dict.keys())\n\n    model = pyo.ConcreteModel()\n\n    # ----- sets -----\n    model.orders = pyo.Set(initialize=orders, ordered=True)\n    model.patterns = pyo.Set(initialize=pat_keys, ordered=True)\n    model.stock = pyo.Set(initialize=stock, ordered=True)\n\n    # ----- variables -----\n    # x[k, s] = metres of stock roll of width s cut using pattern k\n    model.x = pyo.Var(\n        model.patterns,\n        model.stock,\n        within=pyo.NonNegativeReals,\n    )\n\n    # ----- objective -----\n    # Minimise waste = consumed area - delivered area (delivered area is constant)\n    def obj_rule(m):\n        consumed = sum(\n            stock_width[s] * m.x[k, s]\n            for k in pat_keys for s in stock\n        )\n        delivered = sum(widths[o] * lengths[o] for o in orders)\n        return consumed - delivered\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ----- constraints -----\n    # Demand: total length of order o produced must meet its required length\n    def demand_rule(m, o):\n        produced = sum(\n            pat_dict[k][\"counts\"][orders.index(o)] * m.x[k, s]\n            for k in pat_keys for s in stock\n        )\n        return produced >= lengths[o]\n\n    model.demand = pyo.Constraint(model.orders, rule=demand_rule)\n\n    # Fit: forbid cutting a pattern on a stock roll width it does not fit\n    def fit_rule(m, k, s):\n        if s in pat_dict[k][\"fits\"]:\n            return pyo.Constraint.Skip\n        return m.x[k, s] == 0\n\n    model.fit = pyo.Constraint(model.patterns, model.stock, rule=fit_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 974,
+      "completion_tokens": 2008
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2424,
+      "completion_tokens": 912
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 14.629435777664185,
+   "position": 9,
+   "recipe_index": 8
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T10:40:31"
+}

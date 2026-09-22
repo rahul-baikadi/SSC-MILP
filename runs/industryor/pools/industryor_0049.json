@@ -1,0 +1,330 @@
+{
+ "pid": "industryor_0049",
+ "question": "A large paper manufacturing company has 10 paper mills and supplies 1000 customers. These paper mills use three interchangeable machines and four different raw materials to produce five types of paper. The company wants to develop a plan to determine the quantity of each type of paper produced on each machine in each mill, and to determine which type of paper is supplied to which customers and in what quantity, in order to minimize total transportation costs. The following information is known:\n\n$D_{j k}$ - Customer j requires k units of paper each month;\n$r_{k l m}$ - The amount of raw material m required to produce one unit of paper of type k on machine l;\n$R_{i m}$ - The amount of raw material m available each month at mill i;\n$c_{k l}$ - The machine time required to produce one unit of paper of type k on machine l;\n$c_{i l}$ - The machine time available each month at mill i for machine type l;\n$P_{i k l}$ - The cost of producing one unit of paper of type k on machine type l at mill i;\n$T_{i j k}$ - The cost of transporting one unit of paper of type k from mill i to customer j.\n\nDevelop a linear programming model for this problem.",
+ "templates": [
+  "Production Planning / Product Mix",
+  "Transportation"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------\n# DATA: all numeric constants for the problem instance\n# ---------------------------------------------------------------\nDATA = {\n    \"mills\": [\"M1\", \"M2\", \"M3\", \"M4\", \"M5\", \"M6\", \"M7\", \"M8\", \"M9\", \"M10\"],\n    \"customers\": [f\"C{j}\" for j in range(1, 1001)],\n    \"paper_types\": [\"K1\", \"K2\", \"K3\", \"K4\", \"K5\"],\n    \"machines\": [\"L1\", \"L2\", \"L3\"],\n    \"materials\": [\"m1\", \"m2\", \"m3\", \"m4\"],\n\n    # D[j,k]: monthly demand of customer j for paper type k\n    \"D\": {(j, k): 10.0\n          for j in [f\"C{j}\" for j in range(1, 1001)]\n          for k in [\"K1\", \"K2\", \"K3\", \"K4\", \"K5\"]},\n\n    # r[k,l,m]: raw material m needed per unit of paper k on machine l\n    \"r\": {(k, l, m): 1.0\n          for k in [\"K1\", \"K2\", \"K3\", \"K4\", \"K5\"]\n          for l in [\"L1\", \"L2\", \"L3\"]\n          for m in [\"m1\", \"m2\", \"m3\", \"m4\"]},\n\n    # R[i,m]: monthly availability of raw material m at mill i\n    \"R\": {(i, m): 1.0e7\n          for i in [\"M1\", \"M2\", \"M3\", \"M4\", \"M5\", \"M6\", \"M7\", \"M8\", \"M9\", \"M10\"]\n          for m in [\"m1\", \"m2\", \"m3\", \"m4\"]},\n\n    # c[k,l]: machine time per unit of paper k on machine l\n    \"c_prod\": {(k, l): 1.0\n               for k in [\"K1\", \"K2\", \"K3\", \"K4\", \"K5\"]\n               for l in [\"L1\", \"L2\", \"L3\"]},\n\n    # c[i,l]: monthly machine time available at mill i for machine l\n    \"c_avail\": {(i, l): 1.0e7\n                for i in [\"M1\", \"M2\", \"M3\", \"M4\", \"M5\", \"M6\", \"M7\", \"M8\", \"M9\", \"M10\"]\n                for l in [\"L1\", \"L2\", \"L3\"]},\n\n    # P[i,k,l]: production cost per unit of paper k on machine l at mill i\n    \"P\": {(i, k, l): 5.0\n          for i in [\"M1\", \"M2\", \"M3\", \"M4\", \"M5\", \"M6\", \"M7\", \"M8\", \"M9\", \"M10\"]\n          for k in [\"K1\", \"K2\", \"K3\", \"K4\", \"K5\"]\n          for l in [\"L1\", \"L2\", \"L3\"]},\n\n    # T[i,j,k]: transport cost per unit of paper k from mill i to customer j\n    \"T\": {(i, j, k): 1.0\n          for i in [\"M1\", \"M2\", \"M3\", \"M4\", \"M5\", \"M6\", \"M7\", \"M8\", \"M9\", \"M10\"]\n          for j in [f\"C{j}\" for j in range(1, 1001)]\n          for k in [\"K1\", \"K2\", \"K3\", \"K4\", \"K5\"]},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    mills = d[\"mills\"]\n    customers = d[\"customers\"]\n    paper_types = d[\"paper_types\"]\n    machines = d[\"machines\"]\n    materials = d[\"materials\"]\n\n    model = pyo.ConcreteModel()\n\n    # ------------------- Sets -------------------\n    model.I = pyo.Set(initialize=mills, ordered=True)\n    model.J = pyo.Set(initialize=customers, ordered=True)\n    model.K = pyo.Set(initialize=paper_types, ordered=True)\n    model.L = pyo.Set(initialize=machines, ordered=True)\n    model.M = pyo.Set(initialize=materials, ordered=True)\n\n    # ------------------- Variables -------------------\n    # produce[i,k,l]: units of paper k made on machine l at mill i\n    model.produce = pyo.Var(model.I, model.K, model.L,\n                            domain=pyo.NonNegativeReals)\n\n    # ship[i,j,k]: units of paper k shipped from mill i to customer j\n    model.ship = pyo.Var(model.I, model.J, model.K,\n                         domain=pyo.NonNegativeReals)\n\n    # ------------------- Objective -------------------\n    def obj_rule(m):\n        prod_cost = sum(d[\"P\"][(i, k, l)] * m.produce[i, k, l]\n                        for i in m.I for k in m.K for l in m.L)\n        trans_cost = sum(d[\"T\"][(i, j, k)] * m.ship[i, j, k]\n                         for i in m.I for j in m.J for k in m.K)\n        return prod_cost + trans_cost\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ------------------- Constraints -------------------\n\n    # Raw material availability at each mill\n    def raw_material_rule(m, i, mat):\n        return sum(d[\"r\"][(k, l, mat)] * m.produce[i, k, l]\n                   for k in m.K for l in m.L) <= d[\"R\"][(i, mat)]\n\n    model.raw_material = pyo.Constraint(model.I, model.M,\n                                        rule=raw_material_rule)\n\n    # Machine time availability at each mill\n    def machine_time_rule(m, i, l):\n        return sum(d[\"c_prod\"][(k, l)] * m.produce[i, k, l]\n                   for k in m.K) <= d[\"c_avail\"][(i, l)]\n\n    model.machine_time = pyo.Constraint(model.I, model.L,\n                                        rule=machine_time_rule)\n\n    # Customer demand must be exactly satisfied\n    def demand_rule(m, j, k):\n        return sum(m.ship[i, j, k] for i in m.I) == d[\"D\"][(j, k)]\n\n    model.demand = pyo.Constraint(model.J, model.K, rule=demand_rule)\n\n    # Flow balance: total shipped out of mill i of paper k equals total produced\n    def balance_rule(m, i, k):\n        return sum(m.ship[i, j, k] for j in m.J) == \\\n               sum(m.produce[i, k, l] for l in m.L)\n\n    model.balance = pyo.Constraint(model.I, model.K, rule=balance_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1263,
+      "completion_tokens": 1955
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 9.195675373077393,
+   "position": 0,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"I\": 10,      # number of mills\n    \"J\": 1000,    # number of customers\n    \"L\": 3,       # number of machine types\n    \"M\": 4,       # number of raw materials\n    \"K\": 5,       # number of paper types\n\n    # D[(j,k)] : customer j requires D units of paper type k each month\n    # (first customer shown; others default)\n    \"D\": {(0, 0): 500.0, (0, 1): 300.0, (0, 2): 400.0,\n          (0, 3): 250.0, (0, 4): 350.0},\n\n    # r[(k,l,m)] : amount of material m to produce one unit of paper type k on machine l\n    \"r\": {(0, 0, 0): 0.5, (0, 0, 1): 0.2, (0, 0, 2): 0.1, (0, 0, 3): 0.0,\n          (0, 1, 0): 0.5, (0, 1, 1): 0.2, (0, 1, 2): 0.1, (0, 1, 3): 0.0},\n    \"r_default\": 0.2,\n\n    # R[(i,m)] : material m available monthly at mill i\n    \"R\": {(0, 0): 100000.0, (0, 1): 50000.0,\n          (0, 2): 30000.0, (0, 3): 20000.0},\n    \"R_default\": 50000.0,\n\n    # c_kl[(k,l)] : machine time to produce one unit of paper type k on machine l\n    \"c_kl\": {(0, 0): 0.1, (0, 1): 0.08, (0, 2): 0.12},\n    \"c_kl_default\": 0.1,\n\n    # c_il[(i,l)] : machine time available monthly at mill i for machine type l\n    \"c_il\": {(0, 0): 4000.0, (0, 1): 3000.0, (0, 2): 3500.0},\n    \"c_il_default\": 4000.0,\n\n    # P[(i,k,l)] : production cost per unit\n    \"P\": {(0, 0, 0): 2.5, (0, 0, 1): 2.7, (0, 0, 2): 2.4},\n    \"P_default\": 2.5,\n\n    # T[(i,j,k)] : transport cost per unit\n    \"T\": {(0, 0, 0): 1.2},\n    \"T_default\": 1.5,\n}\n\n# ---- default demand so all 1000 customers get a requirement -------------\nfor jj in range(1, DATA[\"J\"]):\n    for kk in range(DATA[\"K\"]):\n        DATA[\"D\"].setdefault((jj, kk), 10.0)\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ---- Sets ----\n    model.I = pyo.RangeSet(0, d[\"I\"] - 1)          # mills\n    model.J = pyo.RangeSet(0, d[\"J\"] - 1)          # customers\n    model.L = pyo.RangeSet(0, d[\"L\"] - 1)          # machines\n    model.M = pyo.RangeSet(0, d[\"M\"] - 1)          # materials\n    model.K = pyo.RangeSet(0, d[\"K\"] - 1)          # paper types\n\n    # ---- Decision variables ----\n    # x[i,k,l] : units of paper type k produced on machine l at mill i\n    model.x = pyo.Var(model.I, model.K, model.L,\n                      domain=pyo.NonNegativeReals)\n\n    # y[i,j,k] : units of paper type k shipped from mill i to customer j\n    model.y = pyo.Var(model.I, model.J, model.K,\n                      domain=pyo.NonNegativeReals)\n\n    # ---- Objective: minimize production + transportation cost ----\n    def obj_rule(m):\n        prod = sum(d[\"P\"].get((i, k, l), d[\"P_default\"]) * m.x[i, k, l]\n                   for i in m.I for k in m.K for l in m.L)\n        ship = sum(d[\"T\"].get((i, j, k), d[\"T_default\"]) * m.y[i, j, k]\n                   for i in m.I for j in m.J for k in m.K)\n        return prod + ship\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---- (a) Raw material availability per mill per material ----\n    def mat_rule(m, i, mm):\n        return sum(d[\"r\"].get((k, l, mm), d[\"r_default\"]) * m.x[i, k, l]\n                   for k in m.K for l in m.L) <= d[\"R\"].get((i, mm), d[\"R_default\"])\n\n    model.raw_mat = pyo.Constraint(model.I, model.M, rule=mat_rule)\n\n    # ---- (b) Machine time availability per mill per machine type ----\n    def mch_rule(m, i, l):\n        return sum(d[\"c_kl\"].get((k, l), d[\"c_kl_default\"]) * m.x[i, k, l]\n                   for k in m.K) <= d[\"c_il\"].get((i, l), d[\"c_il_default\"])\n\n    model.machine_time = pyo.Constraint(model.I, model.L, rule=mch_rule)\n\n    # ---- (c) Balance: everything produced at mill i of paper k is shipped out ----\n    def bal_rule(m, i, k):\n        return sum(m.y[i, j, k] for j in m.J) == sum(m.x[i, k, l] for l in m.L)\n\n    model.balance = pyo.Constraint(model.I, model.K, rule=bal_rule)\n\n    # ---- (d) Demand: each customer's requirement of each paper type is met ----\n    def dem_rule(m, j, k):\n        return sum(m.y[i, j, k] for i in m.I) == d[\"D\"].get((j, k), 0.0)\n\n    model.demand = pyo.Constraint(model.J, model.K, rule=dem_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1269,
+      "completion_tokens": 1979
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 9.611215353012085,
+   "position": 1,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_mills\": 10,\n    \"num_customers\": 1000,\n    \"num_machines\": 3,\n    \"num_materials\": 4,\n    \"num_paper_types\": 5,\n    # Placeholder numeric arrays (in practice loaded from data files)\n    # D[j][k]: monthly demand of customer j for paper type k\n    \"D\": [[0.0 for _ in range(5)] for _ in range(1000)],\n    # r[k][l][m]: raw material m per unit of paper k on machine l\n    \"r\": [[[0.0 for _ in range(4)] for _ in range(3)] for _ in range(5)],\n    # R[i][m]: monthly availability of raw material m at mill i\n    \"R\": [[0.0 for _ in range(4)] for _ in range(10)],\n    # ct[k][l]: machine time per unit of paper k on machine l\n    \"ct\": [[0.0 for _ in range(3)] for _ in range(5)],\n    # CT[i][l]: monthly machine time available at mill i for machine l\n    \"CT\": [[0.0 for _ in range(3)] for _ in range(10)],\n    # P[i][k][l]: production cost per unit paper k on machine l at mill i\n    \"P\": [[[0.0 for _ in range(3)] for _ in range(5)] for _ in range(10)],\n    # T[i][j][k]: transport cost per unit of paper type k from mill i to customer j\n    \"T\": [[[0.0 for _ in range(5)] for _ in range(1000)] for _ in range(10)],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.RangeSet(0, d[\"num_mills\"] - 1)          # mills\n    model.J = pyo.RangeSet(0, d[\"num_customers\"] - 1)      # customers\n    model.K = pyo.RangeSet(0, d[\"num_paper_types\"] - 1)    # paper types\n    model.L = pyo.RangeSet(0, d[\"num_machines\"] - 1)       # machines\n    model.M = pyo.RangeSet(0, d[\"num_materials\"] - 1)      # raw materials\n\n    # Decision variable: production quantity\n    model.x = pyo.Var(\n        model.I, model.L, model.K,\n        domain=pyo.NonNegativeReals,\n    )\n\n    # Decision variable: shipped quantity\n    model.y = pyo.Var(\n        model.I, model.J, model.K,\n        domain=pyo.NonNegativeReals,\n    )\n\n    # (a) Raw material availability per mill & material\n    def raw_material_rule(m, i, mm):\n        return sum(\n            d[\"r\"][k][l][mm] * m.x[i, l, k]\n            for l in m.L for k in m.K\n        ) <= d[\"R\"][i][mm]\n    model.raw_material = pyo.Constraint(model.I, model.M, rule=raw_material_rule)\n\n    # (b) Machine time availability per mill & machine\n    def machine_time_rule(m, i, l):\n        return sum(d[\"ct\"][k][l] * m.x[i, l, k] for k in m.K) <= d[\"CT\"][i][l]\n    model.machine_time = pyo.Constraint(model.I, model.L, rule=machine_time_rule)\n\n    # (c) Meet each customer's monthly demand per paper type\n    def demand_rule(m, j, k):\n        return sum(m.y[i, j, k] for i in m.I) >= d[\"D\"][j][k]\n    model.demand = pyo.Constraint(model.J, model.K, rule=demand_rule)\n\n    # (d) Supply balance: shipped <= produced per mill & paper type\n    def supply_rule(m, i, k):\n        return sum(m.y[i, j, k] for j in m.J) <= sum(m.x[i, l, k] for l in m.L)\n    model.supply = pyo.Constraint(model.I, model.K, rule=supply_rule)\n\n    # Objective: minimize total transportation cost\n    def obj_rule(m):\n        return sum(\n            d[\"T\"][i][j][k] * m.y[i, j, k]\n            for i in m.I for j in m.J for k in m.K\n        )\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1269,
+      "completion_tokens": 1663
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.603525400161743,
+   "position": 2,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# =============================================================================\n# PROBLEM: Multi-mill, multi-machine, multi-product production + distribution\n#\n# SETS / INDICES\n#   I = mills            (10)\n#   J = customers        (1000)\n#   L = machine types    (3)\n#   M = raw materials    (4)\n#   K = paper types      (5)\n#\n# DECISION VARIABLES\n#   x[i,k,l] >= 0 : units of paper type k produced on machine l at mill i\n#   y[i,j,k] >= 0 : units of paper type k shipped from mill i to customer j\n#\n# OBJECTIVE (minimize)\n#   total production cost  +  total transportation cost\n#     sum_{i,k,l} P[i,k,l] * x[i,k,l]  +  sum_{i,j,k} T[i,j,k] * y[i,j,k]\n#\n# CONSTRAINTS\n#   (1) Raw material availability at each mill:\n#         sum_{k,l} r[m,k,l] * x[i,k,l] <= R[i,m]      for all i, m\n#   (2) Machine time availability at each mill:\n#         sum_{k} c[k,l] * x[i,k,l] <= c_il[i,l]       for all i, l\n#   (3) Customer demand satisfaction:\n#         sum_{i} y[i,j,k] = D[j,k]                    for all j, k\n#   (4) Flow balance: everything shipped from a mill must have been produced:\n#         sum_{j} y[i,j,k] = sum_{l} x[i,k,l]          for all i, k\n# =============================================================================\n\nDATA = {\n    # ---- index sizes ----\n    \"n_mills\": 10,\n    \"n_customers\": 1000,\n    \"n_machines\": 3,\n    \"n_materials\": 4,\n    \"n_papers\": 5,\n\n    # ---- placeholder numeric data (replace with real problem data) ----\n    # D[j,k] : monthly demand of customer j for paper type k\n    \"D\": {},\n\n    # r[m,k,l] : units of raw material m per unit of paper k on machine l\n    \"r\": {},\n\n    # R[i,m] : monthly availability of raw material m at mill i\n    \"R\": {},\n\n    # c[k,l] : machine time per unit of paper k on machine l\n    \"c\": {},\n\n    # c_il[i,l] : monthly machine time available at mill i for machine l\n    \"c_il\": {},\n\n    # P[i,k,l] : production cost per unit of paper k on machine l at mill i\n    \"P\": {},\n\n    # T[i,j,k] : transport cost per unit of paper k from mill i to customer j\n    \"T\": {},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # ---------------- Sets ----------------\n    model.I = pyo.RangeSet(0, d[\"n_mills\"] - 1)\n    model.J = pyo.RangeSet(0, d[\"n_customers\"] - 1)\n    model.L = pyo.RangeSet(0, d[\"n_machines\"] - 1)\n    model.M = pyo.RangeSet(0, d[\"n_materials\"] - 1)\n    model.K = pyo.RangeSet(0, d[\"n_papers\"] - 1)\n\n    # ---------------- Decision variables ----------------\n    model.x = pyo.Var(model.I, model.K, model.L,\n                      domain=pyo.NonNegativeReals)\n    model.y = pyo.Var(model.I, model.J, model.K,\n                      domain=pyo.NonNegativeReals)\n\n    # ---------------- Objective ----------------\n    def obj_rule(m):\n        prod = sum(d[\"P\"][(i, k, l)] * m.x[i, k, l]\n                   for i in m.I for k in m.K for l in m.L)\n        trans = sum(d[\"T\"][(i, j, k)] * m.y[i, j, k]\n                    for i in m.I for j in m.J for k in m.K)\n        return prod + trans\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---------------- Constraint (1): raw material availability ----------------\n    def raw_material_rule(m, i, mat):\n        return sum(d[\"r\"][(mat, k, l)] * m.x[i, k, l]\n                   for k in m.K for l in m.L) <= d[\"R\"][(i, mat)]\n\n    model.raw_material = pyo.Constraint(model.I, model.M,\n                                        rule=raw_material_rule)\n\n    # ---------------- Constraint (2): machine time availability ----------------\n    def machine_time_rule(m, i, l):\n        return sum(d[\"c\"][(k, l)] * m.x[i, k, l]\n                   for k in m.K) <= d[\"c_il\"][(i, l)]\n\n    model.machine_time = pyo.Constraint(model.I, model.L,\n                                        rule=machine_time_rule)\n\n    # ---------------- Constraint (3): customer demand satisfaction ----------------\n    def demand_rule(m, j, k):\n        return sum(m.y[i, j, k] for i in m.I) == d[\"D\"][(j, k)]\n\n    model.demand = pyo.Constraint(model.J, model.K, rule=demand_rule)\n\n    # ---------------- Constraint (4): production / shipment balance ----------------\n    def balance_rule(m, i, k):\n        return sum(m.y[i, j, k] for j in m.J) == sum(m.x[i, k, l]\n                                                     for l in m.L)\n\n    model.balance = pyo.Constraint(model.I, model.K, rule=balance_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1283,
+      "completion_tokens": 787
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1991,
+      "completion_tokens": 1326
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2711,
+      "completion_tokens": 1326
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "sandbox_construct_error"
+   ],
+   "seconds": 16.44383478164673,
+   "position": 3,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem statement.\n# Because the problem gives only symbolic parameters, we provide representative\n# numeric values so the module is runnable. Each entry carries a comment\n# quoting the source sentence / symbol it represents.\n# ---------------------------------------------------------------------------\nDATA = {\n    # \"10 paper mills\" -> index set size\n    \"num_mills\": 10,\n    # \"1000 customers\" -> index set size\n    \"num_customers\": 1000,\n    # \"five types of paper\" -> index set size\n    \"num_paper_types\": 5,\n    # \"three interchangeable machines\" -> index set size\n    \"num_machines\": 3,\n    # \"four different raw materials\" -> index set size\n    \"num_raw_materials\": 4,\n\n    # \"D_jk - Customer j requires k units of paper each month\"\n    # demand D[j][k]; here a flat representative monthly demand per type.\n    \"demand_per_customer_per_type\": 10.0,\n\n    # \"r_klm - amount of raw material m required to produce one unit of paper\n    #  of type k on machine l\"  -> flat representative usage rate.\n    \"raw_material_per_unit\": 0.5,\n\n    # \"R_im - amount of raw material m available each month at mill i\"\n    # -> representative monthly availability per material per mill.\n    \"raw_material_available\": 5000.0,\n\n    # \"c_kl - machine time required to produce one unit of paper of type k\n    #  on machine l\" -> flat representative machine-time coefficient.\n    \"machine_time_per_unit\": 0.2,\n\n    # \"c_il - machine time available each month at mill i for machine type l\"\n    # -> representative monthly machine-time capacity.\n    \"machine_time_available\": 2000.0,\n\n    # \"P_ikl - cost of producing one unit of paper of type k on machine type l\n    #  at mill i\" -> representative production cost.\n    \"production_cost\": 2.0,\n\n    # \"T_ijk - cost of transporting one unit of paper of type k from mill i\n    #  to customer j\" -> representative transport cost.\n    \"transport_cost\": 1.0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ------------------------------------------------------------------\n    # Sets\n    # ------------------------------------------------------------------\n    model.I = pyo.RangeSet(1, d[\"num_mills\"])            # mills\n    model.J = pyo.RangeSet(1, d[\"num_customers\"])        # customers\n    model.K = pyo.RangeSet(1, d[\"num_paper_types\"])      # paper types\n    model.L = pyo.RangeSet(1, d[\"num_machines\"])         # machine types\n    model.M = pyo.RangeSet(1, d[\"num_raw_materials\"])    # raw materials\n\n    # ------------------------------------------------------------------\n    # Decision variables\n    # x[i,k,l]: units of paper type k produced on machine l at mill i\n    # y[i,j,k]: units of paper type k shipped from mill i to customer j\n    # ------------------------------------------------------------------\n    model.x = pyo.Var(model.I, model.K, model.L,\n                      domain=pyo.NonNegativeReals)\n    model.y = pyo.Var(model.I, model.J, model.K,\n                      domain=pyo.NonNegativeReals)\n\n    # ------------------------------------------------------------------\n    # Objective: minimize total production + transportation cost\n    # ------------------------------------------------------------------\n    def obj_rule(m):\n        prod = sum(d[\"production_cost\"] * m.x[i, k, l]\n                   for i in m.I for k in m.K for l in m.L)\n        trans = sum(d[\"transport_cost\"] * m.y[i, j, k]\n                    for i in m.I for j in m.J for k in m.K)\n        return prod + trans\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ------------------------------------------------------------------\n    # (a) Raw-material availability at each mill\n    #     sum_{k,l} r_klm * x_ikl <= R_im\n    # ------------------------------------------------------------------\n    def raw_material_rule(m, i, mat):\n        return sum(d[\"raw_material_per_unit\"] * m.x[i, k, l]\n                   for k in m.K for l in m.L) <= d[\"raw_material_available\"]\n\n    model.raw_material_availability = pyo.Constraint(\n        model.I, model.M, rule=raw_material_rule)\n\n    # ------------------------------------------------------------------\n    # (b) Machine-time availability at each mill for each machine type\n    #     sum_k c_kl * x_ikl <= c_il\n    # ------------------------------------------------------------------\n    def machine_time_rule(m, i, l):\n        return sum(d[\"machine_time_per_unit\"] * m.x[i, k, l]\n                   for k in m.K) <= d[\"machine_time_available\"]\n\n    model.machine_time_availability = pyo.Constraint(\n        model.I, model.L, rule=machine_time_rule)\n\n    # ------------------------------------------------------------------\n    # (c) Customer demand satisfaction: sum_i y_ijk = D_jk\n    # ------------------------------------------------------------------\n    def demand_rule(m, j, k):\n        return sum(m.y[i, j, k] for i in m.I) == \\\n            d[\"demand_per_customer_per_type\"]\n\n    model.demand_satisfaction = pyo.Constraint(\n        model.J, model.K, rule=demand_rule)\n\n    # ------------------------------------------------------------------\n    # (d) Flow balance: everything produced at mill i of type k is shipped\n    #     sum_j y_ijk = sum_l x_ikl\n    # ------------------------------------------------------------------\n    def balance_rule(m, i, k):\n        return sum(m.y[i, j, k] for j in m.J) == \\\n            sum(m.x[i, k, l] for l in m.L)\n\n    model.flow_balance = pyo.Constraint(\n        model.I, model.K, rule=balance_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1267,
+      "completion_tokens": 1759
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.614992141723633,
+   "position": 4,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "\"\"\"\nMulti-Mill, Multi-Machine, Multi-Product Production & Transportation Planning\n==============================================================================\n\nDecision variables\n------------------\nprod[i, k, l]  : quantity of paper type k produced at mill i on machine-type l\n                 (i in MILLS, k in PAPER_TYPES, l in MACHINE_TYPES), NonNegativeReals\nship[i, j, k]  : quantity of paper type k shipped from mill i to customer j\n                 (i in MILLS, j in CUSTOMERS, k in PAPER_TYPES), NonNegativeReals\n\nObjective (minimize)\n--------------------\nTotal production cost + total transportation cost:\n  sum_{i,k,l} P[i,k,l] * prod[i,k,l]  +  sum_{i,j,k} T[i,j,k] * ship[i,j,k]\n\nConstraints (numbered, with source sentence)\n--------------------------------------------\n(1) Raw-material availability: \"R_{im} - amount of raw material m available each\n    month at mill i\" and \"r_{klm} - amount of raw material m required to produce\n    one unit of paper of type k on machine l\":\n        sum_{k,l} r[k,l,m] * prod[i,k,l] <= R[i,m]   for all i, m\n(2) Machine-time availability: \"c_{il} - machine time available each month at\n    mill i for machine type l\" and \"c_{kl} - machine time required to produce one\n    unit of paper of type k on machine l\":\n        sum_{k} c[k,l] * prod[i,k,l] <= C[i,l]       for all i, l\n(3) Demand satisfaction: \"D_{jk} - customer j requires k units of paper each\n    month\":\n        sum_{i} ship[i,j,k] >= D[j,k]                for all j, k\n(4) Flow balance (production must cover shipments): every unit shipped from a\n    mill of a given paper type must have been produced there:\n        sum_{j} ship[i,j,k] <= sum_{l} prod[i,k,l]   for all i, k\n\"\"\"\n\nimport pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# All numeric constants live here.  The problem statement gives only symbolic\n# data (D, r, R, c, C, P, T); concrete numeric values are supplied as\n# representative placeholders so the module builds without error.\n# ---------------------------------------------------------------------------\nDATA = {\n    # index-set sizes\n    \"num_mills\": 10,\n    \"num_customers\": 1000,\n    \"num_paper_types\": 5,\n    \"num_machine_types\": 3,\n    \"num_raw_materials\": 4,\n\n    # representative numeric data (placeholders for the symbolic parameters)\n    \"demand\": 10.0,          # D_{jk}  units of paper type k required by customer j\n    \"raw_usage\": 1.0,        # r_{klm}  raw material m per unit of paper k on machine l\n    \"raw_avail\": 100000.0,   # R_{im}   raw material m available at mill i\n    \"mach_time_req\": 1.0,    # c_{kl}   machine time per unit of paper k on machine l\n    \"mach_time_avail\": 100000.0,  # c_{il}  machine time available at mill i, machine l\n    \"prod_cost\": 1.0,        # P_{ikl}  production cost per unit\n    \"trans_cost\": 1.0,       # T_{ijk}  transportation cost per unit\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # ------------------------------------------------------------------\n    # Sets\n    # ------------------------------------------------------------------\n    model.MILLS = pyo.RangeSet(1, d[\"num_mills\"])\n    model.CUSTOMERS = pyo.RangeSet(1, d[\"num_customers\"])\n    model.PAPER_TYPES = pyo.RangeSet(1, d[\"num_paper_types\"])\n    model.MACHINE_TYPES = pyo.RangeSet(1, d[\"num_machine_types\"])\n    model.RAW_MATERIALS = pyo.RangeSet(1, d[\"num_raw_materials\"])\n\n    # ------------------------------------------------------------------\n    # Decision variables\n    # ------------------------------------------------------------------\n    model.prod = pyo.Var(\n        model.MILLS, model.PAPER_TYPES, model.MACHINE_TYPES,\n        domain=pyo.NonNegativeReals,\n    )\n    model.ship = pyo.Var(\n        model.MILLS, model.CUSTOMERS, model.PAPER_TYPES,\n        domain=pyo.NonNegativeReals,\n    )\n\n    # ------------------------------------------------------------------\n    # Objective: minimize production + transportation cost\n    # ------------------------------------------------------------------\n    def obj_rule(m):\n        prod_cost = sum(\n            d[\"prod_cost\"] * m.prod[i, k, l]\n            for i in m.MILLS for k in m.PAPER_TYPES for l in m.MACHINE_TYPES\n        )\n        trans_cost = sum(\n            d[\"trans_cost\"] * m.ship[i, j, k]\n            for i in m.MILLS for j in m.CUSTOMERS for k in m.PAPER_TYPES\n        )\n        return prod_cost + trans_cost\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ------------------------------------------------------------------\n    # (1) Raw-material availability\n    # ------------------------------------------------------------------\n    def raw_avail_rule(m, i, mat):\n        return sum(\n            d[\"raw_usage\"] * m.prod[i, k, l]\n            for k in m.PAPER_TYPES for l in m.MACHINE_TYPES\n        ) <= d[\"raw_avail\"]\n\n    model.raw_avail = pyo.Constraint(\n        model.MILLS, model.RAW_MATERIALS, rule=raw_avail_rule\n    )\n\n    # ------------------------------------------------------------------\n    # (2) Machine-time availability\n    # ------------------------------------------------------------------\n    def mach_time_rule(m, i, l):\n        return sum(\n            d[\"mach_time_req\"] * m.prod[i, k, l]\n            for k in m.PAPER_TYPES\n        ) <= d[\"mach_time_avail\"]\n\n    model.mach_time = pyo.Constraint(\n        model.MILLS, model.MACHINE_TYPES, rule=mach_time_rule\n    )\n\n    # ------------------------------------------------------------------\n    # (3) Demand satisfaction\n    # ------------------------------------------------------------------\n    def demand_rule(m, j, k):\n        return sum(\n            m.ship[i, j, k] for i in m.MILLS\n        ) >= d[\"demand\"]\n\n    model.demand = pyo.Constraint(\n        model.CUSTOMERS, model.PAPER_TYPES, rule=demand_rule\n    )\n\n    # ------------------------------------------------------------------\n    # (4) Flow balance: shipments of (i,k) cannot exceed production of (i,k)\n    # ------------------------------------------------------------------\n    def flow_rule(m, i, k):\n        return sum(\n            m.ship[i, j, k] for j in m.CUSTOMERS\n        ) <= sum(\n            m.prod[i, k, l] for l in m.MACHINE_TYPES\n        )\n\n    model.flow = pyo.Constraint(\n        model.MILLS, model.PAPER_TYPES, rule=flow_rule\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1283,
+      "completion_tokens": 3582
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1599,
+      "completion_tokens": 1640
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 34.483596086502075,
+   "position": 5,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem statement is stored here.\n# Source sentences are quoted in comments.\n# ---------------------------------------------------------------------------\nDATA = {\n    # \"has 10 paper mills\" / \"supplies 1000 customers\"\n    # \"three interchangeable machines and four different raw materials\"\n    # \"produce five types of paper\"\n    \"num_mills\": 10,          # |I|\n    \"num_customers\": 1000,    # |J|\n    \"num_paper_types\": 5,     # |K|\n    \"num_machines\": 3,        # |L|\n    \"num_materials\": 4,       # |M|\n    # Placeholder numeric data (all indexed by the sets above). In a real\n    # instance these would be filled from the company's records; here they\n    # are given representative values so the module is runnable.\n    # D_jk - \"Customer j requires k units of paper each month\"\n    \"D\": {(j, k): 100.0\n          for j in range(1000)\n          for k in range(5)},\n    # r_klm - \"amount of raw material m required to produce one unit of\n    #          paper of type k on machine l\"\n    \"r\": {(k, l, m): 1.0\n          for k in range(5)\n          for l in range(3)\n          for m in range(4)},\n    # R_im - \"amount of raw material m available each month at mill i\"\n    \"R\": {(i, m): 1.0e9\n          for i in range(10)\n          for m in range(4)},\n    # c_kl - \"machine time required to produce one unit of paper of type k\n    #         on machine l\"\n    \"c\": {(k, l): 1.0\n          for k in range(5)\n          for l in range(3)},\n    # c_il - \"machine time available each month at mill i for machine type l\"\n    \"c_avail\": {(i, l): 1.0e9\n                for i in range(10)\n                for l in range(3)},\n    # P_ikl - \"cost of producing one unit of paper of type k on machine type\n    #          l at mill i\"\n    \"P\": {(i, k, l): 1.0\n          for i in range(10)\n          for k in range(5)\n          for l in range(3)},\n    # T_ijk - \"cost of transporting one unit of paper of type k from mill i\n    #          to customer j\"\n    \"T\": {(i, j, k): 1.0\n          for i in range(10)\n          for j in range(1000)\n          for k in range(5)},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ---- Sets ------------------------------------------------------------\n    model.I = pyo.RangeSet(0, d[\"num_mills\"] - 1)         # mills\n    model.J = pyo.RangeSet(0, d[\"num_customers\"] - 1)     # customers\n    model.K = pyo.RangeSet(0, d[\"num_paper_types\"] - 1)   # paper types\n    model.L = pyo.RangeSet(0, d[\"num_machines\"] - 1)      # machines\n    model.M = pyo.RangeSet(0, d[\"num_materials\"] - 1)     # raw materials\n\n    # ---- Decision variables ---------------------------------------------\n    # x[i,k,l]: quantity of paper type k produced on machine l at mill i\n    model.x = pyo.Var(model.I, model.K, model.L,\n                      domain=pyo.NonNegativeReals)\n    # y[i,j,k]: quantity of paper type k shipped from mill i to customer j\n    model.y = pyo.Var(model.I, model.J, model.K,\n                      domain=pyo.NonNegativeReals)\n\n    # ---- Objective: minimise total production + transportation cost -------\n    def obj_rule(m):\n        prod_cost = sum(d[\"P\"][(i, k, l)] * m.x[i, k, l]\n                        for i in m.I for k in m.K for l in m.L)\n        trans_cost = sum(d[\"T\"][(i, j, k)] * m.y[i, j, k]\n                         for i in m.I for j in m.J for k in m.K)\n        return prod_cost + trans_cost\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---- Constraints -----------------------------------------------------\n\n    # (a) Machine time availability per machine type per mill\n    #     sum_k c_kl * x_ikl <= c_il\n    def machine_time_rule(m, i, l):\n        return sum(d[\"c\"][(k, l)] * m.x[i, k, l] for k in m.K) \\\n            <= d[\"c_avail\"][(i, l)]\n\n    model.machine_time = pyo.Constraint(model.I, model.L,\n                                        rule=machine_time_rule)\n\n    # (b) Raw material availability per mill\n    #     sum_{k,l} r_klm * x_ikl <= R_im\n    def material_rule(m, i, mat):\n        return sum(d[\"r\"][(k, l, mat)] * m.x[i, k, l]\n                   for k in m.K for l in m.L) \\\n            <= d[\"R\"][(i, mat)]\n\n    model.material_avail = pyo.Constraint(model.I, model.M,\n                                          rule=material_rule)\n\n    # (c) Customer demand must be satisfied\n    #     sum_i y_ijk = D_jk\n    def demand_rule(m, j, k):\n        return sum(m.y[i, j, k] for i in m.I) == d[\"D\"][(j, k)]\n\n    model.demand = pyo.Constraint(model.J, model.K, rule=demand_rule)\n\n    # (d) Flow balance: paper shipped from a mill = paper produced there\n    #     sum_j y_ijk = sum_l x_ikl\n    def balance_rule(m, i, k):\n        return sum(m.y[i, j, k] for j in m.J) \\\n            == sum(m.x[i, k, l] for l in m.L)\n\n    model.balance = pyo.Constraint(model.I, model.K, rule=balance_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1267,
+      "completion_tokens": 1801
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2839,
+      "completion_tokens": 1472
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 14.661349534988403,
+   "position": 6,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Set sizes (problem states 10 mills, 1000 customers, 3 machines, 4 materials, 5 papers)\n    \"num_mills\": 10,\n    \"num_customers\": 1000,\n    \"num_machines\": 3,\n    \"num_materials\": 4,\n    \"num_papers\": 5,\n\n    # D[j][k]: customer j requires k units of paper type k each month\n    \"demand\": {(j, k): 100.0\n               for j in range(1000)\n               for k in range(5)},\n\n    # r[k][l][m]: raw material m needed per unit of paper k on machine l\n    \"raw_per_unit\": {(k, l, m): 1.0\n                     for k in range(5)\n                     for l in range(3)\n                     for m in range(4)},\n\n    # R[i][m]: raw material m available each month at mill i\n    \"raw_avail\": {(i, m): 100000.0\n                  for i in range(10)\n                  for m in range(4)},\n\n    # c[k][l]: machine time required per unit of paper k on machine l\n    \"machine_time_per_unit\": {(k, l): 1.0\n                              for k in range(5)\n                              for l in range(3)},\n\n    # c[i][l]: machine time available each month at mill i for machine l\n    \"machine_time_avail\": {(i, l): 100000.0\n                           for i in range(10)\n                           for l in range(3)},\n\n    # P[i][k][l]: production cost per unit of paper k on machine l at mill i\n    \"prod_cost\": {(i, k, l): 5.0\n                  for i in range(10)\n                  for k in range(5)\n                  for l in range(3)},\n\n    # T[i][j][k]: transport cost per unit of paper k from mill i to customer j\n    \"trans_cost\": {(i, j, k): 1.0\n                   for i in range(10)\n                   for j in range(1000)\n                   for k in range(5)},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # ---- Sets ----\n    model.I = pyo.RangeSet(0, d[\"num_mills\"] - 1)          # mills\n    model.J = pyo.RangeSet(0, d[\"num_customers\"] - 1)      # customers\n    model.L = pyo.RangeSet(0, d[\"num_machines\"] - 1)       # machines\n    model.M = pyo.RangeSet(0, d[\"num_materials\"] - 1)      # raw materials\n    model.K = pyo.RangeSet(0, d[\"num_papers\"] - 1)         # paper types\n\n    # ---- Decision variables ----\n    # produce[i,l,k]: units of paper type k produced on machine l at mill i\n    model.produce = pyo.Var(model.I, model.L, model.K,\n                            domain=pyo.NonNegativeReals)\n\n    # ship[i,j,k]: units of paper type k shipped from mill i to customer j\n    model.ship = pyo.Var(model.I, model.J, model.K,\n                         domain=pyo.NonNegativeReals)\n\n    # ---- Objective: minimize production + transportation cost ----\n    def obj_rule(m):\n        prod = sum(d[\"prod_cost\"][(i, k, l)] * m.produce[i, l, k]\n                   for i in m.I for l in m.L for k in m.K)\n        trans = sum(d[\"trans_cost\"][(i, j, k)] * m.ship[i, j, k]\n                    for i in m.I for j in m.J for k in m.K)\n        return prod + trans\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---- Constraint: raw material availability at each mill ----\n    def raw_avail_rule(m, i, mat):\n        return sum(d[\"raw_per_unit\"][(k, l, mat)] * m.produce[i, l, k]\n                   for l in m.L for k in m.K) <= d[\"raw_avail\"][(i, mat)]\n\n    model.raw_avail = pyo.Constraint(model.I, model.M, rule=raw_avail_rule)\n\n    # ---- Constraint: machine time availability at each mill ----\n    def machine_time_rule(m, i, l):\n        return sum(d[\"machine_time_per_unit\"][(k, l)] * m.produce[i, l, k]\n                   for k in m.K) <= d[\"machine_time_avail\"][(i, l)]\n\n    model.machine_time = pyo.Constraint(model.I, model.L, rule=machine_time_rule)\n\n    # ---- Constraint: each customer's demand for each paper type is met ----\n    def demand_rule(m, j, k):\n        return sum(m.ship[i, j, k] for i in m.I) == d[\"demand\"][(j, k)]\n\n    model.demand = pyo.Constraint(model.J, model.K, rule=demand_rule)\n\n    # ---- Constraint: flow balance (shipped = produced at each mill, per paper) ----\n    def balance_rule(m, i, k):\n        return sum(m.ship[i, j, k] for j in m.J) == sum(m.produce[i, l, k] for l in m.L)\n\n    model.balance = pyo.Constraint(model.I, model.K, rule=balance_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1263,
+      "completion_tokens": 1666
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2659,
+      "completion_tokens": 1290
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 13.222619771957397,
+   "position": 7,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # cardinalities\n    \"nI\": 10,      # mills\n    \"nJ\": 1000,    # customers\n    \"nL\": 3,       # machine types\n    \"nK\": 5,       # paper types\n    \"nM\": 4,       # raw materials\n    # D[j,k] customer j requires k units of paper type k  (uniform placeholder)\n    \"D\": 100.0,\n    # r[k,l,m] raw material m per unit of paper k on machine l  (placeholder)\n    \"r\": 1.0,\n    # c[k,l] machine time per unit of paper k on machine l  (placeholder)\n    \"c\": 1.0,\n    # R[i,m] raw material m available at mill i  (placeholder, ample)\n    \"R\": 1.0e7,\n    # cap[i,l] machine time available at mill i for machine l  (placeholder, ample)\n    \"cap\": 1.0e7,\n    # P[i,k,l] production cost per unit (placeholder)\n    \"P\": 1.0,\n    # T[i,j,k] transport cost per unit (placeholder)\n    \"T\": 1.0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ---------------- Sets ----------------\n    model.I = pyo.RangeSet(1, d[\"nI\"])   # mills\n    model.J = pyo.RangeSet(1, d[\"nJ\"])   # customers\n    model.L = pyo.RangeSet(1, d[\"nL\"])   # machine types\n    model.K = pyo.RangeSet(1, d[\"nK\"])   # paper types\n    model.M = pyo.RangeSet(1, d[\"nM\"])   # raw materials\n\n    # ---------------- Decision variables ----------------\n    # x[i,l,k] : units of paper type k produced on machine l at mill i\n    model.x = pyo.Var(model.I, model.L, model.K,\n                      within=pyo.NonNegativeReals, bounds=(0, None))\n\n    # y[i,j,k] : units of paper type k shipped from mill i to customer j\n    model.y = pyo.Var(model.I, model.J, model.K,\n                      within=pyo.NonNegativeReals, bounds=(0, None))\n\n    # ---------------- Objective (minimize) ----------------\n    # total production cost + total transportation cost\n    def obj_rule(m):\n        prod = sum(d[\"P\"] * m.x[i, l, k]\n                   for i in m.I for l in m.L for k in m.K)\n        trans = sum(d[\"T\"] * m.y[i, j, k]\n                    for i in m.I for j in m.J for k in m.K)\n        return prod + trans\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---------------- Constraints ----------------\n\n    # Raw material availability at each mill: sum_{l,k} r[k,l,m]*x[i,l,k] <= R[i,m]\n    def raw_rule(m, i, mm):\n        return sum(d[\"r\"] * m.x[i, l, k]\n                   for l in m.L for k in m.K) <= d[\"R\"]\n\n    model.raw_cap = pyo.Constraint(model.I, model.M, rule=raw_rule)\n\n    # Machine time availability: sum_k c[k,l]*x[i,l,k] <= cap[i,l]\n    def mach_rule(m, i, l):\n        return sum(d[\"c\"] * m.x[i, l, k] for k in m.K) <= d[\"cap\"]\n\n    model.mach_cap = pyo.Constraint(model.I, model.L, rule=mach_rule)\n\n    # Demand satisfaction: sum_i y[i,j,k] >= D[j,k]\n    def dem_rule(m, j, k):\n        return sum(m.y[i, j, k] for i in m.I) >= d[\"D\"]\n\n    model.demand = pyo.Constraint(model.J, model.K, rule=dem_rule)\n\n    # Flow conservation per (mill, paper type): what is shipped must equal what is produced\n    def flow_rule(m, i, k):\n        return sum(m.y[i, j, k] for j in m.J) == sum(m.x[i, l, k] for l in m.L)\n\n    model.flow = pyo.Constraint(model.I, model.K, rule=flow_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1279,
+      "completion_tokens": 1394
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.444066286087036,
+   "position": 8,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_mills\": 10,\n    \"num_customers\": 1000,\n    \"num_paper_types\": 5,\n    \"num_machines\": 3,\n    \"num_materials\": 4,\n    # D[(j,k)] customer j demand for paper type k\n    \"D\": {},\n    # r[(k,l,m)] raw material m required for one unit of paper type k on machine l\n    \"r\": {},\n    # R[(i,m)] raw material m available at mill i\n    \"R\": {},\n    # c_kl[(k,l)] machine time required to produce one unit of paper type k on machine l\n    \"c_kl\": {},\n    # c_il[(i,l)] machine time available at mill i for machine type l\n    \"c_il\": {},\n    # P[(i,k,l)] production cost\n    \"P\": {},\n    # T[(i,j,k)] transportation cost\n    \"T\": {},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    I = list(range(d[\"num_mills\"]))\n    J = list(range(d[\"num_customers\"]))\n    K = list(range(d[\"num_paper_types\"]))\n    L = list(range(d[\"num_machines\"]))\n    M = list(range(d[\"num_materials\"]))\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=I)\n    model.J = pyo.Set(initialize=J)\n    model.K = pyo.Set(initialize=K)\n    model.L = pyo.Set(initialize=L)\n    model.M = pyo.Set(initialize=M)\n\n    # x[i,k,l] production quantity of paper type k on machine l at mill i\n    model.x = pyo.Var(model.I, model.K, model.L, within=pyo.NonNegativeReals)\n\n    # y[i,j,k] quantity of paper type k transported from mill i to customer j\n    model.y = pyo.Var(model.I, model.J, model.K, within=pyo.NonNegativeReals)\n\n    # Objective: minimize total transportation cost\n    def obj_rule(m):\n        return sum(\n            d[\"T\"][(i, j, k)] * m.y[i, j, k]\n            for i in m.I\n            for j in m.J\n            for k in m.K\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand satisfaction: shipped quantity must be at least customer demand (>=)\n    def demand_rule(m, j, k):\n        return sum(m.y[i, j, k] for i in m.I) >= d[\"D\"][(j, k)]\n\n    model.demand = pyo.Constraint(model.J, model.K, rule=demand_rule)\n\n    # Production-shipment balance: all paper produced must be shipped (==)\n    def balance_rule(m, i, k):\n        return sum(m.x[i, k, l] for l in m.L) == sum(m.y[i, j, k] for j in m.J)\n\n    model.balance = pyo.Constraint(model.I, model.K, rule=balance_rule)\n\n    # Raw material availability (<=)\n    def raw_material_rule(m, i, mm):\n        return sum(\n            d[\"r\"][(k, l, mm)] * m.x[i, k, l]\n            for k in m.K\n            for l in m.L\n        ) <= d[\"R\"][(i, mm)]\n\n    model.raw_material = pyo.Constraint(model.I, model.M, rule=raw_material_rule)\n\n    # Machine time availability (<=)\n    def machine_time_rule(m, i, l):\n        return sum(d[\"c_kl\"][(k, l)] * m.x[i, k, l] for k in m.K) <= d[\"c_il\"][(i, l)]\n\n    model.machine_time = pyo.Constraint(model.I, model.L, rule=machine_time_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1279,
+      "completion_tokens": 1443
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2266,
+      "completion_tokens": 903
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2284,
+      "completion_tokens": 903
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "sandbox_construct_error"
+   ],
+   "seconds": 14.319830656051636,
+   "position": 9,
+   "recipe_index": 2
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:57:02"
+}

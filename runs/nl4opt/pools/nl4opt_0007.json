@@ -1,0 +1,266 @@
+{
+ "pid": "nl4opt_0007",
+ "question": "A meal service company delivers meals to customers either on electric bikes or scooters. A bike can hold 8 meals and requires 3 units of charge. A scooter can hold 5 meals and requires 2 units of charge. Since the city is more friendly towards scooters, at most 30% of the electric vehicles can be bikes and at least 20 scooters must be used. If the company only has 200 units of charge available, how many of each vehicle should be used to maximize the number of meals that can be delivered?",
+ "templates": [
+  "Vehicle Routing / TSP",
+  "Blending / Diet"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem, with its source sentence.\n# ---------------------------------------------------------------------------\nDATA = {\n    # \"A bike can hold 8 meals and requires 3 units of charge.\"\n    \"meals_bike\": 8,\n    \"charge_bike\": 3,\n    # \"A scooter can hold 5 meals and requires 2 units of charge.\"\n    \"meals_scooter\": 5,\n    \"charge_scooter\": 2,\n    # \"at most 30% of the electric vehicles can be bikes\"\n    \"max_bike_fraction\": 0.30,\n    # \"at least 20 scooters must be used\"\n    \"min_scooters\": 20,\n    # \"the company only has 200 units of charge available\"\n    \"charge_available\": 200,\n    # vehicle type labels\n    \"vehicle_types\": [\"bike\", \"scooter\"],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ------------------------------------------------------------------\n    # Sets\n    # ------------------------------------------------------------------\n    model.V = pyo.Set(initialize=d[\"vehicle_types\"])\n\n    # ------------------------------------------------------------------\n    # Variables (vehicle counts -> non-negative integers)\n    # ------------------------------------------------------------------\n    model.x = pyo.Var(model.V, within=pyo.NonNegativeIntegers)\n\n    # ------------------------------------------------------------------\n    # Objective: maximise total meals delivered\n    # ------------------------------------------------------------------\n    def obj_rule(m):\n        return (d[\"meals_bike\"] * m.x[\"bike\"]\n                + d[\"meals_scooter\"] * m.x[\"scooter\"])\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # ------------------------------------------------------------------\n    # Constraints\n    # ------------------------------------------------------------------\n    # Charge capacity: 3*x_bike + 2*x_scooter <= 200\n    def charge_rule(m):\n        return (d[\"charge_bike\"] * m.x[\"bike\"]\n                + d[\"charge_scooter\"] * m.x[\"scooter\"]\n                <= d[\"charge_available\"])\n    model.charge_limit = pyo.Constraint(rule=charge_rule)\n\n    # At most 30% of vehicles are bikes: x_bike <= f*(x_bike + x_scooter)\n    # Rearranged linearly: (1 - f)*x_bike - f*x_scooter <= 0\n    def bike_share_rule(m):\n        f = d[\"max_bike_fraction\"]\n        return (1 - f) * m.x[\"bike\"] - f * m.x[\"scooter\"] <= 0\n    model.bike_share = pyo.Constraint(rule=bike_share_rule)\n\n    # At least 20 scooters must be used\n    def min_scooter_rule(m):\n        return m.x[\"scooter\"] >= d[\"min_scooters\"]\n    model.min_scooters = pyo.Constraint(rule=min_scooter_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1115,
+      "completion_tokens": 1017
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.117969989776611,
+   "position": 0,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "\"\"\"\nMeal delivery fleet MILP\n========================\n\nDecision variables (index set V = {\"bike\", \"scooter\"}):\n  x[v]  -- number of vehicles of type v used\n           domain: NonNegativeIntegers, bounds (0, None)\n\nObjective (maximize):\n  total meals delivered = bike_capacity * x[bike] + scooter_capacity * x[scooter]\n\nConstraints:\n  (1) Charge budget:  bike_charge*x[bike] + scooter_charge*x[scooter] <= max_charge\n      Source: \"the company only has 200 units of charge available\"\n  (2) Bike fraction:  x[bike] <= max_bike_fraction * (x[bike] + x[scooter])\n      Source: \"at most 30% of the electric vehicles can be bikes\"\n      Linearised: (1 - f)*x[bike] - f*x[scooter] <= 0\n  (3) Minimum scooters: x[scooter] >= min_scooters\n      Source: \"at least 20 scooters must be used\"\n\"\"\"\n\nimport pyomo.environ as pyo\n\nDATA = {\n    \"bike_capacity\": 8,         # meals per bike\n    \"scooter_capacity\": 5,      # meals per scooter\n    \"bike_charge\": 3,           # charge units per bike\n    \"scooter_charge\": 2,        # charge units per scooter\n    \"max_charge\": 200,          # total charge units available\n    \"max_bike_fraction\": 0.30,  # at most 30% of vehicles can be bikes\n    \"min_scooters\": 20,         # at least 20 scooters\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # Index set of vehicle types\n    m.V = pyo.Set(initialize=[\"bike\", \"scooter\"])\n\n    # Decision variables: number of each vehicle type\n    m.x = pyo.Var(m.V, within=pyo.NonNegativeIntegers, bounds=(0, None))\n\n    # (1) Charge budget\n    def charge_rule(m):\n        return (\n            d[\"bike_charge\"] * m.x[\"bike\"]\n            + d[\"scooter_charge\"] * m.x[\"scooter\"]\n            <= d[\"max_charge\"]\n        )\n    m.charge_limit = pyo.Constraint(rule=charge_rule)\n\n    # (2) Bike fraction: x[bike] <= f * (x[bike] + x[scooter])\n    #     => (1 - f)*x[bike] - f*x[scooter] <= 0\n    def bike_fraction_rule(m):\n        f = d[\"max_bike_fraction\"]\n        return (1 - f) * m.x[\"bike\"] - f * m.x[\"scooter\"] <= 0\n    m.bike_fraction = pyo.Constraint(rule=bike_fraction_rule)\n\n    # (3) Minimum scooters\n    def min_scooter_rule(m):\n        return m.x[\"scooter\"] >= d[\"min_scooters\"]\n    m.min_scooters = pyo.Constraint(rule=min_scooter_rule)\n\n    # Objective: maximize total meals delivered\n    def obj_rule(m):\n        return (\n            d[\"bike_capacity\"] * m.x[\"bike\"]\n            + d[\"scooter_capacity\"] * m.x[\"scooter\"]\n        )\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1131,
+      "completion_tokens": 985
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1764,
+      "completion_tokens": 812
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 10.531571626663208,
+   "position": 1,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"meals_per_bike\": 8,\n    \"meals_per_scooter\": 5,\n    \"charge_per_bike\": 3,\n    \"charge_per_scooter\": 2,\n    \"total_charge\": 200,\n    \"max_bike_fraction\": 0.30,\n    \"min_scooters\": 20,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Decision variables\n    model.bikes = pyo.Var(domain=pyo.NonNegativeIntegers)\n    model.scooters = pyo.Var(domain=pyo.NonNegativeIntegers)\n\n    # Objective: maximize meals delivered\n    def obj_rule(m):\n        return d[\"meals_per_bike\"] * m.bikes + d[\"meals_per_scooter\"] * m.scooters\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Charge availability constraint\n    def charge_rule(m):\n        return (d[\"charge_per_bike\"] * m.bikes\n                + d[\"charge_per_scooter\"] * m.scooters) <= d[\"total_charge\"]\n\n    model.charge_limit = pyo.Constraint(rule=charge_rule)\n\n    # Bike share: bikes <= fraction * (bikes + scooters)\n    # => (1 - fraction)*bikes - fraction*scooters <= 0\n    def bike_share_rule(m):\n        frac = d[\"max_bike_fraction\"]\n        return (1 - frac) * m.bikes - frac * m.scooters <= 0\n\n    model.bike_share = pyo.Constraint(rule=bike_share_rule)\n\n    # Minimum scooters\n    def min_scooter_rule(m):\n        return m.scooters >= d[\"min_scooters\"]\n\n    model.min_scooters = pyo.Constraint(rule=min_scooter_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1111,
+      "completion_tokens": 688
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.0446600914001465,
+   "position": 2,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ----------------------------------------------------------------------\n# Every numeric constant from the problem, with its source sentence.\n# ----------------------------------------------------------------------\nDATA = {\n    # \"A bike can hold 8 meals\" -> meals per bike\n    \"meals_per_bike\": 8,\n    # \"A scooter can hold 5 meals\" -> meals per scooter\n    \"meals_per_scooter\": 5,\n    # \"A bike ... requires 3 units of charge\"\n    \"charge_per_bike\": 3,\n    # \"A scooter ... requires 2 units of charge\"\n    \"charge_per_scooter\": 2,\n    # \"the company only has 200 units of charge available\"\n    \"charge_available\": 200,\n    # \"at most 30% of the electric vehicles can be bikes\"\n    \"max_bike_fraction\": 0.30,\n    # \"at least 20 scooters must be used\"\n    \"min_scooters\": 20,\n    # vehicle type labels used as set members\n    \"vehicles\": [\"bike\", \"scooter\"],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ---------------- Sets ----------------\n    model.V = pyo.Set(initialize=d[\"vehicles\"])\n\n    # ---------------- Variables ----------------\n    # Number of each vehicle type to use (integer, non-negative)\n    model.x = pyo.Var(model.V, within=pyo.NonNegativeIntegers, bounds=(0, None))\n\n    # ---------------- Objective ----------------\n    # Maximise total meals delivered\n    def obj_rule(m):\n        return (\n            d[\"meals_per_bike\"] * m.x[\"bike\"]\n            + d[\"meals_per_scooter\"] * m.x[\"scooter\"]\n        )\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # ---------------- Constraints ----------------\n    # Charge capacity: 3*bike + 2*scooter <= 200\n    def charge_rule(m):\n        return (\n            d[\"charge_per_bike\"] * m.x[\"bike\"]\n            + d[\"charge_per_scooter\"] * m.x[\"scooter\"]\n            <= d[\"charge_available\"]\n        )\n    model.charge_limit = pyo.Constraint(rule=charge_rule)\n\n    # At most 30% of vehicles may be bikes:\n    #   bike <= 0.30 * (bike + scooter)\n    # linearised: (1 - 0.30)*bike - 0.30*scooter <= 0\n    def bike_share_rule(m):\n        return (\n            (1 - d[\"max_bike_fraction\"]) * m.x[\"bike\"]\n            - d[\"max_bike_fraction\"] * m.x[\"scooter\"]\n            <= 0\n        )\n    model.bike_share = pyo.Constraint(rule=bike_share_rule)\n\n    # At least 20 scooters must be used\n    def min_scooter_rule(m):\n        return m.x[\"scooter\"] >= d[\"min_scooters\"]\n    model.min_scooters = pyo.Constraint(rule=min_scooter_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1115,
+      "completion_tokens": 1071
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.9851062297821045,
+   "position": 3,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "\"\"\"\nOptimisation model: Meal-service electric vehicle mix (maximise meals delivered).\n\nDecision variables\n------------------\nx[v] : number of electric vehicles of type v used, v in {\"bike\", \"scooter\"}\n       domain = NonNegativeIntegers.\n       x[\"bike\"]    -> number of e-bikes\n       x[\"scooter\"] -> number of scooters\n\nObjective (maximize)\n--------------------\nMaximize total delivered meals = sum_v capacity_meals[v] * x[v]\n= 8*x[\"bike\"] + 5*x[\"scooter\"].\n\nConstraints (numbered, mapped to problem sentences)\n---------------------------------------------------\n1) Charge availability: \"only 200 units of charge available\"\n      sum_v charge_required[v] * x[v] <= total_charge\n      (3*x[\"bike\"] + 2*x[\"scooter\"] <= 200)\n2) Bike share limit: \"at most 30% of the electric vehicles can be bikes\"\n      x[\"bike\"] <= bike_ratio_max * (x[\"bike\"] + x[\"scooter\"])\n      linearised: (1 - bike_ratio_max)*x[\"bike\"] - bike_ratio_max*x[\"scooter\"] <= 0\n3) Minimum scooters: \"at least 20 scooters must be used\"\n      x[\"scooter\"] >= min_scooters\n4) Integrality / nonnegativity enforced by variable domains.\n\nAll numeric values live in DATA; no naked numbers appear in the model body.\n\"\"\"\n\nimport pyomo.environ as pyo\n\nDATA = {\n    \"vehicle_types\": [\"bike\", \"scooter\"],\n    \"capacity_meals\": {\"bike\": 8, \"scooter\": 5},\n    \"charge_required\": {\"bike\": 3, \"scooter\": 2},\n    \"total_charge\": 200,\n    \"bike_ratio_max\": 0.30,   # at most 30% of vehicles may be bikes\n    \"min_scooters\": 20,       # at least 20 scooters needed\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel(\"MealServiceELM\")\n\n    vehicle_types = d[\"vehicle_types\"]\n    capacity_meals = d[\"capacity_meals\"]\n    charge_required = d[\"charge_required\"]\n    total_charge = d[\"total_charge\"]\n    bike_ratio_max = d[\"bike_ratio_max\"]\n    min_scooters = d[\"min_scooters\"]\n\n    # Set of vehicle types\n    model.V = pyo.Set(initialize=vehicle_types)\n\n    # Decision variables: number of each vehicle type (nonnegative integers)\n    model.x = pyo.Var(model.V, within=pyo.NonNegativeIntegers)\n\n    # Objective: maximize total meals delivered\n    def obj_rule(m):\n        return sum(capacity_meals[v] * m.x[v] for v in m.V)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Constraint 1: total charge used <= available charge\n    def charge_rule(m):\n        return sum(charge_required[v] * m.x[v] for v in m.V) <= total_charge\n\n    model.charge_limit = pyo.Constraint(rule=charge_rule)\n\n    # Constraint 2: bikes <= bike_ratio_max * (bikes + scooters)\n    # linearised: (1 - ratio)*bikes - ratio*scooters <= 0\n    def bike_share_rule(m):\n        return (1 - bike_ratio_max) * m.x[\"bike\"] - bike_ratio_max * m.x[\"scooter\"] <= 0\n\n    model.bike_share = pyo.Constraint(rule=bike_share_rule)\n\n    # Constraint 3: at least min_scooters scooters\n    def min_scooter_rule(m):\n        return m.x[\"scooter\"] >= min_scooters\n\n    model.min_scooters = pyo.Constraint(rule=min_scooter_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1131,
+      "completion_tokens": 5999
+     },
+     "finish_reason": "length"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 7052,
+      "completion_tokens": 909
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 55.98889088630676,
+   "position": 4,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"n_types\": 2,            # 0 = bike, 1 = scooter\n    \"meals\": {0: 8, 1: 5},   # capacity per vehicle\n    \"charge\": {0: 3, 1: 2},  # charge per vehicle\n    \"charge_avail\": 200,     # total charge units available\n    \"bike_share_max\": 0.3,   # at most 30% of EVs may be bikes\n    \"min_scooters\": 20,      # at least 20 scooters\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.I = pyo.RangeSet(0, d[\"n_types\"] - 1)   # 0 = bike, 1 = scooter\n\n    # x[i] = number of vehicles of type i used\n    m.x = pyo.Var(m.I, within=pyo.NonNegativeIntegers)\n\n    # Objective: maximize total meals delivered\n    def obj_rule(m):\n        return sum(d[\"meals\"][i] * m.x[i] for i in m.I)\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Charge limit: 3*bikes + 2*scooters <= 200\n    def charge_rule(m):\n        return sum(d[\"charge\"][i] * m.x[i] for i in m.I) <= d[\"charge_avail\"]\n    m.charge_limit = pyo.Constraint(rule=charge_rule)\n\n    # Bike share: bikes <= 0.3*(bikes+scooters)\n    #   -> (1-0.3)*bikes - 0.3*scooters <= 0\n    def bike_share_rule(m):\n        return (1 - d[\"bike_share_max\"]) * m.x[0] - d[\"bike_share_max\"] * m.x[1] <= 0\n    m.bike_share = pyo.Constraint(rule=bike_share_rule)\n\n    # At least 20 scooters\n    def scooter_rule(m):\n        return m.x[1] >= d[\"min_scooters\"]\n    m.min_scooters = pyo.Constraint(rule=scooter_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1127,
+      "completion_tokens": 762
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 3.934253692626953,
+   "position": 5,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"meals_per_bike\": 8,          # meals a bike can hold\n    \"meals_per_scooter\": 5,       # meals a scooter can hold\n    \"charge_per_bike\": 3,         # charge units a bike requires\n    \"charge_per_scooter\": 2,      # charge units a scooter requires\n    \"charge_available\": 200,      # total charge units available\n    \"max_bike_fraction\": 0.30,    # at most 30% of vehicles may be bikes\n    \"min_scooters\": 20,           # at least 20 scooters must be used\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # --- Variables ---------------------------------------------------\n    # x = number of bikes, y = number of scooters\n    model.x = pyo.Var(within=pyo.NonNegativeIntegers)\n    model.y = pyo.Var(within=pyo.NonNegativeIntegers)\n\n    # --- Objective: maximise meals delivered -------------------------\n    model.obj = pyo.Objective(\n        expr=d[\"meals_per_bike\"] * model.x + d[\"meals_per_scooter\"] * model.y,\n        sense=pyo.maximize,\n    )\n\n    # --- Constraints -------------------------------------------------\n    # Total charge used must not exceed the charge available.\n    def charge_rule(m):\n        return d[\"charge_per_bike\"] * m.x + d[\"charge_per_scooter\"] * m.y <= d[\"charge_available\"]\n    model.charge = pyo.Constraint(rule=charge_rule)\n\n    # Bikes may be at most 30% of all vehicles:\n    #   x <= 0.30 (x + y)  ->  x - 0.30x - 0.30y <= 0\n    #   (1 - 0.30) x - 0.30 y <= 0\n    def bike_fraction_rule(m):\n        return (1 - d[\"max_bike_fraction\"]) * m.x - d[\"max_bike_fraction\"] * m.y <= 0\n    model.bike_fraction = pyo.Constraint(rule=bike_fraction_rule)\n\n    # At least 20 scooters must be used.\n    def min_scooters_rule(m):\n        return m.y >= d[\"min_scooters\"]\n    model.min_scooters = pyo.Constraint(rule=min_scooters_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1127,
+      "completion_tokens": 836
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.099008560180664,
+   "position": 6,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"meals_per_bike\": 8,\n    \"meals_per_scooter\": 5,\n    \"charge_per_bike\": 3,\n    \"charge_per_scooter\": 2,\n    \"charge_available\": 200,\n    \"bike_share_max\": 0.30,\n    \"min_scooters\": 20,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Decision variables: counts of each vehicle type\n    model.bikes = pyo.Var(within=pyo.NonNegativeIntegers)\n    model.scooters = pyo.Var(within=pyo.NonNegativeIntegers)\n\n    # Objective: maximize total meals delivered\n    def obj_rule(m):\n        return d[\"meals_per_bike\"] * m.bikes + d[\"meals_per_scooter\"] * m.scooters\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Charge capacity constraint\n    def charge_rule(m):\n        return (d[\"charge_per_bike\"] * m.bikes\n                + d[\"charge_per_scooter\"] * m.scooters\n                <= d[\"charge_available\"])\n\n    model.charge_limit = pyo.Constraint(rule=charge_rule)\n\n    # Bike share cap: bikes <= share * (bikes + scooters)\n    # Rearranged linear form: (1 - share) * bikes - share * scooters <= 0\n    def share_rule(m):\n        return ((1 - d[\"bike_share_max\"]) * m.bikes\n                - d[\"bike_share_max\"] * m.scooters\n                <= 0)\n\n    model.bike_share_cap = pyo.Constraint(rule=share_rule)\n\n    # Minimum number of scooters\n    def min_scooter_rule(m):\n        return m.scooters >= d[\"min_scooters\"]\n\n    model.min_scooters = pyo.Constraint(rule=min_scooter_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1111,
+      "completion_tokens": 778
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 3.9984896183013916,
+   "position": 7,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"vehicle_types\": [\"bike\", \"scooter\"],\n    \"meals_per_type\": {\"bike\": 8, \"scooter\": 5},\n    \"charge_per_type\": {\"bike\": 3, \"scooter\": 2},\n    \"charge_budget\": 200,\n    \"max_bike_share\": 0.30,           # at most 30% of vehicles may be bikes\n    \"max_bike_share_coef\": 0.70,      # 1 - 0.30\n    \"min_scooters\": 20,\n    # Big-M style natural upper bounds from charge budget, used as variable bounds\n    \"ub_bike\": 200,                    # 200 // 3 ideal max bikes from charge\n    \"ub_scooter\": 100,                 # 200 // 2 ideal max scooters from charge\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel(\"meal_delivery_fleet\")\n\n    # ---- Sets ----\n    model.V = pyo.Set(initialize=d[\"vehicle_types\"])\n\n    # ---- Decision variables ----\n    def ub_v(m, j):\n        base = d[\"ub_bike\"] if j == \"bike\" else d[\"ub_scooter\"]\n        # also bounded by min scooters / charge for scooters, charge budget for bikes\n        return base\n\n    model.x = pyo.Var(\n        model.V,\n        domain=pyo.NonNegativeIntegers,\n        bounds=lambda m, j: (0, ub_v(m, j)),\n    )\n\n    # ---- Objective ---- maximize total meals delivered\n    def obj_rule(m):\n        return sum(d[\"meals_per_type\"][j] * m.x[j] for j in m.V)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # ---- Constraint: available charge budget ----\n    def charge_limit_rule(m):\n        return sum(d[\"charge_per_type\"][j] * m.x[j] for j in m.V) <= d[\"charge_budget\"]\n\n    model.charge_limit = pyo.Constraint(rule=charge_limit_rule)\n\n    # ---- Constraint: at most 30% of vehicles can be bikes ----\n    def bike_share_rule(m):\n        return m.x[\"bike\"] <= d[\"max_bike_share\"] * (m.x[\"bike\"] + m.x[\"scooter\"])\n\n    model.bike_share = pyo.Constraint(rule=bike_share_rule)\n\n    # ---- Equivalent (linear) form of bike share constraint ----\n    def bike_share_linear_rule(m):\n        return (\n            d[\"max_bike_share_coef\"] * m.x[\"bike\"]\n            - d[\"max_bike_share\"] * m.x[\"scooter\"]\n            <= 0\n        )\n\n    model.bike_share_linear = pyo.Constraint(rule=bike_share_linear_rule)\n\n    # ---- Constraint: at least 20 scooters must be used ----\n    def min_scooters_rule(m):\n        return m.x[\"scooter\"] >= d[\"min_scooters\"]\n\n    model.min_scooters = pyo.Constraint(rule=min_scooters_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1117,
+      "completion_tokens": 1102
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.029260158538818,
+   "position": 8,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # vehicle capacities (meals)\n    \"meals_bike\": 8,\n    \"meals_scooter\": 5,\n    # charge requirements (units per vehicle)\n    \"charge_bike\": 3,\n    \"charge_scooter\": 2,\n    # availability\n    \"charge_total\": 200,\n    # policy ratios\n    \"max_bike_fraction\": 0.30,\n    \"min_scooters\": 20,\n    # vehicle types\n    \"vehicles\": [\"bike\", \"scooter\"],\n    # big number for upper bounds on counts\n    \"max_each\": 200,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # --- Sets ------------------------------------------------------------\n    model.Vehicles = pyo.Set(initialize=d[\"vehicles\"])\n\n    # --- Variables -------------------------------------------------------\n    # Number of vehicles of each type used (nonnegative integers).\n    # Upper bound: charge budget limits how many of any one vehicle can run.\n    model.num_vehicles = pyo.Var(\n        model.Vehicles,\n        domain=pyo.NonNegativeIntegers,\n        bounds=(0, d[\"max_each\"]),\n    )\n\n    # --- Objective: maximize meals delivered -----------------------------\n    # 8 meals per bike + 5 meals per scooter\n    def obj_rule(m):\n        return (\n            d[\"meals_bike\"] * m.num_vehicles[\"bike\"]\n            + d[\"meals_scooter\"] * m.num_vehicles[\"scooter\"]\n        )\n\n    model.obj = pyo.Objective(expr=obj_rule, sense=pyo.maximize)\n\n    # --- Constraint (e): total charge available --------------------------\n    # 3 * bikes + 2 * scooters <= 200\n    def charge_rule(m):\n        return (\n            d[\"charge_bike\"] * m.num_vehicles[\"bike\"]\n            + d[\"charge_scooter\"] * m.num_vehicles[\"scooter\"]\n            <= d[\"charge_total\"]\n        )\n\n    model.charge_availability = pyo.Constraint(expr=charge_rule)\n\n    # --- Constraint (f): at most 30% of EVs may be bikes -----------------\n    # bikes <= 0.30 * (bikes + scooters)  --> linearised form:\n    # bikes - 0.30*bikes - 0.30*scooters <= 0\n    # (scalar*var only; no division, no var*var)\n    def bike_fraction_rule(m):\n        return (\n            m.num_vehicles[\"bike\"]\n            - d[\"max_bike_fraction\"] * m.num_vehicles[\"bike\"]\n            - d[\"max_bike_fraction\"] * m.num_vehicles[\"scooter\"]\n            <= 0\n        )\n\n    model.max_bike_fraction = pyo.Constraint(expr=bike_fraction_rule)\n\n    # --- Constraint (g): at least 20 scooters ----------------------------\n    def min_scooter_rule(m):\n        return m.num_vehicles[\"scooter\"] >= d[\"min_scooters\"]\n\n    model.min_scooters = pyo.Constraint(expr=min_scooter_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1117,
+      "completion_tokens": 1108
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.0566606521606445,
+   "position": 9,
+   "recipe_index": 8
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-13T22:51:21"
+}

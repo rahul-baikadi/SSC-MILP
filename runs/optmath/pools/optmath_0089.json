@@ -1,0 +1,268 @@
+{
+ "pid": "optmath_0089",
+ "question": "Assign six staff members to four projects such that each staff member is assigned to exactly one project. Each staff member has specific skill levels in three skills, and each project has required skill levels for each skill. The skill level attained for each project is determined by the highest skill level among the staff members assigned to that project. The skill shortage for each project is the difference between the required skill level and the attained skill level. The goal is to minimize the maximum skill shortage across all projects and skills. Staff members and their skill levels are as follows: Person 0 has Skill 0 (Level 5), Skill 1 (Level 5), Skill 2 (Level 5); Person 1 has Skill 0 (Level 6), Skill 1 (Level 5), Skill 2 (Level 7); Person 2 has Skill 0 (Level 6), Skill 1 (Level 5), Skill 2 (Level 7); Person 3 has Skill 0 (Level 5), Skill 1 (Level 5), Skill 2 (Level 6); Person 4 has Skill 0 (Level 7), Skill 1 (Level 5), Skill 2 (Level 6); Person 5 has Skill 0 (Level 6), Skill 1 (Level 7), Skill 2 (Level 5). Project skill requirements are as follows: Project 0 requires Skill 0 (Level 9), Skill 1 (Level 9), Skill 2 (Level 7); Project 1 requires Skill 0 (Level 7), Skill 1 (Level 7), Skill 2 (Level 8); Project 2 requires Skill 0 (Level 9), Skill 1 (Level 9), Skill 2 (Level 7); Project 3 requires Skill 0 (Level 7), Skill 1 (Level 8), Skill 2 (Level 9). The objective is to minimize the maximum skill shortage across all projects and skills.",
+ "templates": [
+  "Assignment"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem, with its source sentence.\n# ---------------------------------------------------------------------------\nDATA = {\n    # \"six staff members\" -> I; \"four projects\" -> J; \"three skills\" -> K\n    \"I\": [0, 1, 2, 3, 4, 5],\n    \"J\": [0, 1, 2, 3],\n    \"K\": [0, 1, 2],\n\n    # Staff skill levels (person -> skill -> level)\n    # \"Person 0 has Skill 0 (Level 5), Skill 1 (Level 5), Skill 2 (Level 5)\"\n    # \"Person 1 has Skill 0 (Level 6), Skill 1 (Level 5), Skill 2 (Level 7)\"\n    # \"Person 2 has Skill 0 (Level 6), Skill 1 (Level 5), Skill 2 (Level 7)\"\n    # \"Person 3 has Skill 0 (Level 5), Skill 1 (Level 5), Skill 2 (Level 6)\"\n    # \"Person 4 has Skill 0 (Level 7), Skill 1 (Level 5), Skill 2 (Level 6)\"\n    # \"Person 5 has Skill 0 (Level 6), Skill 1 (Level 7), Skill 2 (Level 5)\"\n    \"skill\": {\n        (0, 0): 5, (0, 1): 5, (0, 2): 5,\n        (1, 0): 6, (1, 1): 5, (1, 2): 7,\n        (2, 0): 6, (2, 1): 5, (2, 2): 7,\n        (3, 0): 5, (3, 1): 5, (3, 2): 6,\n        (4, 0): 7, (4, 1): 5, (4, 2): 6,\n        (5, 0): 6, (5, 1): 7, (5, 2): 5,\n    },\n\n    # Project required skill levels (project -> skill -> required)\n    # \"Project 0 requires Skill 0 (Level 9), Skill 1 (Level 9), Skill 2 (Level 7)\"\n    # \"Project 1 requires Skill 0 (Level 7), Skill 1 (Level 7), Skill 2 (Level 8)\"\n    # \"Project 2 requires Skill 0 (Level 9), Skill 1 (Level 9), Skill 2 (Level 7)\"\n    # \"Project 3 requires Skill 0 (Level 7), Skill 1 (Level 8), Skill 2 (Level 9)\"\n    \"req\": {\n        (0, 0): 9, (0, 1): 9, (0, 2): 7,\n        (1, 0): 7, (1, 1): 7, (1, 2): 8,\n        (2, 0): 9, (2, 1): 9, (2, 2): 7,\n        (3, 0): 7, (3, 1): 8, (3, 2): 9,\n    },\n\n    # Big-M: max possible skill level is 7 (\"Level 7\" appearing as max skill),\n    # max required is 9. Use a safe upper bound on attainment (>= any skill level).\n    \"M\": 9,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    I = d[\"I\"]\n    J = d[\"J\"]\n    K = d[\"K\"]\n    skill = d[\"skill\"]\n    req = d[\"req\"]\n    M = d[\"M\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets ---------------------------------------------------------------\n    model.I = pyo.Set(initialize=I)\n    model.J = pyo.Set(initialize=J)\n    model.K = pyo.Set(initialize=K)\n\n    # Variables ----------------------------------------------------------\n    # x[i,j] = 1 if staff i assigned to project j\n    model.x = pyo.Var(model.I, model.J, within=pyo.Binary)\n\n    # attained[j,k]: highest skill level for skill k among staff on project j\n    model.attained = pyo.Var(model.J, model.K, within=pyo.NonNegativeReals,\n                             bounds=(0, M))\n\n    # short[j,k]: shortage of skill k on project j\n    model.short = pyo.Var(model.J, model.K, within=pyo.NonNegativeReals,\n                          bounds=(0, M))\n\n    # zmax: maximum shortage across all projects and skills\n    model.zmax = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, M))\n\n    # Constraints --------------------------------------------------------\n\n    # \"each staff member is assigned to exactly one project\"\n    def assign_rule(m, i):\n        return sum(m.x[i, j] for j in m.J) == 1\n    model.assign = pyo.Constraint(model.I, rule=assign_rule)\n\n    # attained[j,k] >= skill[i,k] * x[i,j]  (attained is at least any assigned staff level)\n    def att_lb_rule(m, i, j, k):\n        return m.attained[j, k] >= skill[(i, k)] * m.x[i, j]\n    model.att_lb = pyo.Constraint(model.I, model.J, model.K, rule=att_lb_rule)\n\n    # attained[j,k] <= skill[i,k] + M*(1 - x[i,j])  (attained is no more than the max)\n    def att_ub_rule(m, i, j, k):\n        return m.attained[j, k] <= skill[(i, k)] + M * (1 - m.x[i, j])\n    model.att_ub = pyo.Constraint(model.I, model.J, model.K, rule=att_ub_rule)\n\n    # \"skill shortage ... is the difference between required and attained\"\n    def short_rule(m, j, k):\n        return m.short[j, k] >= req[(j, k)] - m.attained[j, k]\n    model.short_c = pyo.Constraint(model.J, model.K, rule=short_rule)\n\n    # \"minimize the maximum skill shortage across all projects and skills\"\n    def zmax_rule(m, j, k):\n        return m.zmax >= m.short[j, k]\n    model.zmax_c = pyo.Constraint(model.J, model.K, rule=zmax_rule)\n\n    # Objective ----------------------------------------------------------\n    model.obj = pyo.Objective(expr=model.zmax, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1242,
+      "completion_tokens": 1886
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.298847913742065,
+   "position": 0,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # staff -> (skill0, skill1, skill2)\n    \"staff_skill\": {\n        0: {0: 5, 1: 5, 2: 5},\n        1: {0: 6, 1: 5, 2: 7},\n        2: {0: 6, 1: 5, 2: 7},\n        3: {0: 5, 1: 5, 2: 6},\n        4: {0: 7, 1: 5, 2: 6},\n        5: {0: 6, 1: 7, 2: 5},\n    },\n    # project -> (skill0, skill1, skill2) required level\n    \"project_req\": {\n        0: {0: 9, 1: 9, 2: 7},\n        1: {0: 7, 1: 7, 2: 8},\n        2: {0: 9, 1: 9, 2: 7},\n        3: {0: 7, 1: 8, 2: 9},\n    },\n    \"staff\": [0, 1, 2, 3, 4, 5],\n    \"projects\": [0, 1, 2, 3],\n    \"skills\": [0, 1, 2],\n    # big-M bound: largest possible attained skill level across all data\n    \"max_level\": 7,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    staff = d[\"staff\"]\n    projects = d[\"projects\"]\n    skills = d[\"skills\"]\n    L = d[\"staff_skill\"]      # L[p][s]\n    req = d[\"project_req\"]    # req[j][s]\n    U = d[\"max_level\"]        # upper bound on attained level\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=staff)\n    model.J = pyo.Set(initialize=projects)\n    model.S = pyo.Set(initialize=skills)\n\n    # x[p,j] = 1 if staff p assigned to project j\n    model.x = pyo.Var(model.P, model.J, domain=pyo.Binary)\n\n    # a[j,s] = attained skill level for project j in skill s\n    model.a = pyo.Var(model.J, model.S, domain=pyo.NonNegativeReals,\n                      bounds=(0, U))\n\n    # m = maximum skill shortage across all projects and skills\n    model.m = pyo.Var(domain=pyo.NonNegativeReals)\n\n    # Objective: minimise the maximum shortage\n    model.obj = pyo.Objective(expr=model.m, sense=pyo.minimize)\n\n    # (1) each staff member assigned to exactly one project\n    def rule_assign_one(m, p):\n        return sum(m.x[p, j] for j in m.J) == 1\n    model.assign_one = pyo.Constraint(model.P, rule=rule_assign_one)\n\n    # (2) each project gets at least one staff member\n    def rule_project_nonempty(m, j):\n        return sum(m.x[p, j] for p in m.P) >= 1\n    model.project_nonempty = pyo.Constraint(model.J, rule=rule_project_nonempty)\n\n    # (3) attained level >= each assigned member's level (forces the max)\n    def rule_attained(m, j, s):\n        return m.a[j, s] >= sum(L[p][s] * m.x[p, j] for p in m.P)\n    model.attained = pyo.Constraint(model.J, model.S, rule=rule_attained)\n\n    # (4) shortage req[j,s] - a[j,s] <= m  for all j, s\n    def rule_shortage(m, j, s):\n        return req[j][s] - m.a[j, s] <= m.m\n    model.shortage = pyo.Constraint(model.J, model.S, rule=rule_shortage)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1254,
+      "completion_tokens": 1363
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.187417507171631,
+   "position": 1,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "\"\"\"\nMILP: Assign 6 staff to 4 projects; each staff to exactly one project.\nAttained skill for a project = max skill level among its assigned members.\nShortage for (project, skill) = max(0, required - attained).\nObjective: minimize the maximum shortage over all projects and skills.\n\nDecision variables:\n  x[i,j]   Binary           1 if staff i is assigned to project j\n  y[j,s]   NonNegativeReals attained skill level for project j, skill s\n  gap[j,s] NonNegativeReals shortage for project j, skill s\n  zmax     NonNegativeReals objective = max shortage over all (j,s)\n\nConstraints:\n  1. sum_j x[i,j] = 1                       for all i   (each staff exactly one project)\n  2. sum_i x[i,j] >= 1                      for all j   (each project nonempty)\n  3. y[j,s] >= skill[i,s] - M(1 - x[i,j])   for all i,j,s (attained >= any assigned member)\n  4. y[j,s] <= skill[i,s] + M(1 - x[i,j])   for all i,j,s (attained <= assigned member -> max)\n  5. gap[j,s] >= req[j,s] - y[j,s]          for all j,s (shortage covers deficit)\n  6. zmax >= gap[j,s]                       for all j,s (objective ceiling)\n\"\"\"\nimport pyomo.environ as pyo\n\nDATA = {\n    \"num_staff\": 6,\n    \"num_projects\": 4,\n    \"num_skills\": 3,\n    \"skill_level\": [\n        [5, 5, 5],  # person 0\n        [6, 5, 7],  # person 1\n        [6, 5, 7],  # person 2\n        [5, 5, 6],  # person 3\n        [7, 5, 6],  # person 4\n        [6, 7, 5],  # person 5\n    ],\n    \"project_req\": [\n        [9, 9, 7],  # project 0\n        [7, 7, 8],  # project 1\n        [9, 9, 7],  # project 2\n        [7, 8, 9],  # project 3\n    ],\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.RangeSet(0, d[\"num_staff\"] - 1)\n    model.J = pyo.RangeSet(0, d[\"num_projects\"] - 1)\n    model.S = pyo.RangeSet(0, d[\"num_skills\"] - 1)\n\n    max_skill = max(max(row) for row in d[\"skill_level\"])\n    max_req = max(max(row) for row in d[\"project_req\"])\n    big_m = max_skill + max_req + 1\n    gap_ub = max_req\n\n    model.x = pyo.Var(model.I, model.J, within=pyo.Binary)\n    model.y = pyo.Var(model.J, model.S, within=pyo.NonNegativeReals,\n                      bounds=(0, max_skill))\n    model.gap = pyo.Var(model.J, model.S, within=pyo.NonNegativeReals,\n                        bounds=(0, gap_ub))\n    model.zmax = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, gap_ub))\n\n    # 1. Each staff member assigned to exactly one project\n    def staff_rule(m, i):\n        return sum(m.x[i, j] for j in m.J) == 1\n\n    model.staff_assign = pyo.Constraint(model.I, rule=staff_rule)\n\n    # 2. Each project has at least one member\n    def proj_rule(m, j):\n        return sum(m.x[i, j] for i in m.I) >= 1\n\n    model.proj_nonempty = pyo.Constraint(model.J, rule=proj_rule)\n\n    # 3. Attained skill >= any assigned member's skill\n    def attain_lb_rule(m, i, j, s):\n        return m.y[j, s] >= d[\"skill_level\"][i][s] - big_m * (1 - m.x[i, j])\n\n    model.attain_lb = pyo.Constraint(model.I, model.J, model.S, rule=attain_lb_rule)\n\n    # 4. Attained skill <= any assigned member's skill (forces max)\n    def attain_ub_rule(m, i, j, s):\n        return m.y[j, s] <= d[\"skill_level\"][i][s] + big_m * (1 - m.x[i, j])\n\n    model.attain_ub = pyo.Constraint(model.I, model.J, model.S, rule=attain_ub_rule)\n\n    # 5. Shortage covers required minus attained\n    def gap_rule(m, j, s):\n        return m.gap[j, s] >= d[\"project_req\"][j][s] - m.y[j, s]\n\n    model.gap_def = pyo.Constraint(model.J, model.S, rule=gap_rule)\n\n    # 6. Objective ceiling\n    def zmax_rule(m, j, s):\n        return m.zmax >= m.gap[j, s]\n\n    model.zmax_def = pyo.Constraint(model.J, model.S, rule=zmax_rule)\n\n    model.obj = pyo.Objective(expr=model.zmax, sense=pyo.minimize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1258,
+      "completion_tokens": 1679
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2380,
+      "completion_tokens": 1266
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 14.284993171691895,
+   "position": 2,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_staff\": 6,\n    \"num_projects\": 4,\n    \"num_skills\": 3,\n    # skill[i][k]\n    \"skill\": {\n        0: {0: 5, 1: 5, 2: 5},\n        1: {0: 6, 1: 5, 2: 7},\n        2: {0: 6, 1: 5, 2: 7},\n        3: {0: 5, 1: 5, 2: 6},\n        4: {0: 7, 1: 5, 2: 6},\n        5: {0: 6, 1: 7, 2: 5},\n    },\n    # req[j][k]\n    \"req\": {\n        0: {0: 9, 1: 9, 2: 7},\n        1: {0: 7, 1: 7, 2: 8},\n        2: {0: 9, 1: 9, 2: 7},\n        3: {0: 7, 1: 8, 2: 9},\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    I = list(d[\"skill\"].keys())\n    J = list(d[\"req\"].keys())\n    K = sorted(d[\"skill\"][I[0]].keys())\n    skill = d[\"skill\"]\n    req = d[\"req\"]\n\n    m = pyo.ConcreteModel()\n    m.I = pyo.Set(initialize=I)\n    m.J = pyo.Set(initialize=J)\n    m.K = pyo.Set(initialize=K)\n\n    # x[i,j] = 1 if staff i assigned to project j\n    m.x = pyo.Var(m.I, m.J, within=pyo.Binary)\n\n    # a[j,k] = attained skill level of project j in skill k (max over assigned staff)\n    m.a = pyo.Var(m.J, m.K, within=pyo.NonNegativeReals)\n\n    # M = maximum skill shortage across all projects and skills\n    m.M = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Each staff member assigned to exactly one project\n    def assign_rule(m, i):\n        return sum(m.x[i, j] for j in m.J) == 1\n    m.assign_con = pyo.Constraint(m.I, rule=assign_rule)\n\n    # Each project must have at least one staff member\n    def cover_rule(m, j):\n        return sum(m.x[i, j] for i in m.I) >= 1\n    m.cover_con = pyo.Constraint(m.J, rule=cover_rule)\n\n    # Attained level lower bound: a[j,k] >= skill[i,k] * x[i,j]\n    def attained_rule(m, i, j, k):\n        return m.a[j, k] >= skill[i][k] * m.x[i, j]\n    m.attained_con = pyo.Constraint(m.I, m.J, m.K, rule=attained_rule)\n\n    # Max-shortage definition: M >= required - attained\n    def shortage_rule(m, j, k):\n        return m.M >= req[j][k] - m.a[j, k]\n    m.shortage_con = pyo.Constraint(m.J, m.K, rule=shortage_rule)\n\n    # Objective: minimise the maximum skill shortage\n    m.obj = pyo.Objective(expr=m.M, sense=pyo.minimize)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1254,
+      "completion_tokens": 1317
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.687945604324341,
+   "position": 3,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"persons\": [0, 1, 2, 3, 4, 5],\n    \"projects\": [0, 1, 2, 3],\n    \"skills\": [0, 1, 2],\n    # level[p][k]\n    \"level\": {\n        0: {0: 5, 1: 5, 2: 5},\n        1: {0: 6, 1: 5, 2: 7},\n        2: {0: 6, 1: 5, 2: 7},\n        3: {0: 5, 1: 5, 2: 6},\n        4: {0: 7, 1: 5, 2: 6},\n        5: {0: 6, 1: 7, 2: 5},\n    },\n    # required[j][k]\n    \"required\": {\n        0: {0: 9, 1: 9, 2: 7},\n        1: {0: 7, 1: 7, 2: 8},\n        2: {0: 9, 1: 9, 2: 7},\n        3: {0: 7, 1: 8, 2: 9},\n    },\n    \"big_m\": 100,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    persons = d[\"persons\"]\n    projects = d[\"projects\"]\n    skills = d[\"skills\"]\n    level = d[\"level\"]\n    required = d[\"required\"]\n    M = d[\"big_m\"]\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=persons)\n    model.J = pyo.Set(initialize=projects)\n    model.K = pyo.Set(initialize=skills)\n    model.PJ = pyo.Set(initialize=[(p, j) for p in persons for j in projects])\n    model.JK = pyo.Set(initialize=[(j, k) for j in projects for k in skills])\n    model.PJK = pyo.Set(\n        initialize=[(p, j, k) for p in persons for j in projects for k in skills]\n    )\n\n    # Decision variables\n    model.assign = pyo.Var(model.PJ, within=pyo.Binary)\n    model.attained = pyo.Var(model.JK, within=pyo.NonNegativeReals)\n    model.shortage = pyo.Var(model.JK, within=pyo.NonNegativeReals)\n    model.max_shortage = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Each person assigned to exactly one project\n    def person_once_rule(m, p):\n        return sum(m.assign[p, j] for j in m.J) == 1\n\n    model.person_once = pyo.Constraint(model.P, rule=person_once_rule)\n\n    # Each project staffed by at least one person\n    def project_staffed_rule(m, j):\n        return sum(m.assign[p, j] for p in m.P) >= 1\n\n    model.project_staffed = pyo.Constraint(model.J, rule=project_staffed_rule)\n\n    # attained[j,k] >= level[p,k] * assign[p,j]\n    def attained_lower_rule(m, p, j, k):\n        return m.attained[j, k] >= level[p][k] * m.assign[p, j]\n\n    model.attained_lower = pyo.Constraint(model.PJK, rule=attained_lower_rule)\n\n    # attained[j,k] <= level[p,k] + M*(1 - assign[p,j])\n    def attained_upper_rule(m, p, j, k):\n        return m.attained[j, k] <= level[p][k] + M * (1 - m.assign[p, j])\n\n    model.attained_upper = pyo.Constraint(model.PJK, rule=attained_upper_rule)\n\n    # shortage[j,k] >= required[j,k] - attained[j,k]\n    def shortage_rule(m, j, k):\n        return m.shortage[j, k] >= required[j][k] - m.attained[j, k]\n\n    model.shortage_def = pyo.Constraint(model.JK, rule=shortage_rule)\n\n    # max_shortage >= shortage[j,k]\n    def max_link_rule(m, j, k):\n        return m.max_shortage >= m.shortage[j, k]\n\n    model.max_link = pyo.Constraint(model.JK, rule=max_link_rule)\n\n    # Objective: minimise the maximum skill shortage\n    model.obj = pyo.Objective(expr=model.max_shortage, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1238,
+      "completion_tokens": 1449
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.987693786621094,
+   "position": 4,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_people\": 6,\n    \"num_projects\": 4,\n    \"num_skills\": 3,\n    \"person_skill\": {\n        (0, 0): 5, (0, 1): 5, (0, 2): 5,\n        (1, 0): 6, (1, 1): 5, (1, 2): 7,\n        (2, 0): 6, (2, 1): 5, (2, 2): 7,\n        (3, 0): 5, (3, 1): 5, (3, 2): 6,\n        (4, 0): 7, (4, 1): 5, (4, 2): 6,\n        (5, 0): 6, (5, 1): 7, (5, 2): 5,\n    },\n    \"project_skill_req\": {\n        (0, 0): 9, (0, 1): 9, (0, 2): 7,\n        (1, 0): 7, (1, 1): 7, (1, 2): 8,\n        (2, 0): 9, (2, 1): 9, (2, 2): 7,\n        (3, 0): 7, (3, 1): 8, (3, 2): 9,\n    },\n    \"big_M\": 100,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.PEOPLE = pyo.RangeSet(0, d[\"num_people\"] - 1)\n    model.PROJECTS = pyo.RangeSet(0, d[\"num_projects\"] - 1)\n    model.SKILLS = pyo.RangeSet(0, d[\"num_skills\"] - 1)\n\n    model.JS = pyo.Set(\n        initialize=[(j, s) for j in range(d[\"num_projects\"])\n                    for s in range(d[\"num_skills\"])]\n    )\n\n    model.x = pyo.Var(model.PEOPLE, model.PROJECTS, within=pyo.Binary)\n\n    model.y = pyo.Var(model.PROJECTS, model.SKILLS, model.PEOPLE, within=pyo.Binary)\n\n    model.w = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, d[\"big_M\"]))\n\n    def rule_assign(m, p):\n        return sum(m.x[p, j] for j in m.PROJECTS) == 1\n    model.assign = pyo.Constraint(model.PEOPLE, rule=rule_assign)\n\n    def rule_projstaffed(m, j):\n        return sum(m.x[p, j] for p in m.PEOPLE) >= 1\n    model.projstaffed = pyo.Constraint(model.PROJECTS, rule=rule_projstaffed)\n\n    def rule_y_implies_x(m, j, s, p):\n        return m.y[j, s, p] <= m.x[p, j]\n    model.y_implies_x = pyo.Constraint(\n        model.PROJECTS, model.SKILLS, model.PEOPLE, rule=rule_y_implies_x)\n\n    def rule_x_implies_y(m, j, s, p):\n        return m.x[p, j] - m.y[j, s, p] <= 1 - m.y[j, s, p]\n    model.x_implies_y = pyo.Constraint(\n        model.PROJECTS, model.SKILLS, model.PEOPLE, rule=rule_x_implies_y)\n\n    def rule_y_one_max(m, j, s):\n        return sum(m.y[j, s, p] for p in m.PEOPLE) <= 1\n    model.y_one_max = pyo.Constraint(model.JS, rule=rule_y_one_max)\n\n    def rule_maxchain(m, j, s, p):\n        skill = d[\"person_skill\"][(p, s)]\n        req = d[\"project_skill_req\"][(j, s)]\n        return req - skill * (m.x[p, j] + m.y[j, s, p]) <= m.w\n    model.maxchain = pyo.Constraint(\n        model.PROJECTS, model.SKILLS, model.PEOPLE, rule=rule_maxchain)\n\n    model.obj = pyo.Objective(expr=model.w, sense=pyo.minimize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1244,
+      "completion_tokens": 1445
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.719072103500366,
+   "position": 5,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"persons\": [0, 1, 2, 3, 4, 5],\n    \"projects\": [0, 1, 2, 3],\n    \"skills\": [0, 1, 2],\n    \"n_projects\": 4,\n    # A[p][s] skill level of person p in skill s\n    \"A\": {\n        0: {0: 5, 1: 5, 2: 5},\n        1: {0: 6, 1: 5, 2: 7},\n        2: {0: 6, 1: 5, 2: 7},\n        3: {0: 5, 1: 5, 2: 6},\n        4: {0: 7, 1: 5, 2: 6},\n        5: {0: 6, 1: 7, 2: 5},\n    },\n    # R[j][s] required level of project j in skill s\n    \"R\": {\n        0: {0: 9, 1: 9, 2: 7},\n        1: {0: 7, 1: 7, 2: 8},\n        2: {0: 9, 1: 9, 2: 7},\n        3: {0: 7, 1: 8, 2: 9},\n    },\n    \"TA_UB\": 9,  # upper bound on max shortage (max requirement)\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    persons = d[\"persons\"]\n    projects = d[\"projects\"]\n    skills = d[\"skills\"]\n    A = d[\"A\"]\n    R = d[\"R\"]\n\n    model = pyo.ConcreteModel(\"staff_project_assignment\")\n\n    model.P = pyo.Set(initialize=persons)\n    model.J = pyo.Set(initialize=projects)\n    model.S = pyo.Set(initialize=skills)\n\n    model.PJ = pyo.Set(initialize=[(p, j) for p in persons for j in projects])\n    model.JS = pyo.Set(initialize=[(j, s) for j in projects for s in skills])\n    model.PJS = pyo.Set(\n        initialize=[(p, j, s) for p in persons for j in projects for s in skills]\n    )\n\n    # Assignment binary variables\n    model.x = pyo.Var(model.PJ, domain=pyo.Binary)\n\n    # Attained skill level for each project/skill\n    def _att_ub(m, j, s):\n        return max(A[p][s] for p in persons)\n\n    model.v = pyo.Var(\n        model.JS,\n        domain=pyo.NonNegativeReals,\n        bounds=lambda m, j, s: (0, _att_ub(m, j, s)),\n    )\n\n    # Minimax shortage\n    model.T = pyo.Var(domain=pyo.NonNegativeReals, bounds=(0, d[\"TA_UB\"]))\n\n    # (C1) each person assigned to exactly one project\n    def rule_person_once(m, p):\n        return sum(m.x[p, j] for j in m.J) == 1\n\n    model.person_once = pyo.Constraint(model.P, rule=rule_person_once)\n\n    # (C2) each project gets at least one person\n    def rule_proj_used(m, j):\n        return sum(m.x[p, j] for p in m.P) >= 1\n\n    model.proj_used = pyo.Constraint(model.J, rule=rule_proj_used)\n\n    # (C3) attained level >= skill of any assigned member -> v is the max\n    def rule_attained(m, p, j, s):\n        return m.v[j, s] >= A[p][s] * m.x[p, j]\n\n    model.attained = pyo.Constraint(model.PJS, rule=rule_attained)\n\n    # (C4) shortage bound: T >= required - attained for every project/skill\n    def rule_shortage(m, j, s):\n        return m.T >= R[j][s] - m.v[j, s]\n\n    model.shortage = pyo.Constraint(model.JS, rule=rule_shortage)\n\n    # Objective: minimise the maximum shortage\n    model.obj = pyo.Objective(expr=model.T, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1244,
+      "completion_tokens": 2399
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 11.42769479751587,
+   "position": 6,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# All numeric constants, with source comments\nDATA = {\n    # Number of staff members (\"six staff members\")\n    \"num_staff\": 6,\n    # Number of projects (\"four projects\")\n    \"num_projects\": 4,\n    # Number of skills (\"three skills\")\n    \"num_skills\": 3,\n\n    # Staff skill levels: person -> skill -> level\n    # \"Person 0 has Skill 0 (Level 5), Skill 1 (Level 5), Skill 2 (Level 5); ...\"\n    \"staff_levels\": {\n        0: {0: 5, 1: 5, 2: 5},\n        1: {0: 6, 1: 5, 2: 7},\n        2: {0: 6, 1: 5, 2: 7},\n        3: {0: 5, 1: 5, 2: 6},\n        4: {0: 7, 1: 5, 2: 6},\n        5: {0: 6, 1: 7, 2: 5},\n    },\n\n    # Project skill requirements: project -> skill -> required level\n    # \"Project 0 requires Skill 0 (Level 9), Skill 1 (Level 9), Skill 2 (Level 7); ...\"\n    \"project_req\": {\n        0: {0: 9, 1: 9, 2: 7},\n        1: {0: 7, 1: 7, 2: 8},\n        2: {0: 9, 1: 9, 2: 7},\n        3: {0: 7, 1: 8, 2: 9},\n    },\n\n    # Big-M: an upper bound exceeding any possible shortage (max req 9 - min level 5 = 4)\n    \"big_m\": 10,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    staff = list(range(d[\"num_staff\"]))\n    projects = list(range(d[\"num_projects\"]))\n    skills = list(range(d[\"num_skills\"]))\n\n    level = d[\"staff_levels\"]\n    req = d[\"project_req\"]\n    M = d[\"big_m\"]\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=staff, ordered=True)\n    model.J = pyo.Set(initialize=projects, ordered=True)\n    model.S = pyo.Set(initialize=skills, ordered=True)\n\n    # x[i,j] = 1 if staff i assigned to project j\n    model.x = pyo.Var(model.P, model.J, within=pyo.Binary)\n\n    # a[j,s] = attained skill level (max over assigned staff)\n    model.a = pyo.Var(model.J, model.S, within=pyo.NonNegativeReals,\n                      bounds=(0, M))\n\n    # sh[j,s] = shortage for project j in skill s\n    model.sh = pyo.Var(model.J, model.S, within=pyo.NonNegativeReals,\n                       bounds=(0, M))\n\n    # z = maximum shortage across all projects and skills\n    model.z = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, M))\n\n    # Each staff member assigned to exactly one project\n    def assign_rule(m, i):\n        return sum(m.x[i, j] for j in m.J) == 1\n    model.assign = pyo.Constraint(model.P, rule=assign_rule)\n\n    # Attained level >= each assigned staff member's level (linearised max)\n    def attain_rule(m, j, s):\n        return m.a[j, s] >= sum(level[i][s] * m.x[i, j] for i in m.P)\n    model.attain = pyo.Constraint(model.J, model.S, rule=attain_rule)\n\n    # Shortage >= required - attained\n    def shortage_rule(m, j, s):\n        return m.sh[j, s] >= req[j][s] - m.a[j, s]\n    model.shortage = pyo.Constraint(model.J, model.S, rule=shortage_rule)\n\n    # z >= each shortage\n    def maxshort_rule(m, j, s):\n        return m.z >= m.sh[j, s]\n    model.maxshort = pyo.Constraint(model.J, model.S, rule=maxshort_rule)\n\n    # Objective: minimize the maximum shortage\n    model.obj = pyo.Objective(expr=model.z, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1242,
+      "completion_tokens": 1348
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.429565668106079,
+   "position": 7,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"persons\": [0, 1, 2, 3, 4, 5],\n    \"projects\": [0, 1, 2, 3],\n    \"skills\": [0, 1, 2],\n    # skill[p][s]\n    \"skill\": {\n        0: {0: 5, 1: 5, 2: 5},\n        1: {0: 6, 1: 5, 2: 7},\n        2: {0: 6, 1: 5, 2: 7},\n        3: {0: 5, 1: 5, 2: 6},\n        4: {0: 7, 1: 5, 2: 6},\n        5: {0: 6, 1: 7, 2: 5},\n    },\n    # required[j][s]\n    \"required\": {\n        0: {0: 9, 1: 9, 2: 7},\n        1: {0: 7, 1: 7, 2: 8},\n        2: {0: 9, 1: 9, 2: 7},\n        3: {0: 7, 1: 8, 2: 9},\n    },\n    # big-M: larger than any possible skill level\n    \"bigM\": 100,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    persons = d[\"persons\"]\n    projects = d[\"projects\"]\n    skills = d[\"skills\"]\n    skill = d[\"skill\"]\n    required = d[\"required\"]\n    bigM = d[\"bigM\"]\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=persons)\n    model.J = pyo.Set(initialize=projects)\n    model.S = pyo.Set(initialize=skills)\n\n    # assignment: person p -> project j\n    model.assign = pyo.Var(model.P, model.J, within=pyo.Binary)\n\n    # attained skill level of project j in skill s\n    model.attained = pyo.Var(model.J, model.S, within=pyo.NonNegativeReals)\n\n    # shortage of project j in skill s\n    model.shortage = pyo.Var(model.J, model.S, within=pyo.NonNegativeReals)\n\n    # maximum shortage (objective)\n    model.z = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Each person assigned to exactly one project\n    def rule_one_project(m, p):\n        return sum(m.assign[p, j] for j in m.J) == 1\n\n    model.one_project = pyo.Constraint(model.P, rule=rule_one_project)\n\n    # Each project must have at least one person\n    def rule_project_staffed(m, j):\n        return sum(m.assign[p, j] for p in m.P) >= 1\n\n    model.project_staffed = pyo.Constraint(model.J, rule=rule_project_staffed)\n\n    # attained >= skill of every assigned person (lower bound on max)\n    def rule_attained_lb(m, j, s):\n        return m.attained[j, s] >= sum(\n            skill[p][s] * m.assign[p, j] for p in m.P\n        )\n\n    model.attained_lb = pyo.Constraint(model.J, model.S, rule=rule_attained_lb)\n\n    # attained <= skill of every assigned person (upper bound on max)\n    def rule_attained_ub(m, j, s, p):\n        return m.attained[j, s] <= skill[p][s] + bigM * (1 - m.assign[p, j])\n\n    model.attained_ub = pyo.Constraint(\n        model.J, model.S, model.P, rule=rule_attained_ub\n    )\n\n    # shortage >= required - attained\n    def rule_shortage(m, j, s):\n        return m.shortage[j, s] >= required[j][s] - m.attained[j, s]\n\n    model.shortage_def = pyo.Constraint(model.J, model.S, rule=rule_shortage)\n\n    # z >= every shortage\n    def rule_z(m, j, s):\n        return m.z >= m.shortage[j, s]\n\n    model.z_def = pyo.Constraint(model.J, model.S, rule=rule_z)\n\n    # Objective: minimise the maximum shortage\n    model.obj = pyo.Objective(expr=model.z, sense=pyo.minimize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1238,
+      "completion_tokens": 1427
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.822848558425903,
+   "position": 8,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "\"\"\"\nAssignment of staff to projects with minimax skill shortage.\n\nDecision variables\n------------------\nx[i, j] : binary, 1 if staff member i is assigned to project j, else 0.\n          Index sets: i in STAFF (0..5), j in PROJECTS (0..3).\n          Domain: {0, 1}.\n\nz       : continuous, the maximum skill shortage across all projects and skills.\n          Domain: Reals (bounded below by 0).\n          Used to linearise the minimax objective.\n\ny[j, k] : continuous, the attained skill level for project j and skill k\n          (highest level among staff assigned to j).\n          Index sets: j in PROJECTS, k in SKILLS.\n          Domain: Reals (bounded below by 0).\n\nObjective (in words)\n--------------------\nMinimise z, the maximum over all projects j and skills k of the shortage\n(required[j,k] - attained[j,k]).\n\nConstraints (numbered, with source sentence)\n--------------------------------------------\n(1) Each staff member is assigned to exactly one project.\n    Source: \"each staff member is assigned to exactly one project\".\n    sum_j x[i,j] = 1  for all i.\n\n(2) Attained skill level y[j,k] is at least the skill level of any staff\n    member assigned to project j (so it equals the maximum).\n    Source: \"The skill level attained for each project is determined by the\n    highest skill level among the staff members assigned to that project.\"\n    y[j,k] >= skill[i,k] * x[i,j]  for all i, j, k.\n\n(3) Shortage for project j, skill k is required[j,k] - y[j,k], and z is the\n    maximum shortage.\n    Source: \"The skill shortage for each project is the difference between\n    the required skill level and the attained skill level\" and \"minimize the\n    maximum skill shortage across all projects and skills.\"\n    z >= required[j,k] - y[j,k]  for all j, k.\n\"\"\"\n\nimport pyomo.environ as pyo\n\nDATA = {\n    \"n_staff\": 6,\n    \"n_projects\": 4,\n    \"n_skills\": 3,\n    # skill[i][k] : skill level of staff i in skill k\n    \"skill\": [\n        [5, 5, 5],  # Person 0\n        [6, 5, 7],  # Person 1\n        [6, 5, 7],  # Person 2\n        [5, 5, 6],  # Person 3\n        [7, 5, 6],  # Person 4\n        [6, 7, 5],  # Person 5\n    ],\n    # required[j][k] : required level of project j in skill k\n    \"required\": [\n        [9, 9, 7],  # Project 0\n        [7, 7, 8],  # Project 1\n        [9, 9, 7],  # Project 2\n        [7, 8, 9],  # Project 3\n    ],\n    # big-M for the attained-skill linearisation\n    \"big_m\": 100,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.STAFF = pyo.RangeSet(0, d[\"n_staff\"] - 1)\n    model.PROJECTS = pyo.RangeSet(0, d[\"n_projects\"] - 1)\n    model.SKILLS = pyo.RangeSet(0, d[\"n_skills\"] - 1)\n\n    # Decision variables\n    model.x = pyo.Var(\n        model.STAFF, model.PROJECTS, within=pyo.Binary\n    )\n    model.y = pyo.Var(\n        model.PROJECTS, model.SKILLS, within=pyo.NonNegativeReals\n    )\n    model.z = pyo.Var(within=pyo.NonNegativeReals)\n\n    # (1) Each staff member assigned to exactly one project\n    def assign_rule(m, i):\n        return sum(m.x[i, j] for j in m.PROJECTS) == 1\n\n    model.assign = pyo.Constraint(model.STAFF, rule=assign_rule)\n\n    # (2) Attained skill level is at least each assigned member's level\n    def attained_rule(m, i, j, k):\n        return m.y[j, k] >= d[\"skill\"][i][k] * m.x[i, j]\n\n    model.attained = pyo.Constraint(\n        model.STAFF, model.PROJECTS, model.SKILLS, rule=attained_rule\n    )\n\n    # (3) z is the maximum shortage across projects and skills\n    def shortage_rule(m, j, k):\n        return m.z >= d[\"required\"][j][k] - m.y[j, k]\n\n    model.shortage = pyo.Constraint(\n        model.PROJECTS, model.SKILLS, rule=shortage_rule\n    )\n\n    # Objective: minimise the maximum skill shortage\n    model.obj = pyo.Objective(expr=model.z, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1258,
+      "completion_tokens": 3772
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "missing_constraints",
+      "missing_objective",
+      "missing_variables",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1374,
+      "completion_tokens": 1170
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 34.55257964134216,
+   "position": 9,
+   "recipe_index": 9
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T10:38:07"
+}

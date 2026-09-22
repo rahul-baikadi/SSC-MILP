@@ -1,0 +1,278 @@
+{
+ "pid": "optmath_0053",
+ "question": "You are managing a manufacturing facility that produces three types of products (Product 0, Product 1, and Product 2) using two machines (Machine 0 and Machine 1) over three time periods (Period 0, Period 1, and Period 2). Your goal is to minimize the total operational costs, which include production setup costs, machine startup costs, inventory holding costs, and backlogging costs, while meeting customer demand for each product in each period.\n\nFor each product, machine, and time period, decide whether to produce the product and how much to produce. For each machine and time period, decide whether to start up the machine to begin production. For each product and time period, decide how much inventory to carry over to the next period or how much demand to backlog if production falls short.\n\nMinimize the total cost, which includes production setup costs of 145.4242073380383 per production decision, machine startup costs of 79.18604813454679 per startup decision, inventory holding costs of 0.9008900951620358 for Product 0, 1.068925395295676 for Product 1, and 1.066244796883431 for Product 2 per unit per period, and backlogging costs of 6.734178682720012 for Product 0, 7.442225721133133 for Product 1, and 7.104627209109436 for Product 2 per unit per period.\n\nFor each product and time period, the total production across machines, plus any inventory carried over from the previous period, minus any backlog from the previous period, must equal the demand for that period plus the current inventory minus the current backlog. The demands for each product and period are as follows: Product 0: Period 0 = 20.33410585875594, Period 1 = 22.57961652322203, Period 2 = 15.89714240515548; Product 1: Period 0 = 24.05647618194615, Period 1 = 20.36522893983323, Period 2 = 17.47466293074195; Product 2: Period 0 = 16.36553930950429, Period 1 = 22.7831030020558, Period 2 = 19.7805033393852.\n\nFor each machine and time period, the production quantity multiplied by -71.79935969683524 for Machine 0 or -73.09691843304661 for Machine 1, plus the startup time multiplied by 6.342821301312698 for Machine 0 or 6.171760083826499 for Machine 1, plus the amount produced must be less than or equal to zero. Each machine can only produce one product at a time in any given period, meaning the sum of production decisions across all products for a given machine and period must be less than or equal to 1.\n\nIf a machine is producing a product in a period but was not producing it in the previous period, a startup decision must be made. Production quantities, inventory levels, and backlogs must be non-negative. Production and startup decisions are binary (either 0 or 1).",
+ "templates": [
+  "Inventory / Lot Sizing",
+  "Production Planning / Product Mix"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   x[p, m, t]  >= 0   production quantity of product p on machine m in period t\n#   y[p, m, t]  binary production decision (setup) for product p on machine m in t\n#   s[m, t]     binary machine startup decision for machine m in period t\n#   I[p, t]     >= 0   inventory of product p carried from period t to t+1\n#   B[p, t]     >= 0   backlog of product p at end of period t\n#\n# Objective (minimize):\n#   sum setup cost * y  +  sum startup cost * s\n#   + sum holding cost[p] * I[p,t]  +  sum backlog cost[p] * B[p,t]\n#\n# Constraints:\n#   (1) Inventory balance per product/period:\n#       sum_m x[p,m,t] + I[p,t-1] - B[p,t-1] = demand[p,t] + I[p,t] - B[p,t]\n#       (source: \"total production across machines, plus any inventory carried\n#        over from the previous period, minus any backlog from the previous\n#        period, must equal the demand ... plus the current inventory minus\n#        the current backlog\")\n#   (2) Machine capacity / startup linking:\n#       -rate[m] * sum_p x[p,m,t] + starttime[m] * s[m,t] + sum_p x[p,m,t] <= 0\n#       (source: \"production quantity multiplied by -rate ... plus the startup\n#        time multiplied by ... plus the amount produced must be <= 0\")\n#   (3) One product per machine per period:\n#       sum_p y[p,m,t] <= 1\n#       (source: \"Each machine can only produce one product at a time\")\n#   (4) Startup linking: if machine produces a product in t but not in t-1,\n#       a startup decision must be made:\n#       y[p,m,t] - y[p,m,t-1] <= s[m,t]\n#       (source: \"If a machine is producing a product in a period but was not\n#        producing it in the previous period, a startup decision must be made\")\n#   (5) Production linking: x[p,m,t] <= M * y[p,m,t]\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"products\": [0, 1, 2],\n    \"machines\": [0, 1],\n    \"periods\": [0, 1, 2],\n    \"setup_cost\": 145.4242073380383,\n    \"startup_cost\": 79.18604813454679,\n    \"holding_cost\": {\n        0: 0.9008900951620358,\n        1: 1.068925395295676,\n        2: 1.066244796883431,\n    },\n    \"backlog_cost\": {\n        0: 6.734178682720012,\n        1: 7.442225721133133,\n        2: 7.104627209109436,\n    },\n    \"demand\": {\n        (0, 0): 20.33410585875594,\n        (0, 1): 22.57961652322203,\n        (0, 2): 15.89714240515548,\n        (1, 0): 24.05647618194615,\n        (1, 1): 20.36522893983323,\n        (1, 2): 17.47466293074195,\n        (2, 0): 16.36553930950429,\n        (2, 1): 22.7831030020558,\n        (2, 2): 19.7805033393852,\n    },\n    \"rate\": {0: -71.79935969683524, 1: -73.09691843304661},\n    \"starttime\": {0: 6.342821301312698, 1: 6.171760083826499},\n    \"bigM\": 1000.0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    products = d[\"products\"]\n    machines = d[\"machines\"]\n    periods = d[\"periods\"]\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=products)\n    model.M = pyo.Set(initialize=machines)\n    model.T = pyo.Set(initialize=periods)\n\n    # Decision variables\n    model.x = pyo.Var(model.P, model.M, model.T,\n                      domain=pyo.NonNegativeReals)\n    model.y = pyo.Var(model.P, model.M, model.T,\n                      domain=pyo.Binary)\n    model.s = pyo.Var(model.M, model.T,\n                      domain=pyo.Binary)\n    model.I = pyo.Var(model.P, model.T,\n                      domain=pyo.NonNegativeReals)\n    model.B = pyo.Var(model.P, model.T,\n                      domain=pyo.NonNegativeReals)\n\n    # Objective\n    def obj_rule(m):\n        setup = sum(d[\"setup_cost\"] * m.y[p, mm, t]\n                    for p in m.P for mm in m.M for t in m.T)\n        startup = sum(d[\"startup_cost\"] * m.s[mm, t]\n                      for mm in m.M for t in m.T)\n        holding = sum(d[\"holding_cost\"][p] * m.I[p, t]\n                      for p in m.P for t in m.T)\n        backlog = sum(d[\"backlog_cost\"][p] * m.B[p, t]\n                      for p in m.P for t in m.T)\n        return setup + startup + holding + backlog\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # (1) Inventory balance\n    def balance_rule(m, p, t):\n        prev_I = m.I[p, t - 1] if t > 0 else 0.0\n        prev_B = m.B[p, t - 1] if t > 0 else 0.0\n        return (sum(m.x[p, mm, t] for mm in m.M)\n                + prev_I - prev_B\n                == d[\"demand\"][(p, t)] + m.I[p, t] - m.B[p, t])\n\n    model.balance = pyo.Constraint(model.P, model.T, rule=balance_rule)\n\n    # (2) Machine capacity / startup linking\n    def capacity_rule(m, mm, t):\n        return (d[\"rate\"][mm] * sum(m.x[p, mm, t] for p in m.P)\n                + d[\"starttime\"][mm] * m.s[mm, t]\n                + sum(m.x[p, mm, t] for p in m.P) <= 0)\n\n    model.capacity = pyo.Constraint(model.M, model.T, rule=capacity_rule)\n\n    # (3) One product per machine per period\n    def one_product_rule(m, mm, t):\n        return sum(m.y[p, mm, t] for p in m.P) <= 1\n\n    model.one_product = pyo.Constraint(model.M, model.T, rule=one_product_rule)\n\n    # (4) Startup linking\n    def startup_rule(m, p, mm, t):\n        prev_y = m.y[p, mm, t - 1] if t > 0 else 0.0\n        return m.y[p, mm, t] - prev_y <= m.s[mm, t]\n\n    model.startup = pyo.Constraint(model.P, model.M, model.T, rule=startup_rule)\n\n    # (5) Production linking\n    def prod_link_rule(m, p, mm, t):\n        return m.x[p, mm, t] <= d[\"bigM\"] * m.y[p, mm, t]\n\n    model.prod_link = pyo.Constraint(model.P, model.M, model.T, rule=prod_link_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1688,
+      "completion_tokens": 1491
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1627,
+      "completion_tokens": 1782
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 17.095818758010864,
+   "position": 0,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [0, 1, 2],\n    \"machines\": [0, 1],\n    \"periods\": [0, 1, 2],\n    \"demand\": {\n        0: {0: 20.33410585875594, 1: 22.57961652322203, 2: 15.89714240515548},\n        1: {0: 24.05647618194615, 1: 20.36522893983323, 2: 17.47466293074195},\n        2: {0: 16.36553930950429, 1: 22.7831030020558, 2: 19.7805033393852},\n    },\n    \"holding_cost\": {0: 0.9008900951620358, 1: 1.068925395295676, 2: 1.066244796883431},\n    \"backlog_cost\": {0: 6.734178682720012, 1: 7.442225721133133, 2: 7.104627209109436},\n    \"setup_cost\": 145.4242073380383,\n    \"startup_cost\": 79.18604813454679,\n    \"capacity_coef\": {0: -71.79935969683524, 1: -73.09691843304661},\n    \"startup_time_coef\": {0: 6.342821301312698, 1: 6.171760083826499},\n    \"bigM\": 1.0e6,\n    \"initial_inventory\": {0: 0.0, 1: 0.0, 2: 0.0},\n    \"initial_backlog\": {0: 0.0, 1: 0.0, 2: 0.0},\n    \"prev_production\": {0: 0, 1: 0, 2: 0},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    products = d[\"products\"]\n    machines = d[\"machines\"]\n    periods = d[\"periods\"]\n\n    model = pyo.ConcreteModel()\n\n    model.J = pyo.Set(initialize=products)\n    model.I = pyo.Set(initialize=machines)\n    model.T = pyo.Set(initialize=periods)\n\n    model.x = pyo.Var(model.J, model.I, model.T, within=pyo.NonNegativeReals)\n    model.y = pyo.Var(model.J, model.I, model.T, within=pyo.Binary)\n    model.startup = pyo.Var(model.I, model.T, within=pyo.Binary)\n    model.inv = pyo.Var(model.J, model.T, within=pyo.NonNegativeReals)\n    model.back = pyo.Var(model.J, model.T, within=pyo.NonNegativeReals)\n\n    # Objective: minimize total cost\n    def obj_rule(m):\n        setup = sum(d[\"setup_cost\"] * m.y[j, i, t]\n                    for j in m.J for i in m.I for t in m.T)\n        startup = sum(d[\"startup_cost\"] * m.startup[i, t]\n                      for i in m.I for t in m.T)\n        holding = sum(d[\"holding_cost\"][j] * m.inv[j, t]\n                      for j in m.J for t in m.T)\n        backlogging = sum(d[\"backlog_cost\"][j] * m.back[j, t]\n                          for j in m.J for t in m.T)\n        return setup + startup + holding + backlogging\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Link production quantity to setup decision: x[j,i,t] <= bigM * y[j,i,t]\n    def prod_link_rule(m, j, i, t):\n        return m.x[j, i, t] <= d[\"bigM\"] * m.y[j, i, t]\n\n    model.prod_link = pyo.Constraint(model.J, model.I, model.T, rule=prod_link_rule)\n\n    # Inventory balance for each product, period\n    def balance_rule(m, j, t):\n        production = sum(m.x[j, i, t] for i in m.I)\n        inv_prev = m.inv[j, t - 1] if t - 1 in periods else d[\"initial_inventory\"][j]\n        back_prev = m.back[j, t - 1] if t - 1 in periods else d[\"initial_backlog\"][j]\n        return (production + inv_prev - back_prev\n                == d[\"demand\"][j][t] + m.inv[j, t] - m.back[j, t])\n\n    model.balance = pyo.Constraint(model.J, model.T, rule=balance_rule)\n\n    # Machine time capacity constraint per machine, period\n    def capacity_rule(m, i, t):\n        prod_all = sum(m.x[j, i, t] for j in m.J)\n        weighted = sum(d[\"capacity_coef\"][i] * m.x[j, i, t] for j in m.J)\n        return weighted + d[\"startup_time_coef\"][i] * m.startup[i, t] + prod_all <= 0\n\n    model.capacity = pyo.Constraint(model.I, model.T, rule=capacity_rule)\n\n    # One product at a time per machine and period\n    def one_product_rule(m, i, t):\n        return sum(m.y[j, i, t] for j in m.J) <= 1\n\n    model.one_product = pyo.Constraint(model.I, model.T, rule=one_product_rule)\n\n    # Startup logic: startup[i,t] >= y[j,i,t] - y_prev\n    def startup_rule(m, j, i, t):\n        prev = m.y[j, i, t - 1] if t - 1 in periods else d[\"prev_production\"][j]\n        return m.startup[i, t] >= m.y[j, i, t] - prev\n\n    model.startup_logic = pyo.Constraint(model.J, model.I, model.T, rule=startup_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1674,
+      "completion_tokens": 2067
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.869718313217163,
+   "position": 1,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Sets\n    \"products\": [0, 1, 2],\n    \"machines\": [0, 1],\n    \"periods\": [0, 1, 2],\n\n    # \"production setup costs of 145.4242073380383 per production decision\"\n    \"setup_cost\": 145.4242073380383,\n    # \"machine startup costs of 79.18604813454679 per startup decision\"\n    \"startup_cost\": 79.18604813454679,\n\n    # \"inventory holding costs of 0.9008900951620358 for Product 0, 1.068925395295676 for Product 1,\n    #  and 1.066244796883431 for Product 2 per unit per period\"\n    \"holding_cost\": {0: 0.9008900951620358, 1: 1.068925395295676, 2: 1.066244796883431},\n\n    # \"backlogging costs of 6.734178682720012 for Product 0, 7.442225721133133 for Product 1,\n    #  and 7.104627209109436 for Product 2 per unit per period\"\n    \"backlog_cost\": {0: 6.734178682720012, 1: 7.442225721133133, 2: 7.104627209109436},\n\n    # Demands per product and period\n    \"demand\": {\n        0: {0: 20.33410585875594, 1: 22.57961652322203, 2: 15.89714240515548},\n        1: {0: 24.05647618194615, 1: 20.36522893983323, 2: 17.47466293074195},\n        2: {0: 16.36553930950429, 1: 22.7831030020558, 2: 19.7805033393852},\n    },\n\n    # \"production quantity multiplied by -71.79935969683524 for Machine 0 or -73.09691843304661 for Machine 1\"\n    \"prod_coef\": {0: -71.79935969683524, 1: -73.09691843304661},\n    # \"startup time multiplied by 6.342821301312698 for Machine 0 or 6.171760083826499 for Machine 1\"\n    \"startup_coef\": {0: 6.342821301312698, 1: 6.171760083826499},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    products = d[\"products\"]\n    machines = d[\"machines\"]\n    periods = d[\"periods\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.P = pyo.Set(initialize=products)\n    model.M = pyo.Set(initialize=machines)\n    model.T = pyo.Set(initialize=periods)\n\n    # --- Variables ---\n    # production quantity\n    model.x = pyo.Var(model.P, model.M, model.T,\n                      within=pyo.NonNegativeReals, bounds=(0, None))\n    # production setup decision\n    model.y = pyo.Var(model.P, model.M, model.T, within=pyo.Binary)\n    # machine startup decision\n    model.z = pyo.Var(model.M, model.T, within=pyo.Binary)\n    # inventory\n    model.I = pyo.Var(model.P, model.T,\n                      within=pyo.NonNegativeReals, bounds=(0, None))\n    # backlog\n    model.B = pyo.Var(model.P, model.T,\n                      within=pyo.NonNegativeReals, bounds=(0, None))\n\n    # --- Objective ---\n    def obj_rule(m):\n        setup = d[\"setup_cost\"] * sum(m.y[p, mc, t] for p in m.P for mc in m.M for t in m.T)\n        startup = d[\"startup_cost\"] * sum(m.z[mc, t] for mc in m.M for t in m.T)\n        holding = sum(d[\"holding_cost\"][p] * m.I[p, t] for p in m.P for t in m.T)\n        backlog = sum(d[\"backlog_cost\"][p] * m.B[p, t] for p in m.P for t in m.T)\n        return setup + startup + holding + backlog\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --- Constraints ---\n\n    # Inventory balance per product and period\n    def balance_rule(m, p, t):\n        prod = sum(m.x[p, mc, t] for mc in m.M)\n        if t == 0:\n            inv_prev = 0\n            back_prev = 0\n        else:\n            inv_prev = m.I[p, t - 1]\n            back_prev = m.B[p, t - 1]\n        return prod + inv_prev - back_prev == d[\"demand\"][p][t] + m.I[p, t] - m.B[p, t]\n\n    model.balance = pyo.Constraint(model.P, model.T, rule=balance_rule)\n\n    # Machine capacity / time restriction per machine and period\n    def capacity_rule(m, mc, t):\n        return (sum(d[\"prod_coef\"][mc] * m.x[p, mc, t] for p in m.P)\n                + d[\"startup_coef\"][mc] * m.z[mc, t]\n                + sum(m.x[p, mc, t] for p in m.P)) <= 0\n\n    model.capacity = pyo.Constraint(model.M, model.T, rule=capacity_rule)\n\n    # One product per machine per period\n    def one_product_rule(m, mc, t):\n        return sum(m.y[p, mc, t] for p in m.P) <= 1\n\n    model.one_product = pyo.Constraint(model.M, model.T, rule=one_product_rule)\n\n    # Startup linking: producing now but not before requires startup\n    def startup_rule(m, p, mc, t):\n        if t == 0:\n            prev = 0\n        else:\n            prev = m.y[p, mc, t - 1]\n        return m.y[p, mc, t] - prev <= m.z[mc, t]\n\n    model.startup_link = pyo.Constraint(model.P, model.M, model.T, rule=startup_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1672,
+      "completion_tokens": 1867
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.244174003601074,
+   "position": 2,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"P\": [0, 1, 2],\n    \"M\": [0, 1],\n    \"T\": [0, 1, 2],\n    \"setup_cost\": 145.4242073380383,\n    \"startup_cost\": 79.18604813454679,\n    \"hold_cost\": {0: 0.9008900951620358, 1: 1.068925395295676, 2: 1.066244796883431},\n    \"back_cost\": {0: 6.734178682720012, 1: 7.442225721133133, 2: 7.104627209109436},\n    \"demand\": {\n        0: {0: 20.33410585875594, 1: 22.57961652322203, 2: 15.89714240515548},\n        1: {0: 24.05647618194615, 1: 20.36522893983323, 2: 17.47466293074195},\n        2: {0: 16.36553930950429, 1: 22.7831030020558, 2: 19.7805033393852},\n    },\n    \"time_coef_prod\": {0: -71.79935969683524, 1: -73.09691843304661},\n    \"time_coef_start\": {0: 6.342821301312698, 1: 6.171760083826499},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.RangeSet(0, 2)\n    model.M = pyo.RangeSet(0, 1)\n    model.T = pyo.RangeSet(0, 2)\n\n    # --- Variables ---\n    model.x = pyo.Var(model.P, model.M, model.T, domain=pyo.NonNegativeReals)\n    model.y = pyo.Var(model.P, model.M, model.T, domain=pyo.Binary)\n    model.z = pyo.Var(model.M, model.T, domain=pyo.Binary)\n    model.I = pyo.Var(model.P, model.T, domain=pyo.NonNegativeReals)\n    model.B = pyo.Var(model.P, model.T, domain=pyo.NonNegativeReals)\n\n    # --- Objective (minimize) ---\n    def obj_rule(m):\n        setup = sum(d[\"setup_cost\"] * m.y[p, mm, tt]\n                    for p in m.P for mm in m.M for tt in m.T)\n        startup = sum(d[\"startup_cost\"] * m.z[mm, tt]\n                      for mm in m.M for tt in m.T)\n        hold = sum(d[\"hold_cost\"][p] * m.I[p, tt] for p in m.P for tt in m.T)\n        back = sum(d[\"back_cost\"][p] * m.B[p, tt] for p in m.P for tt in m.T)\n        return setup + startup + hold + back\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --- Inventory balance per (p,t): production + I_prev - B_prev = demand + I - B ---\n    def balance_rule(m, p, t):\n        prod = sum(m.x[p, mm, t] for mm in m.M)\n        Iprev = m.I[p, t - 1] if t - 1 in m.T else 0\n        Bprev = m.B[p, t - 1] if t - 1 in m.T else 0\n        return prod + Iprev - Bprev == d[\"demand\"][p][t] + m.I[p, t] - m.B[p, t]\n\n    model.balance = pyo.Constraint(model.P, model.T, rule=balance_rule)\n\n    # --- Machine time capacity: coef_prod*sum(x) + coef_start*z + sum(x) <= 0 ---\n    def timecap_rule(m, mm, tt):\n        totprod = sum(m.x[p, mm, tt] for p in m.P)\n        return (d[\"time_coef_prod\"][mm] * totprod\n                + d[\"time_coef_start\"][mm] * m.z[mm, tt]\n                + totprod) <= 0\n\n    model.timecap = pyo.Constraint(model.M, model.T, rule=timecap_rule)\n\n    # --- One product per machine per period ---\n    def one_product_rule(m, mm, tt):\n        return sum(m.y[p, mm, tt] for p in m.P) <= 1\n\n    model.one_product = pyo.Constraint(model.M, model.T, rule=one_product_rule)\n\n    # --- Production setup linking: x <= bigM * y ---\n    BIGM = sum(d[\"demand\"][p][t] for p in d[\"demand\"] for t in d[\"demand\"][p])\n\n    def setup_link_rule(m, p, mm, tt):\n        return m.x[p, mm, tt] <= BIGM * m.y[p, mm, tt]\n\n    model.setup_link = pyo.Constraint(model.P, model.M, model.T, rule=setup_link_rule)\n\n    # --- Startup linking: z >= y_t - y_{t-1} ---\n    def startup_rule(m, p, mm, tt):\n        prev = m.y[p, mm, tt - 1] if tt - 1 in m.T else 0\n        return m.z[mm, tt] >= m.y[p, mm, tt] - prev\n\n    model.startup_link = pyo.Constraint(model.P, model.M, model.T, rule=startup_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1684,
+      "completion_tokens": 1775
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.115885257720947,
+   "position": 3,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Sets\n    \"products\": [0, 1, 2],\n    \"machines\": [0, 1],\n    \"periods\": [0, 1, 2],\n\n    # \"production setup costs of 145.4242073380383 per production decision\"\n    \"setup_cost\": 145.4242073380383,\n\n    # \"machine startup costs of 79.18604813454679 per startup decision\"\n    \"startup_cost\": 79.18604813454679,\n\n    # \"inventory holding costs of 0.9008900951620358 for Product 0, 1.068925395295676\n    #  for Product 1, and 1.066244796883431 for Product 2 per unit per period\"\n    \"hold_cost\": {0: 0.9008900951620358, 1: 1.068925395295676, 2: 1.066244796883431},\n\n    # \"backlogging costs of 6.734178682720012 for Product 0, 7.442225721133133\n    #  for Product 1, and 7.104627209109436 for Product 2 per unit per period\"\n    \"back_cost\": {0: 6.734178682720012, 1: 7.442225721133133, 2: 7.104627209109436},\n\n    # Demands per product per period\n    \"demand\": {\n        0: {0: 20.33410585875594, 1: 22.57961652322203, 2: 15.89714240515548},\n        1: {0: 24.05647618194615, 1: 20.36522893983323, 2: 17.47466293074195},\n        2: {0: 16.36553930950429, 1: 22.7831030020558, 2: 19.7805033393852},\n    },\n\n    # \"production quantity multiplied by -71.79935969683524 for Machine 0\n    #  or -73.09691843304661 for Machine 1\"  (production rate coefficient)\n    \"rate\": {0: 71.79935969683524, 1: 73.09691843304661},\n\n    # \"startup time multiplied by 6.342821301312698 for Machine 0\n    #  or 6.171760083826499 for Machine 1\"  (startup time coefficient)\n    \"startup_time\": {0: 6.342821301312698, 1: 6.171760083826499},\n\n    # Big-M for startup linking constraints\n    \"bigM\": 1.0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.P = pyo.Set(initialize=d[\"products\"])\n    m.M = pyo.Set(initialize=d[\"machines\"])\n    m.T = pyo.Set(initialize=d[\"periods\"])\n\n    # Decision variables\n    m.x = pyo.Var(m.P, m.M, m.T, within=pyo.NonNegativeReals, bounds=(0, None))\n    m.y = pyo.Var(m.P, m.M, m.T, within=pyo.Binary)\n    m.s = pyo.Var(m.M, m.T, within=pyo.Binary)\n    m.inv = pyo.Var(m.P, m.T, within=pyo.NonNegativeReals, bounds=(0, None))\n    m.back = pyo.Var(m.P, m.T, within=pyo.NonNegativeReals, bounds=(0, None))\n\n    # Objective: minimize setup + startup + holding + backlogging\n    def obj_rule(m):\n        setup = sum(d[\"setup_cost\"] * m.y[p, mm, t]\n                    for p in m.P for mm in m.M for t in m.T)\n        startup = sum(d[\"startup_cost\"] * m.s[mm, t]\n                      for mm in m.M for t in m.T)\n        holding = sum(d[\"hold_cost\"][p] * m.inv[p, t]\n                      for p in m.P for t in m.T)\n        backlog = sum(d[\"back_cost\"][p] * m.back[p, t]\n                      for p in m.P for t in m.T)\n        return setup + startup + holding + backlog\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Inventory balance for each product and period\n    def balance_rule(m, p, t):\n        prev_inv = m.inv[p, t - 1] if t - 1 in m.T else 0\n        prev_back = m.back[p, t - 1] if t - 1 in m.T else 0\n        production = sum(m.x[p, mm, t] for mm in m.M)\n        return (production + prev_inv - prev_back\n                == d[\"demand\"][p][t] + m.inv[p, t] - m.back[p, t])\n\n    m.balance = pyo.Constraint(m.P, m.T, rule=balance_rule)\n\n    # Machine capacity: -rate*x + startup_time*s + x <= 0\n    def capacity_rule(m, p, mm, t):\n        return (-d[\"rate\"][mm] * m.x[p, mm, t]\n                + d[\"startup_time\"][mm] * m.s[mm, t]\n                + m.x[p, mm, t] <= 0)\n\n    m.capacity = pyo.Constraint(m.P, m.M, m.T, rule=capacity_rule)\n\n    # One product per machine per period\n    def one_product_rule(m, mm, t):\n        return sum(m.y[p, mm, t] for p in m.P) <= 1\n\n    m.one_product = pyo.Constraint(m.M, m.T, rule=one_product_rule)\n\n    # Startup linking: s[mm,t] >= y[p,mm,t] - y[p,mm,t-1]\n    def startup_rule(m, p, mm, t):\n        prev_y = m.y[p, mm, t - 1] if t - 1 in m.T else 0\n        return m.s[mm, t] >= m.y[p, mm, t] - prev_y\n\n    m.startup_link = pyo.Constraint(m.P, m.M, m.T, rule=startup_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1672,
+      "completion_tokens": 1777
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.8129918575286865,
+   "position": 4,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   x[p, m, t] >= 0 : production quantity of product p on machine m in period t\n#   y[p, m, t] in {0,1} : production setup decision (produce p on m in t)\n#   s[m, t] in {0,1} : machine startup decision for machine m in period t\n#   I[p, t] >= 0 : inventory of product p carried out of period t\n#   B[p, t] >= 0 : backlog of product p at end of period t\n#\n# Objective (minimize):\n#   setup cost * sum y\n#   + startup cost * sum s\n#   + holding cost[p] * sum I\n#   + backlog cost[p] * sum B\n#\n# Constraints:\n#   (1) Inventory balance per product/period (source: balance sentence)\n#   (2) Machine capacity / production-startup link per machine/period\n#       (source: \"-71.79... * x + 6.34... * s + amount produced <= 0\")\n#   (3) One product per machine per period (source: \"only one product at a time\")\n#   (4) Startup linking: if machine produces a product in t but not in t-1,\n#       a startup must occur (source: startup sentence)\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"products\": [0, 1, 2],\n    \"machines\": [0, 1],\n    \"periods\": [0, 1, 2],\n\n    \"setup_cost\": 145.4242073380383,\n    \"startup_cost\": 79.18604813454679,\n\n    \"holding_cost\": {\n        0: 0.9008900951620358,\n        1: 1.068925395295676,\n        2: 1.066244796883431,\n    },\n    \"backlog_cost\": {\n        0: 6.734178682720012,\n        1: 7.442225721133133,\n        2: 7.104627209109436,\n    },\n\n    \"demand\": {\n        (0, 0): 20.33410585875594,\n        (0, 1): 22.57961652322203,\n        (0, 2): 15.89714240515548,\n        (1, 0): 24.05647618194615,\n        (1, 1): 20.36522893983323,\n        (1, 2): 17.47466293074195,\n        (2, 0): 16.36553930950429,\n        (2, 1): 22.7831030020558,\n        (2, 2): 19.7805033393852,\n    },\n\n    # Machine production coefficient (negative in the stated inequality)\n    \"machine_prod_coeff\": {\n        0: -71.79935969683524,\n        1: -73.09691843304661,\n    },\n    # Machine startup coefficient\n    \"machine_start_coeff\": {\n        0: 6.342821301312698,\n        1: 6.171760083826499,\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    products = d[\"products\"]\n    machines = d[\"machines\"]\n    periods = d[\"periods\"]\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=products)\n    model.M = pyo.Set(initialize=machines)\n    model.T = pyo.Set(initialize=periods)\n\n    # Decision variables\n    model.x = pyo.Var(model.P, model.M, model.T,\n                      domain=pyo.NonNegativeReals)\n    model.y = pyo.Var(model.P, model.M, model.T,\n                      domain=pyo.Binary)\n    model.s = pyo.Var(model.M, model.T,\n                      domain=pyo.Binary)\n    model.I = pyo.Var(model.P, model.T,\n                      domain=pyo.NonNegativeReals)\n    model.B = pyo.Var(model.P, model.T,\n                      domain=pyo.NonNegativeReals)\n\n    # Objective\n    def obj_rule(m):\n        setup = d[\"setup_cost\"] * sum(m.y[p, mm, t]\n                                      for p in m.P for mm in m.M for t in m.T)\n        startup = d[\"startup_cost\"] * sum(m.s[mm, t]\n                                          for mm in m.M for t in m.T)\n        holding = sum(d[\"holding_cost\"][p] * m.I[p, t]\n                      for p in m.P for t in m.T)\n        backlog = sum(d[\"backlog_cost\"][p] * m.B[p, t]\n                      for p in m.P for t in m.T)\n        return setup + startup + holding + backlog\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # (1) Inventory balance\n    def balance_rule(m, p, t):\n        prev_I = m.I[p, t - 1] if t > 0 else 0.0\n        prev_B = m.B[p, t - 1] if t > 0 else 0.0\n        production = sum(m.x[p, mm, t] for mm in m.M)\n        return (production + prev_I - prev_B\n                == d[\"demand\"][(p, t)] + m.I[p, t] - m.B[p, t])\n\n    model.balance = pyo.Constraint(model.P, model.T, rule=balance_rule)\n\n    # (2) Machine capacity / production-startup link\n    def machine_cap_rule(m, mm, t):\n        prod = sum(m.x[p, mm, t] for p in m.P)\n        return (d[\"machine_prod_coeff\"][mm] * prod\n                + d[\"machine_start_coeff\"][mm] * m.s[mm, t]\n                + prod <= 0)\n\n    model.machine_cap = pyo.Constraint(model.M, model.T, rule=machine_cap_rule)\n\n    # (3) One product per machine per period\n    def one_product_rule(m, mm, t):\n        return sum(m.y[p, mm, t] for p in m.P) <= 1\n\n    model.one_product = pyo.Constraint(model.M, model.T, rule=one_product_rule)\n\n    # (4) Startup linking: if producing p on m in t but not in t-1, s[m,t] = 1\n    def startup_link_rule(m, p, mm, t):\n        if t == 0:\n            return m.y[p, mm, t] <= m.s[mm, t]\n        return m.y[p, mm, t] - m.y[p, mm, t - 1] <= m.s[mm, t]\n\n    model.startup_link = pyo.Constraint(model.P, model.M, model.T,\n                                        rule=startup_link_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1688,
+      "completion_tokens": 1189
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1952,
+      "completion_tokens": 1562
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 14.64403748512268,
+   "position": 5,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [0, 1, 2],\n    \"machines\": [0, 1],\n    \"periods\": [0, 1, 2],\n    \"setup_cost\": 145.4242073380383,\n    \"startup_cost\": 79.18604813454679,\n    \"holding_cost\": {0: 0.9008900951620358, 1: 1.068925395295676, 2: 1.066244796883431},\n    \"backlog_cost\": {0: 6.734178682720012, 1: 7.442225721133133, 2: 7.104627209109436},\n    \"demand\": {\n        0: {0: 20.33410585875594, 1: 22.57961652322203, 2: 15.89714240515548},\n        1: {0: 24.05647618194615, 1: 20.36522893983323, 2: 17.47466293074195},\n        2: {0: 16.36553930950429, 1: 22.7831030020558, 2: 19.7805033393852},\n    },\n    \"machine_prod_coeff\": {0: -71.79935969683524, 1: -73.09691843304661},\n    \"machine_start_coeff\": {0: 6.342821301312698, 1: 6.171760083826499},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    P = d[\"products\"]\n    M = d[\"machines\"]\n    T = d[\"periods\"]\n    # first-period index helper: s indices for t=0 have no \"previous\" startup\n    Tprev = {t: t - 1 for t in T}\n\n    m = pyo.ConcreteModel()\n    m.P = pyo.Set(initialize=P, ordered=True)\n    m.M = pyo.Set(initialize=M, ordered=True)\n    m.T = pyo.Set(initialize=T, ordered=True)\n    # pairs machine/period with an actual previous period (t >= 1)\n    m.MT2 = pyo.Set(initialize=[(mi, t) for mi in M for t in T if t - 1 in T], dimen=2)\n\n    # Variables\n    m.x = pyo.Var(m.P, m.M, m.T, within=pyo.NonNegativeReals)\n    m.y = pyo.Var(m.P, m.M, m.T, within=pyo.Binary)\n    m.s = pyo.Var(m.M, m.T, within=pyo.Binary)\n    m.I = pyo.Var(m.P, m.T, within=pyo.NonNegativeReals)\n    m.B = pyo.Var(m.P, m.T, within=pyo.NonNegativeReals)\n\n    # Objective\n    def obj_rule(mm):\n        setup = sum(d[\"setup_cost\"] * mm.y[p, mi, t] for p in P for mi in M for t in T)\n        startup = sum(d[\"startup_cost\"] * mm.s[mi, t] for mi in M for t in T)\n        holding = sum(d[\"holding_cost\"][p] * mm.I[p, t] for p in P for t in T)\n        backlog = sum(d[\"backlog_cost\"][p] * mm.B[p, t] for p in P for t in T)\n        return setup + startup + holding + backlog\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # 1. Inventory balance: prod + I_prev - B_prev == demand + I - B\n    def balance_rule(mm, p, t):\n        prod = sum(mm.x[p, mi, t] for mi in M)\n        I_prev = mm.I[p, t - 1] if (t - 1) in T else 0\n        B_prev = mm.B[p, t - 1] if (t - 1) in T else 0\n        return prod + I_prev - B_prev == d[\"demand\"][p][t] + mm.I[p, t] - mm.B[p, t]\n    m.balance = pyo.Constraint(m.P, m.T, rule=balance_rule)\n\n    # 2. Machine capacity/startup-coupled smooth constraint\n    #    (-prod_coeff)*startup_time... : sum_p x - a*s <= b*sum_p y ... modelled textually:\n    #    sum_p(-mu*x) + tau*s + x_sum <= 0  -> text: mu*x summed via machine coeff per unit\n    def machine_load_rule(mm, mi, t):\n        # text: sum_p(-prod_coeff*x) + start_coeff*s + (amount produced) <= 0\n        lhs = sum(d[\"machine_prod_coeff\"][mi] * mm.x[p, mi, t] for p in P) \\\n            + d[\"machine_start_coeff\"][mi] * mm.s[mi, t] \\\n            + sum(mm.x[p, mi, t] for p in P)\n        return lhs <= 0\n    m.machine_load = pyo.Constraint(m.M, m.T, rule=machine_load_rule)\n\n    # 3. One product per machine per period\n    def one_product_rule(mm, mi, t):\n        return sum(mm.y[p, mi, t] for p in P) <= 1\n    m.one_product = pyo.Constraint(m.M, m.T, rule=one_product_rule)\n\n    # 4. Setup needed to produce: x <= Mcap * y\n    big_m = max(abs(v) for v in d[\"machine_prod_coeff\"].values()) * 100.0\n    def setup_link_rule(mm, p, mi, t):\n        return mm.x[p, mi, t] <= big_m * mm.y[p, mi, t]\n    m.setup_link = pyo.Constraint(m.P, m.M, m.T, rule=setup_link_rule)\n\n    # 5. Startup indicator: if produce p on machine mi at t but not at t-1 => s=1\n    #    y[p,mi,t] - y[p,mi,t-1] <= s[mi,t]\n    def startup_link_rule(mm, p, mi, t):\n        return mm.y[p, mi, t] - mm.y[p, mi, t - 1] <= mm.s[mi, t]\n    m.startup_link = pyo.Constraint(\n        [(p, mi, t) for p in P for (mi, t) in m.MT2], rule=startup_link_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1674,
+      "completion_tokens": 1900
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.095468997955322,
+   "position": 6,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [0, 1, 2],\n    \"machines\": [0, 1],\n    \"periods\": [0, 1, 2],\n    \"setup_cost\": 145.4242073380383,\n    \"startup_cost\": 79.18604813454679,\n    \"holding_cost\": {0: 0.9008900951620358, 1: 1.068925395295676, 2: 1.066244796883431},\n    \"backlog_cost\": {0: 6.734178682720012, 1: 7.442225721133133, 2: 7.104627209109436},\n    \"demand\": {\n        (0, 0): 20.33410585875594, (0, 1): 22.57961652322203, (0, 2): 15.89714240515548,\n        (1, 0): 24.05647618194615, (1, 1): 20.36522893983323, (1, 2): 17.47466293074195,\n        (2, 0): 16.36553930950429, (2, 1): 22.7831030020558, (2, 2): 19.7805033393852,\n    },\n    \"prod_rate\": {0: -71.79935969683524, 1: -73.09691843304661},\n    \"startup_time\": {0: 6.342821301312698, 1: 6.171760083826499},\n    \"big_m\": 100000.0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    products = d[\"products\"]\n    machines = d[\"machines\"]\n    periods = d[\"periods\"]\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=products)\n    model.M = pyo.Set(initialize=machines)\n    model.T = pyo.Set(initialize=periods)\n    model.PM = pyo.Set(initialize=[(p, m) for p in products for m in machines])\n    model.PT = pyo.Set(initialize=[(p, t) for p in products for t in periods])\n    model.MT = pyo.Set(initialize=[(m, t) for m in machines for t in periods])\n    model.PMT = pyo.Set(\n        initialize=[(p, m, t) for p in products for m in machines for t in periods]\n    )\n\n    # 2. Variables\n    model.produce = pyo.Var(model.PMT, within=pyo.NonNegativeReals)\n    model.setup = pyo.Var(model.PMT, within=pyo.Binary)\n    model.startup = pyo.Var(model.MT, within=pyo.Binary)\n    model.inventory = pyo.Var(model.PT, within=pyo.NonNegativeReals)\n    model.backlog = pyo.Var(model.PT, within=pyo.NonNegativeReals)\n\n    # 3. Objective\n    def obj_rule(m):\n        return (\n            d[\"setup_cost\"] * sum(m.setup[p, ma, t] for (p, ma, t) in m.PMT)\n            + d[\"startup_cost\"] * sum(m.startup[ma, t] for (ma, t) in m.MT)\n            + sum(d[\"holding_cost\"][p] * m.inventory[p, t] for (p, t) in m.PT)\n            + sum(d[\"backlog_cost\"][p] * m.backlog[p, t] for (p, t) in m.PT)\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # 4a. Inventory balance\n    def balance_rule(m, p, t):\n        prev_inv = m.inventory[p, t - 1] if t - 1 in periods else 0.0\n        prev_bl = m.backlog[p, t - 1] if t - 1 in periods else 0.0\n        produced = sum(m.produce[p, ma, t] for ma in machines)\n        return (\n            produced + prev_inv - prev_bl\n            == d[\"demand\"][(p, t)] + m.inventory[p, t] - m.backlog[p, t]\n        )\n\n    model.balance = pyo.Constraint(model.PT, rule=balance_rule)\n\n    # 4b. Machine capacity / startup-time link\n    def machine_cap_rule(m, ma, t):\n        return (\n            sum(d[\"prod_rate\"][ma] * m.produce[p, ma, t] for p in products)\n            + d[\"startup_time\"][ma] * m.startup[ma, t]\n            + sum(m.produce[p, ma, t] for p in products)\n            <= 0\n        )\n\n    model.machine_cap = pyo.Constraint(model.MT, rule=machine_cap_rule)\n\n    # 4c. One product per machine per period\n    def one_product_rule(m, ma, t):\n        return sum(m.setup[p, ma, t] for p in products) <= 1\n\n    model.one_product = pyo.Constraint(model.MT, rule=one_product_rule)\n\n    # 4d. Setup-production linking\n    def setup_link_rule(m, p, ma, t):\n        return m.produce[p, ma, t] <= d[\"big_m\"] * m.setup[p, ma, t]\n\n    model.setup_link = pyo.Constraint(model.PMT, rule=setup_link_rule)\n\n    # 4e. Startup linking: produce now but not before -> startup\n    def startup_link_rule(m, p, ma, t):\n        prev = m.setup[p, ma, t - 1] if t - 1 in periods else 0.0\n        return m.setup[p, ma, t] - prev <= m.startup[ma, t]\n\n    model.startup_link = pyo.Constraint(model.PMT, rule=startup_link_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1668,
+      "completion_tokens": 1784
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.774839878082275,
+   "position": 7,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_products\": 3,\n    \"num_machines\": 2,\n    \"num_periods\": 3,\n    \"setup_cost\": 145.4242073380383,\n    \"startup_cost\": 79.18604813454679,\n    \"hold_cost\": [0.9008900951620358, 1.068925395295676, 1.066244796883431],\n    \"back_cost\": [6.734178682720012, 7.442225721133133, 7.104627209109436],\n    \"demand\": [\n        [20.33410585875594, 22.57961652322203, 15.89714240515548],\n        [24.05647618194615, 20.36522893983323, 17.47466293074195],\n        [16.36553930950429, 22.7831030020558, 19.7805033393852],\n    ],\n    # machine production rates (used as -rate coefficient)\n    \"prod_rate\": [-71.79935969683524, -73.09691843304661],\n    # machine startup times\n    \"startup_time\": [6.342821301312698, 6.171760083826499],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    # 0-based RangeSets so that d[\"demand\"][p][t] indexing is consistent\n    m.P = pyo.RangeSet(0, d[\"num_products\"] - 1)\n    m.M = pyo.RangeSet(0, d[\"num_machines\"] - 1)\n    m.T = pyo.RangeSet(0, d[\"num_periods\"] - 1)\n\n    # --- Variables ---\n    m.x = pyo.Var(m.P, m.M, m.T, within=pyo.NonNegativeReals)\n    m.y = pyo.Var(m.P, m.M, m.T, within=pyo.Binary)\n    m.s = pyo.Var(m.M, m.T, within=pyo.Binary)\n    m.I = pyo.Var(m.P, m.T, within=pyo.NonNegativeReals)\n    m.B = pyo.Var(m.P, m.T, within=pyo.NonNegativeReals)\n\n    # --- Objective (minimize total cost) ---\n    setup_cost = d[\"setup_cost\"] * sum(\n        m.y[p, mm, t] for p in m.P for mm in m.M for t in m.T\n    )\n    startup_cost = d[\"startup_cost\"] * sum(m.s[mm, t] for mm in m.M for t in m.T)\n    hold_cost = sum(d[\"hold_cost\"][p] * m.I[p, t] for p in m.P for t in m.T)\n    back_cost = sum(d[\"back_cost\"][p] * m.B[p, t] for p in m.P for t in m.T)\n    m.obj = pyo.Objective(\n        expr=setup_cost + startup_cost + hold_cost + back_cost, sense=pyo.minimize\n    )\n\n    # --- Inventory balance ---\n    # production + I_{t-1} - B_{t-1} = demand_t + I_t - B_t\n    def balance_rule(mo, p, t):\n        prod = sum(mo.x[p, mm, t] for mm in mo.M)\n        if t == mo.T.first():\n            inv_prev = 0.0\n            back_prev = 0.0\n        else:\n            inv_prev = mo.I[p, t - 1]\n            back_prev = mo.B[p, t - 1]\n        return (\n            prod + inv_prev - back_prev\n            == d[\"demand\"][p][t] + mo.I[p, t] - mo.B[p, t]\n        )\n\n    m.balance = pyo.Constraint(m.P, m.T, rule=balance_rule)\n\n    # --- Machine production/startup link (as stated in problem text) ---\n    # sum_p(-rate * x) + startup_time * s + sum_p(x) <= 0\n    def machine_rule(mo, mm, t):\n        return (\n            sum((-d[\"prod_rate\"][mm]) * mo.x[p, mm, t] for p in mo.P)\n            + d[\"startup_time\"][mm] * mo.s[mm, t]\n            + sum(mo.x[p, mm, t] for p in mo.P)\n            <= 0\n        )\n\n    m.machine_link = pyo.Constraint(m.M, m.T, rule=machine_rule)\n\n    # --- One product per machine per period ---\n    def one_product_rule(mo, mm, t):\n        return sum(mo.y[p, mm, t] for p in mo.P) <= 1\n\n    m.one_product = pyo.Constraint(m.M, m.T, rule=one_product_rule)\n\n    # --- Startup logic: s[m,t] >= y[p,m,t] - y[p,m,t-1] ---\n    def startup_rule(mo, p, mm, t):\n        if t == mo.T.first():\n            prev = 0\n        else:\n            prev = mo.y[p, mm, t - 1]\n        return mo.s[mm, t] >= mo.y[p, mm, t] - prev\n\n    m.startup_logic = pyo.Constraint(m.P, m.M, m.T, rule=startup_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1684,
+      "completion_tokens": 1701
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2941,
+      "completion_tokens": 1246
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 11.996456861495972,
+   "position": 8,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [0, 1, 2],\n    \"machines\": [0, 1],\n    \"periods\": [0, 1, 2],\n    \"setup_cost\": 145.4242073380383,\n    \"startup_cost\": 79.18604813454679,\n    \"holding_cost\": {\n        0: 0.9008900951620358,\n        1: 1.068925395295676,\n        2: 1.066244796883431,\n    },\n    \"backlog_cost\": {\n        0: 6.734178682720012,\n        1: 7.442225721133133,\n        2: 7.104627209109436,\n    },\n    \"demand\": {\n        (0, 0): 20.33410585875594,\n        (0, 1): 22.57961652322203,\n        (0, 2): 15.89714240515548,\n        (1, 0): 24.05647618194615,\n        (1, 1): 20.36522893983323,\n        (1, 2): 17.47466293074195,\n        (2, 0): 16.36553930950429,\n        (2, 1): 22.7831030020558,\n        (2, 2): 19.7805033393852,\n    },\n    \"prod_rate_coeff\": {0: -71.79935969683524, 1: -73.09691843304661},\n    \"startup_time_coeff\": {0: 6.342821301312698, 1: 6.171760083826499},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    m.P = pyo.Set(initialize=d[\"products\"])\n    m.M = pyo.Set(initialize=d[\"machines\"])\n    m.T = pyo.Set(initialize=d[\"periods\"])\n\n    m.production = pyo.Var(m.P, m.M, m.T, domain=pyo.NonNegativeReals)\n    m.setup = pyo.Var(m.P, m.M, m.T, domain=pyo.Binary)\n    m.startup = pyo.Var(m.M, m.T, domain=pyo.Binary)\n    m.inventory = pyo.Var(m.P, m.T, domain=pyo.NonNegativeReals)\n    m.backlog = pyo.Var(m.P, m.T, domain=pyo.NonNegativeReals)\n\n    def obj_rule(m):\n        setup_term = sum(\n            d[\"setup_cost\"] * m.setup[p, ma, t]\n            for p in m.P for ma in m.M for t in m.T\n        )\n        startup_term = sum(\n            d[\"startup_cost\"] * m.startup[ma, t]\n            for ma in m.M for t in m.T\n        )\n        holding_term = sum(\n            d[\"holding_cost\"][p] * m.inventory[p, t]\n            for p in m.P for t in m.T\n        )\n        backlog_term = sum(\n            d[\"backlog_cost\"][p] * m.backlog[p, t]\n            for p in m.P for t in m.T\n        )\n        return setup_term + startup_term + holding_term + backlog_term\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Inventory balance per product and period\n    def balance_rule(m, p, t):\n        prev_inv = m.inventory[p, t - 1] if t - 1 in d[\"periods\"] else 0\n        prev_back = m.backlog[p, t - 1] if t - 1 in d[\"periods\"] else 0\n        production_total = sum(m.production[p, ma, t] for ma in m.M)\n        return (\n            production_total + prev_inv - prev_back\n            == d[\"demand\"][(p, t)] + m.inventory[p, t] - m.backlog[p, t]\n        )\n\n    m.balance = pyo.Constraint(m.P, m.T, rule=balance_rule)\n\n    # Machine capacity / startup-time constraint\n    def capacity_rule(m, ma, t):\n        return (\n            sum(\n                d[\"prod_rate_coeff\"][ma] * m.production[p, ma, t]\n                for p in m.P\n            )\n            + d[\"startup_time_coeff\"][ma] * m.startup[ma, t]\n            + sum(m.production[p, ma, t] for p in m.P)\n            <= 0\n        )\n\n    m.capacity = pyo.Constraint(m.M, m.T, rule=capacity_rule)\n\n    # One product per machine per period\n    def one_product_rule(m, ma, t):\n        return sum(m.setup[p, ma, t] for p in m.P) <= 1\n\n    m.one_product = pyo.Constraint(m.M, m.T, rule=one_product_rule)\n\n    # Startup linking constraint\n    def startup_link_rule(m, p, ma, t):\n        prev_setup = m.setup[p, ma, t - 1] if t - 1 in d[\"periods\"] else 0\n        return m.setup[p, ma, t] - prev_setup <= m.startup[ma, t]\n\n    m.startup_link = pyo.Constraint(m.P, m.M, m.T, rule=startup_link_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1668,
+      "completion_tokens": 1617
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.209611892700195,
+   "position": 9,
+   "recipe_index": 5
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:58:29"
+}

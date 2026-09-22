@@ -1,0 +1,302 @@
+{
+ "pid": "optmath_0080",
+ "question": "Determine the number of generators of each type (Type 0 and Type 1) to operate, the power output for each generator type, and the number of startups in each of the five consecutive time periods to minimize the total cost of operation. The total cost includes a base cost of 80 units per Type 0 generator and 79 units per Type 1 generator for each period they are active, a power output cost of 3 units per MW for Type 0 generators and 4 units per MW for Type 1 generators, and a startup cost of 352 units for Type 0 generators and 346 units for Type 1 generators. The total power output from all generators must meet or exceed the demand in each period: 217 MW in period 0, 209 MW in period 1, 194 MW in period 2, 182 MW in period 3, and 164 MW in period 4. Each Type 0 generator must produce at least 34 MW and at most 129 MW when active, and each Type 1 generator must produce at least 34 MW and at most 127 MW when active. The combined maximum output of all active generators must meet or exceed specific capacity requirements: 249.55 MW in period 0, 240.35 MW in period 1, 223.1 MW in period 2, 209.3 MW in period 3, and 188.6 MW in period 4. No more than 1 Type 0 generator and 2 Type 1 generators can be active in any period. The number of startups for each generator type is constrained by the number of generators available and the number of generators active in the previous period. The variables representing the number of generators and startups are general integer variables.",
+ "templates": [
+  "Blending / Diet",
+  "Inventory / Lot Sizing"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Structured formulation\n# ---------------------------------------------------------------------------\n# Sets / indices\n#   G = {0, 1}                 generator types\n#   T = {0,1,2,3,4}            five consecutive time periods\n#\n# Decision variables\n#   n[g,t]  : number of active generators of type g in period t   (NonNegativeIntegers)\n#   p[g,t]  : total power output (MW) of type g in period t       (NonNegativeReals)\n#   s[g,t]  : number of startups of type g in period t            (NonNegativeIntegers)\n#\n# Objective (minimize total cost)\n#   sum over g,t of  base_cost[g] * n[g,t]\n#                  + power_cost[g] * p[g,t]\n#                  + startup_cost[g] * s[g,t]\n#\n# Constraints\n#   (1) Demand satisfaction:  sum_g p[g,t] >= demand[t]                       for each t\n#   (2) Per-generator min output:  p[g,t] >= min_output[g] * n[g,t]           for each g,t\n#   (3) Per-generator max output:  p[g,t] <= max_output[g] * n[g,t]           for each g,t\n#   (4) Capacity requirement:  sum_g max_output[g]*n[g,t] >= cap_req[t]       for each t\n#   (5) Max active generators:  n[g,t] <= max_active[g]                       for each g,t\n#   (6) Startup balance:  s[g,t] >= n[g,t] - n[g,t-1]                         for each g,t\n#       (with n[g,-1] = 0, i.e. period 0 startups equal n[g,0])\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"G\": [0, 1],\n    \"T\": [0, 1, 2, 3, 4],\n    \"base_cost\":    {0: 80, 1: 79},\n    \"power_cost\":   {0: 3,  1: 4},\n    \"startup_cost\": {0: 352, 1: 346},\n    \"demand\":       {0: 217, 1: 209, 2: 194, 3: 182, 4: 164},\n    \"min_output\":   {0: 34,  1: 34},\n    \"max_output\":   {0: 129, 1: 127},\n    \"cap_req\":      {0: 249.55, 1: 240.35, 2: 223.1, 3: 209.3, 4: 188.6},\n    \"max_active\":   {0: 1,   1: 2},\n    \"big_M\":        {0: 1,   1: 2},   # upper bound on n[g,t] used for startup linearisation\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.G = pyo.Set(initialize=d[\"G\"])\n    model.T = pyo.Set(initialize=d[\"T\"])\n\n    # Decision variables -----------------------------------------------------\n    model.n = pyo.Var(\n        model.G, model.T,\n        within=pyo.NonNegativeIntegers,\n        bounds=lambda m, g, t: (0, d[\"max_active\"][g]),\n    )\n    model.p = pyo.Var(\n        model.G, model.T,\n        within=pyo.NonNegativeReals,\n        bounds=lambda m, g, t: (0, d[\"max_active\"][g] * d[\"max_output\"][g]),\n    )\n    model.s = pyo.Var(\n        model.G, model.T,\n        within=pyo.NonNegativeIntegers,\n        bounds=lambda m, g, t: (0, d[\"max_active\"][g]),\n    )\n\n    # Objective --------------------------------------------------------------\n    def obj_rule(m):\n        return sum(\n            d[\"base_cost\"][g] * m.n[g, t]\n            + d[\"power_cost\"][g] * m.p[g, t]\n            + d[\"startup_cost\"][g] * m.s[g, t]\n            for g in m.G for t in m.T\n        )\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # (1) Demand satisfaction -------------------------------------------------\n    def demand_rule(m, t):\n        return sum(m.p[g, t] for g in m.G) >= d[\"demand\"][t]\n    model.demand_con = pyo.Constraint(model.T, rule=demand_rule)\n\n    # (2) Per-generator minimum output ---------------------------------------\n    def min_out_rule(m, g, t):\n        return m.p[g, t] >= d[\"min_output\"][g] * m.n[g, t]\n    model.min_out_con = pyo.Constraint(model.G, model.T, rule=min_out_rule)\n\n    # (3) Per-generator maximum output ---------------------------------------\n    def max_out_rule(m, g, t):\n        return m.p[g, t] <= d[\"max_output\"][g] * m.n[g, t]\n    model.max_out_con = pyo.Constraint(model.G, model.T, rule=max_out_rule)\n\n    # (4) Combined capacity requirement --------------------------------------\n    def cap_req_rule(m, t):\n        return sum(d[\"max_output\"][g] * m.n[g, t] for g in m.G) >= d[\"cap_req\"][t]\n    model.cap_req_con = pyo.Constraint(model.T, rule=cap_req_rule)\n\n    # (5) Maximum active generators ------------------------------------------\n    def max_active_rule(m, g, t):\n        return m.n[g, t] <= d[\"max_active\"][g]\n    model.max_active_con = pyo.Constraint(model.G, model.T, rule=max_active_rule)\n\n    # (6) Startup balance ----------------------------------------------------\n    def startup_rule(m, g, t):\n        if t == 0:\n            return m.s[g, t] >= m.n[g, t]\n        return m.s[g, t] >= m.n[g, t] - m.n[g, t - 1]\n    model.startup_con = pyo.Constraint(model.G, model.T, rule=startup_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1382,
+      "completion_tokens": 1978
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3279,
+      "completion_tokens": 1464
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 21.698156356811523,
+   "position": 0,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"types\": [0, 1],\n    \"periods\": [0, 1, 2, 3, 4],\n    # per-type parameters\n    \"base_cost\": {0: 80, 1: 79},\n    \"power_cost\": {0: 3, 1: 4},\n    \"startup_cost\": {0: 352, 1: 346},\n    \"min_mw\": {0: 34, 1: 34},\n    \"max_mw\": {0: 129, 1: 127},\n    \"available\": {0: 1, 1: 2},\n    # per-period parameters\n    \"demand\": {0: 217, 1: 209, 2: 194, 3: 182, 4: 164},\n    \"capacity_req\": {0: 249.55, 1: 240.35, 2: 223.1, 3: 209.3, 4: 188.6},\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.TYPES = pyo.Set(initialize=d[\"types\"])\n    model.PERIODS = pyo.Set(initialize=d[\"periods\"])\n\n    # Variables\n    def n_active_bounds(m, t, p):\n        return (0, d[\"available\"][t])\n\n    model.n_active = pyo.Var(\n        model.TYPES, model.PERIODS,\n        within=pyo.NonNegativeIntegers,\n        bounds=n_active_bounds,\n    )\n    model.power = pyo.Var(\n        model.TYPES, model.PERIODS,\n        within=pyo.NonNegativeReals,\n    )\n    model.startup = pyo.Var(\n        model.TYPES, model.PERIODS,\n        within=pyo.NonNegativeIntegers,\n        bounds=(0, None),\n    )\n\n    # Objective: minimize base + power + startup costs\n    def obj_rule(m):\n        base = sum(\n            d[\"base_cost\"][t] * m.n_active[t, p]\n            for t in m.TYPES for p in m.PERIODS\n        )\n        power = sum(\n            d[\"power_cost\"][t] * m.power[t, p]\n            for t in m.TYPES for p in m.PERIODS\n        )\n        startup = sum(\n            d[\"startup_cost\"][t] * m.startup[t, p]\n            for t in m.TYPES for p in m.PERIODS\n        )\n        return base + power + startup\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand: total power must meet or exceed demand each period\n    def demand_rule(m, p):\n        return sum(m.power[t, p] for t in m.TYPES) >= d[\"demand\"][p]\n\n    model.demand_constraint = pyo.Constraint(model.PERIODS, rule=demand_rule)\n\n    # Min output: power >= min_mw * n_active\n    def min_output_rule(m, t, p):\n        return m.power[t, p] >= d[\"min_mw\"][t] * m.n_active[t, p]\n\n    model.min_output_constraint = pyo.Constraint(\n        model.TYPES, model.PERIODS, rule=min_output_rule\n    )\n\n    # Max output: power <= max_mw * n_active\n    def max_output_rule(m, t, p):\n        return m.power[t, p] <= d[\"max_mw\"][t] * m.n_active[t, p]\n\n    model.max_output_constraint = pyo.Constraint(\n        model.TYPES, model.PERIODS, rule=max_output_rule\n    )\n\n    # Capacity requirement: combined max possible output >= capacity_req\n    def capacity_rule(m, p):\n        return sum(\n            d[\"max_mw\"][t] * m.n_active[t, p] for t in m.TYPES\n        ) >= d[\"capacity_req\"][p]\n\n    model.capacity_constraint = pyo.Constraint(\n        model.PERIODS, rule=capacity_rule\n    )\n\n    # Startup lower bound: startup >= n_active[p] - n_active[p-1]\n    def startup_lb_rule(m, t, p):\n        if p == m.PERIODS.first():\n            return m.startup[t, p] >= m.n_active[t, p]\n        return m.startup[t, p] >= m.n_active[t, p] - m.n_active[t, p - 1]\n\n    model.startup_lb_constraint = pyo.Constraint(\n        model.TYPES, model.PERIODS, rule=startup_lb_rule\n    )\n\n    # Startup upper bound: startup <= n_active[p]\n    def startup_ub_rule(m, t, p):\n        return m.startup[t, p] <= m.n_active[t, p]\n\n    model.startup_ub_constraint = pyo.Constraint(\n        model.TYPES, model.PERIODS, rule=startup_ub_rule\n    )\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1362,
+      "completion_tokens": 1548
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.2006964683532715,
+   "position": 1,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"types\": [0, 1],\n    \"periods\": [0, 1, 2, 3, 4],\n    \"base_cost\": {0: 80, 1: 79},\n    \"power_cost\": {0: 3, 1: 4},\n    \"startup_cost\": {0: 352, 1: 346},\n    \"demand\": {0: 217, 1: 209, 2: 194, 3: 182, 4: 164},\n    \"capacity_req\": {0: 249.55, 1: 240.35, 2: 223.1, 3: 209.3, 4: 188.6},\n    \"min_gen\": {0: 34, 1: 34},\n    \"max_gen\": {0: 129, 1: 127},\n    \"max_active\": {0: 1, 1: 2},\n    \"max_available\": {0: 1, 1: 2},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.T = pyo.Set(initialize=d[\"types\"], ordered=True)\n    m.P = pyo.Set(initialize=d[\"periods\"], ordered=True)\n\n    # number of active generators of type t in period p (general integer)\n    m.n = pyo.Var(m.T, m.P, within=pyo.NonNegativeIntegers,\n                  bounds=lambda m, t, p: (0, d[\"max_available\"][t]))\n\n    # total power output of all generators of type t in period p (MW)\n    m.out = pyo.Var(m.T, m.P, within=pyo.NonNegativeReals)\n\n    # number of startups of type t at start of period p\n    m.s = pyo.Var(m.T, m.P, within=pyo.NonNegativeIntegers,\n                  bounds=lambda m, t, p: (0, d[\"max_available\"][t]))\n\n    # objective: base + power + startup costs  (minimize)\n    def obj_rule(m):\n        base = sum(d[\"base_cost\"][t] * m.n[t, p] for t in m.T for p in m.P)\n        power = sum(d[\"power_cost\"][t] * m.out[t, p] for t in m.T for p in m.P)\n        startup = sum(d[\"startup_cost\"][t] * m.s[t, p] for t in m.T for p in m.P)\n        return base + power + startup\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # demand: total output across all types >= demand[p]\n    def demand_rule(m, p):\n        return sum(m.out[t, p] for t in m.T) >= d[\"demand\"][p]\n    m.demand_con = pyo.Constraint(m.P, rule=demand_rule)\n\n    # capacity requirement: sum over types of n*maxcap >= capacity_req[p]\n    def cap_req_rule(m, p):\n        return sum(m.n[t, p] * d[\"max_gen\"][t] for t in m.T) >= d[\"capacity_req\"][p]\n    m.cap_req_con = pyo.Constraint(m.P, rule=cap_req_rule)\n\n    # per-generator minimum output: output >= n * min_gen\n    def min_out_rule(m, t, p):\n        return m.out[t, p] >= m.n[t, p] * d[\"min_gen\"][t]\n    m.min_out_con = pyo.Constraint(m.T, m.P, rule=min_out_rule)\n\n    # per-generator maximum output: output <= n * max_gen\n    def max_out_rule(m, t, p):\n        return m.out[t, p] <= m.n[t, p] * d[\"max_gen\"][t]\n    m.max_out_con = pyo.Constraint(m.T, m.P, rule=max_out_rule)\n\n    # max active generators per type per period\n    def max_active_rule(m, t, p):\n        return m.n[t, p] <= d[\"max_active\"][t]\n    m.max_active_con = pyo.Constraint(m.T, m.P, rule=max_active_rule)\n\n    # startup logic: s[t,p] >= n[t,p] - n[t,p-1] for p >= 1\n    def startup_rule(m, t, p):\n        if p == 0:\n            return m.s[t, p] >= m.n[t, p]\n        return m.s[t, p] >= m.n[t, p] - m.n[t, p - 1]\n    m.startup_con = pyo.Constraint(m.T, m.P, rule=startup_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1378,
+      "completion_tokens": 1518
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.067142486572266,
+   "position": 2,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"types\": [0, 1],\n    \"periods\": [0, 1, 2, 3, 4],\n    \"base_cost\": {0: 80, 1: 79},\n    \"power_cost\": {0: 3, 1: 4},\n    \"startup_cost\": {0: 352, 1: 346},\n    \"pmin\": {0: 34, 1: 34},\n    \"pmax\": {0: 129, 1: 127},\n    \"nmax\": {0: 1, 1: 2},\n    \"demand\": {0: 217, 1: 209, 2: 194, 3: 182, 4: 164},\n    \"capreq\": {0: 249.55, 1: 240.35, 2: 223.1, 3: 209.3, 4: 188.6},\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.T = pyo.Set(initialize=d[\"types\"], ordered=True)\n    model.P = pyo.Set(initialize=d[\"periods\"], ordered=True)\n\n    # n[t,p]: number of active generators of type t in period p\n    model.n = pyo.Var(\n        model.T, model.P,\n        domain=pyo.NonNegativeIntegers,\n        bounds=lambda m, t, p: (0, d[\"nmax\"][t]),\n    )\n\n    # g[t,p]: total power output (MW) of type t in period p\n    model.g = pyo.Var(\n        model.T, model.P,\n        domain=pyo.NonNegativeReals,\n        bounds=lambda m, t, p: (0, d[\"nmax\"][t] * d[\"pmax\"][t]),\n    )\n\n    # s[t,p]: number of startups of type t in period p\n    model.s = pyo.Var(\n        model.T, model.P,\n        domain=pyo.NonNegativeIntegers,\n        bounds=lambda m, t, p: (0, d[\"nmax\"][t]),\n    )\n\n    # ---- Objective: minimize total cost ----\n    def obj_rule(m):\n        base = sum(d[\"base_cost\"][t] * m.n[t, p] for t in m.T for p in m.P)\n        power = sum(d[\"power_cost\"][t] * m.g[t, p] for t in m.T for p in m.P)\n        start = sum(d[\"startup_cost\"][t] * m.s[t, p] for t in m.T for p in m.P)\n        return base + power + start\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # (a) Demand must be met or exceeded each period (>=)\n    def demand_rule(m, p):\n        return sum(m.g[t, p] for t in m.T) >= d[\"demand\"][p]\n\n    model.demand_con = pyo.Constraint(model.P, rule=demand_rule)\n\n    # (b) Output bounds linked to active generator count\n    def gmin_rule(m, t, p):\n        # each active generator must produce >= pmin, so total >= pmin * n\n        return m.g[t, p] >= d[\"pmin\"][t] * m.n[t, p]\n\n    model.gmin_con = pyo.Constraint(model.T, model.P, rule=gmin_rule)\n\n    def gmax_rule(m, t, p):\n        # total output <= pmax * number active\n        return m.g[t, p] <= d[\"pmax\"][t] * m.n[t, p]\n\n    model.gmax_con = pyo.Constraint(model.T, model.P, rule=gmax_rule)\n\n    # (c) Combined max output of active generators must meet capacity (>=)\n    def cap_rule(m, p):\n        return sum(d[\"pmax\"][t] * m.n[t, p] for t in m.T) >= d[\"capreq\"][p]\n\n    model.cap_con = pyo.Constraint(model.P, rule=cap_rule)\n\n    # (d) Max active generators per type (<=)\n    def maxact_rule(m, t, p):\n        return m.n[t, p] <= d[\"nmax\"][t]\n\n    model.maxact_con = pyo.Constraint(model.T, model.P, rule=maxact_rule)\n\n    # (e) Startup logic: startups cannot exceed units active this period (<=)\n    def start_le_active_rule(m, t, p):\n        return m.s[t, p] <= m.n[t, p]\n\n    model.start_le_active_con = pyo.Constraint(model.T, model.P, rule=start_le_active_rule)\n\n    # (e') Startups must cover increases in active count vs previous period\n    # (first period has no previous state, so no lower bound there)\n    def start_increase_rule(m, t, p):\n        if p == 0:\n            return pyo.Constraint.Skip\n        return m.s[t, p] >= m.n[t, p] - m.n[t, p - 1]\n\n    model.start_increase_con = pyo.Constraint(model.T, model.P, rule=start_increase_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1378,
+      "completion_tokens": 1671
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.935270309448242,
+   "position": 3,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Index sets\n    \"types\": [0, 1],\n    \"periods\": [0, 1, 2, 3, 4],\n\n    # Base (no-load) cost per active generator per period\n    \"base_cost\": {0: 80, 1: 79},\n\n    # Power output cost per MW\n    \"power_cost\": {0: 3, 1: 4},\n\n    # Startup cost per startup\n    \"startup_cost\": {0: 352, 1: 346},\n\n    # Demand per period (MW)\n    \"demand\": {0: 217, 1: 209, 2: 194, 3: 182, 4: 164},\n\n    # Minimum output per active generator (MW)\n    \"pmin\": {0: 34, 1: 34},\n\n    # Maximum output per active generator (MW)\n    \"pmax\": {0: 129, 1: 127},\n\n    # Combined capacity requirement per period (MW)\n    \"cap_req\": {0: 249.55, 1: 240.35, 2: 223.1, 3: 209.3, 4: 188.6},\n\n    # Maximum number of active generators per type per period\n    \"max_active\": {0: 1, 1: 2},\n\n    # Number of generators available per type (upper bound on active/startups)\n    \"num_available\": {0: 1, 1: 2},\n\n    # Big-M for startup linking (max possible active count)\n    \"big_m\": {0: 1, 1: 2},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    m.TYPES = pyo.Set(initialize=d[\"types\"])\n    m.PERIODS = pyo.Set(initialize=d[\"periods\"])\n\n    # Number of active generators of each type in each period\n    m.n = pyo.Var(\n        m.TYPES, m.PERIODS,\n        within=pyo.NonNegativeIntegers,\n        bounds=lambda m, t, p: (0, d[\"num_available\"][t]),\n    )\n\n    # Total power output of each type in each period (MW)\n    m.p = pyo.Var(\n        m.TYPES, m.PERIODS,\n        within=pyo.NonNegativeReals,\n    )\n\n    # Number of startups of each type in each period\n    m.s = pyo.Var(\n        m.TYPES, m.PERIODS,\n        within=pyo.NonNegativeIntegers,\n        bounds=lambda m, t, p: (0, d[\"num_available\"][t]),\n    )\n\n    # Objective: base + power + startup costs\n    def obj_rule(m):\n        base = sum(\n            d[\"base_cost\"][t] * m.n[t, p]\n            for t in m.TYPES for p in m.PERIODS\n        )\n        power = sum(\n            d[\"power_cost\"][t] * m.p[t, p]\n            for t in m.TYPES for p in m.PERIODS\n        )\n        startup = sum(\n            d[\"startup_cost\"][t] * m.s[t, p]\n            for t in m.TYPES for p in m.PERIODS\n        )\n        return base + power + startup\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # (1) Demand must be met each period\n    def demand_rule(m, p):\n        return sum(m.p[t, p] for t in m.TYPES) >= d[\"demand\"][p]\n\n    m.demand_con = pyo.Constraint(m.PERIODS, rule=demand_rule)\n\n    # (2) Combined capacity requirement each period\n    def cap_rule(m, p):\n        return sum(d[\"pmax\"][t] * m.n[t, p] for t in m.TYPES) >= d[\"cap_req\"][p]\n\n    m.cap_con = pyo.Constraint(m.PERIODS, rule=cap_rule)\n\n    # (3) Max active generators per type per period\n    def max_active_rule(m, t, p):\n        return m.n[t, p] <= d[\"max_active\"][t]\n\n    m.max_active_con = pyo.Constraint(m.TYPES, m.PERIODS, rule=max_active_rule)\n\n    # (4) Power output lower bound: p >= pmin * n\n    def pmin_rule(m, t, p):\n        return m.p[t, p] >= d[\"pmin\"][t] * m.n[t, p]\n\n    m.pmin_con = pyo.Constraint(m.TYPES, m.PERIODS, rule=pmin_rule)\n\n    # (5) Power output upper bound: p <= pmax * n\n    def pmax_rule(m, t, p):\n        return m.p[t, p] <= d[\"pmax\"][t] * m.n[t, p]\n\n    m.pmax_con = pyo.Constraint(m.TYPES, m.PERIODS, rule=pmax_rule)\n\n    # (6) Startup linking: s[t,p] >= n[t,p] - n[t,p-1]\n    #     For p = 0, previous active count is 0.\n    def startup_rule(m, t, p):\n        if p == 0:\n            prev = 0\n        else:\n            prev = m.n[t, p - 1]\n        return m.s[t, p] >= m.n[t, p] - prev\n\n    m.startup_con = pyo.Constraint(m.TYPES, m.PERIODS, rule=startup_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1382,
+      "completion_tokens": 3654
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2413,
+      "completion_tokens": 1283
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 28.456262350082397,
+   "position": 4,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"types\": [0, 1],\n    \"periods\": [0, 1, 2, 3, 4],\n    \"base_cost\": {0: 80, 1: 79},\n    \"power_cost\": {0: 3, 1: 4},\n    \"startup_cost\": {0: 352, 1: 346},\n    \"min_output\": {0: 34, 1: 34},\n    \"max_output\": {0: 129, 1: 127},\n    \"max_active\": {0: 1, 1: 2},\n    \"available\": {0: 1, 1: 2},\n    \"demand\": {0: 217, 1: 209, 2: 194, 3: 182, 4: 164},\n    \"capacity_req\": {0: 249.55, 1: 240.35, 2: 223.1, 3: 209.3, 4: 188.6},\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.T = pyo.Set(initialize=d[\"types\"])\n    model.P = pyo.Set(initialize=d[\"periods\"])\n\n    # n[t,p]: number of type-t generators active in period p\n    model.n = pyo.Var(\n        model.T, model.P,\n        within=pyo.NonNegativeIntegers,\n        bounds=lambda m, t, p: (0, d[\"max_active\"][t]),\n    )\n\n    # power[t,p]: total MW produced by type-t generators in period p\n    model.power = pyo.Var(\n        model.T, model.P,\n        within=pyo.NonNegativeReals,\n    )\n\n    # startup[t,p]: number of type-t startups in period p\n    model.startup = pyo.Var(\n        model.T, model.P,\n        within=pyo.NonNegativeIntegers,\n        bounds=lambda m, t, p: (0, d[\"available\"][t]),\n    )\n\n    # Objective: base + power + startup costs\n    def obj_rule(m):\n        total = 0\n        for t in m.T:\n            for p in m.P:\n                total += d[\"base_cost\"][t] * m.n[t, p]\n                total += d[\"power_cost\"][t] * m.power[t, p]\n                total += d[\"startup_cost\"][t] * m.startup[t, p]\n        return total\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand: total power must meet or exceed demand in each period\n    def demand_rule(m, p):\n        return sum(m.power[t, p] for t in m.T) >= d[\"demand\"][p]\n\n    model.demand_con = pyo.Constraint(model.P, rule=demand_rule)\n\n    # Minimum output: each active generator produces at least min_output\n    def min_output_rule(m, t, p):\n        return m.power[t, p] >= d[\"min_output\"][t] * m.n[t, p]\n\n    model.min_output_con = pyo.Constraint(model.T, model.P, rule=min_output_rule)\n\n    # Maximum output: each active generator produces at most max_output\n    def max_output_rule(m, t, p):\n        return m.power[t, p] <= d[\"max_output\"][t] * m.n[t, p]\n\n    model.max_output_con = pyo.Constraint(model.T, model.P, rule=max_output_rule)\n\n    # Capacity requirement: combined max output of active generators >= requirement\n    def capacity_rule(m, p):\n        return sum(d[\"max_output\"][t] * m.n[t, p] for t in m.T) >= d[\"capacity_req\"][p]\n\n    model.capacity_con = pyo.Constraint(model.P, rule=capacity_rule)\n\n    # Max active constraint (explicit, in addition to variable bounds)\n    def max_active_rule(m, t, p):\n        return m.n[t, p] <= d[\"max_active\"][t]\n\n    model.max_active_con = pyo.Constraint(model.T, model.P, rule=max_active_rule)\n\n    # Startup linkage: startups in a period cannot exceed generators active that period\n    def startup_link_rule(m, t, p):\n        return m.startup[t, p] <= m.n[t, p]\n\n    model.startup_link_con = pyo.Constraint(model.T, model.P, rule=startup_link_rule)\n\n    # Startup linkage vs availability: startups bounded by available generators\n    def startup_avail_rule(m, t, p):\n        return m.startup[t, p] <= d[\"available\"][t]\n\n    model.startup_avail_con = pyo.Constraint(model.T, model.P, rule=startup_avail_rule)\n\n    # Startup linkage vs previous period: startups <= active in previous period (period 0 has none prior)\n    def startup_prev_rule(m, t, p):\n        if p == d[\"periods\"][0]:\n            return m.startup[t, p] <= m.n[t, p]\n        return m.startup[t, p] <= m.n[t, p - 1]\n\n    model.startup_prev_con = pyo.Constraint(model.T, model.P, rule=startup_prev_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1362,
+      "completion_tokens": 1565
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.233810663223267,
+   "position": 5,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # sets\n    \"types\": [0, 1],\n    \"periods\": [0, 1, 2, 3, 4],\n    # base cost per active generator per period\n    \"base_cost\": {0: 80, 1: 79},\n    # power output cost per MW\n    \"power_cost\": {0: 3, 1: 4},\n    # startup cost per startup\n    \"startup_cost\": {0: 352, 1: 346},\n    # min/max output per generator of each type when active\n    \"min_out\": {0: 34, 1: 34},\n    \"max_out\": {0: 129, 1: 127},\n    # max number of active generators per type\n    \"max_active\": {0: 1, 1: 2},\n    # maximum number of generators available (upper bound on startups / actives)\n    \"max_gens\": {0: 1, 1: 2},\n    # demand per period (must be met or exceeded)\n    \"demand\": {0: 217, 1: 209, 2: 194, 3: 182, 4: 164},\n    # combined capacity requirement per period\n    \"cap_req\": {0: 249.55, 1: 240.35, 2: 223.1, 3: 209.3, 4: 188.6},\n    # big-M for startup logic\n    \"BigM\": {0: 1, 1: 2},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.G = pyo.Set(initialize=d[\"types\"])\n    model.T = pyo.Set(initialize=d[\"periods\"])\n    # periods after the first, used for startup constraints\n    model.Tmid = pyo.Set(initialize=[t for t in d[\"periods\"] if t >= 1])\n\n    # number of active generators of type g in period t\n    def n_bounds(m, g, t):\n        return (0, d[\"max_gens\"][g])\n    model.n = pyo.Var(\n        model.G, model.T,\n        domain=pyo.NonNegativeIntegers,\n        bounds=n_bounds,\n    )\n\n    # total power output of type g in period t (MW)\n    model.p = pyo.Var(\n        model.G, model.T,\n        domain=pyo.NonNegativeReals,\n    )\n\n    # number of startups of type g in period t\n    def s_bounds(m, g, t):\n        return (0, d[\"max_gens\"][g])\n    model.start = pyo.Var(\n        model.G, model.T,\n        domain=pyo.NonNegativeIntegers,\n        bounds=s_bounds,\n    )\n\n    # Objective: total cost to minimize\n    def obj_rule(m):\n        base = sum(d[\"base_cost\"][g] * m.n[g, t] for g in m.G for t in m.T)\n        power = sum(d[\"power_cost\"][g] * m.p[g, t] for g in m.G for t in m.T)\n        startc = sum(d[\"startup_cost\"][g] * m.start[g, t] for g in m.G for t in m.T)\n        return base + power + startc\n    model.obj = pyo.Objective(expr=obj_rule, sense=pyo.minimize)\n\n    # Demand must be met or exceeded each period\n    def demand_rule(m, t):\n        return sum(m.p[g, t] for g in m.G) >= d[\"demand\"][t]\n    model.demand_con = pyo.Constraint(model.T, rule=demand_rule)\n\n    # Combined capacity requirement each period (sum of max outputs of active gens)\n    def cap_rule(m, t):\n        return sum(d[\"max_out\"][g] * m.n[g, t] for g in m.G) >= d[\"cap_req\"][t]\n    model.cap_con = pyo.Constraint(model.T, rule=cap_rule)\n\n    # Minimum output per active generator (lower bound tied to active count)\n    def min_out_rule(m, g, t):\n        return m.p[g, t] >= d[\"min_out\"][g] * m.n[g, t]\n    model.min_out_con = pyo.Constraint(model.G, model.T, rule=min_out_rule)\n\n    # Maximum output per active generator\n    def max_out_rule(m, g, t):\n        return m.p[g, t] <= d[\"max_out\"][g] * m.n[g, t]\n    model.max_out_con = pyo.Constraint(model.G, model.T, rule=max_out_rule)\n\n    # Maximum number of active generators per type each period\n    def max_active_rule(m, g, t):\n        return m.n[g, t] <= d[\"max_active\"][g]\n    model.max_active_con = pyo.Constraint(model.G, model.T, rule=max_active_rule)\n\n    # Startup constraint, first period: startups >= active (previous active = 0)\n    def startup_first_rule(m, g):\n        return m.start[g, d[\"periods\"][0]] >= m.n[g, d[\"periods\"][0]]\n    model.startup_first_con = pyo.Constraint(model.G, rule=startup_first_rule)\n\n    # Startup constraint subsequent periods: startups >= n_t - n_{t-1}\n    def startup_mid_rule(m, g, t):\n        return m.start[g, t] >= m.n[g, t] - m.n[g, t - 1]\n    model.startup_con = pyo.Constraint(model.G, model.Tmid, rule=startup_mid_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1368,
+      "completion_tokens": 2037
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "disallowed_lambda_rule"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2908,
+      "completion_tokens": 1301
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 13.219197511672974,
+   "position": 6,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"five consecutive time periods\" \u2192 periods 0..4\n    \"periods\": [0, 1, 2, 3, 4],\n    # generator types Type 0 and Type 1\n    \"gen_types\": [0, 1],\n\n    # \"base cost of 80 units per Type 0 generator and 79 units per Type 1 generator for each period\"\n    \"base_cost\": {0: 80, 1: 79},\n    # \"power output cost of 3 units per MW for Type 0 ... and 4 units per MW for Type 1\"\n    \"power_cost\": {0: 3, 1: 4},\n    # \"startup cost of 352 units for Type 0 and 346 units for Type 1\"\n    \"startup_cost\": {0: 352, 1: 346},\n\n    # \"demand ... 217 MW in period 0, 209 in 1, 194 in 2, 182 in 3, 164 in 4\"\n    \"demand\": {0: 217, 1: 209, 2: 194, 3: 182, 4: 164},\n\n    # \"Each Type 0 generator must produce at least 34 MW and at most 129 MW when active\"\n    # \"Each Type 1 generator must produce at least 34 MW and at most 127 MW when active\"\n    \"pmin\": {0: 34, 1: 34},\n    \"pmax\": {0: 129, 1: 127},\n\n    # \"combined maximum output of all active generators must meet or exceed:\n    #  249.55 in 0, 240.35 in 1, 223.1 in 2, 209.3 in 3, 188.6 in 4\"\n    \"cap_req\": {0: 249.55, 1: 240.35, 2: 223.1, 3: 209.3, 4: 188.6},\n\n    # \"No more than 1 Type 0 generator and 2 Type 1 generators can be active in any period\"\n    \"max_active\": {0: 1, 1: 2},\n\n    # Big-M for linearising the per-generator power output bounds.\n    # Upper bound on total power output of a type in a period = max_active * pmax.\n    \"big_m\": {0: 1 * 129, 1: 2 * 127},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.T = pyo.Set(initialize=d[\"periods\"], ordered=True)\n    model.G = pyo.Set(initialize=d[\"gen_types\"], ordered=True)\n\n    # n[g,t]: number of active generators of type g in period t\n    def n_bounds(m, g, t):\n        return (0, d[\"max_active\"][g])\n\n    model.n = pyo.Var(\n        model.G, model.T,\n        within=pyo.NonNegativeIntegers,\n        bounds=n_bounds,\n    )\n\n    # p[g,t]: total power output of all generators of type g in period t\n    def p_bounds(m, g, t):\n        return (0, d[\"max_active\"][g] * d[\"pmax\"][g])\n\n    model.p = pyo.Var(\n        model.G, model.T,\n        within=pyo.NonNegativeReals,\n        bounds=p_bounds,\n    )\n\n    # s[g,t]: number of startups of type g in period t\n    def s_bounds(m, g, t):\n        return (0, d[\"max_active\"][g])\n\n    model.s = pyo.Var(\n        model.G, model.T,\n        within=pyo.NonNegativeIntegers,\n        bounds=s_bounds,\n    )\n\n    # Objective: minimize total cost\n    def obj_rule(m):\n        base = sum(\n            d[\"base_cost\"][g] * m.n[g, t] for g in m.G for t in m.T\n        )\n        power = sum(\n            d[\"power_cost\"][g] * m.p[g, t]\n            for g in m.G for t in m.T\n        )\n        startup = sum(\n            d[\"startup_cost\"][g] * m.s[g, t] for g in m.G for t in m.T\n        )\n        return base + power + startup\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand: total power output must meet or exceed demand in each period\n    def demand_rule(m, t):\n        return sum(m.p[g, t] for g in m.G) >= d[\"demand\"][t]\n\n    model.demand_con = pyo.Constraint(model.T, rule=demand_rule)\n\n    # Capacity requirement: combined max output of active generators >= requirement\n    def cap_rule(m, t):\n        return sum(d[\"pmax\"][g] * m.n[g, t] for g in m.G) >= d[\"cap_req\"][t]\n\n    model.cap_con = pyo.Constraint(model.T, rule=cap_rule)\n\n    # Per-generator power output bounds (linearised):\n    #   p[g,t] >= pmin[g] * n[g,t]\n    #   p[g,t] <= pmax[g] * n[g,t]\n    def pmin_rule(m, g, t):\n        return m.p[g, t] >= d[\"pmin\"][g] * m.n[g, t]\n\n    model.pmin_con = pyo.Constraint(model.G, model.T, rule=pmin_rule)\n\n    def pmax_rule(m, g, t):\n        return m.p[g, t] <= d[\"pmax\"][g] * m.n[g, t]\n\n    model.pmax_con = pyo.Constraint(model.G, model.T, rule=pmax_rule)\n\n    # Startup logic: s[g,t] >= n[g,t] - n[g,t-1]\n    def startup_rule(m, g, t):\n        if t == m.T.first():\n            return m.s[g, t] >= m.n[g, t]\n        return m.s[g, t] >= m.n[g, t] - m.n[g, t - 1]\n\n    model.startup_con = pyo.Constraint(model.G, model.T, rule=startup_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1366,
+      "completion_tokens": 1531
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2537,
+      "completion_tokens": 1451
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 11.420670747756958,
+   "position": 7,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Generator types and periods\n    \"types\": [0, 1],\n    \"periods\": [0, 1, 2, 3, 4],\n\n    # Base cost per active generator per period\n    # \"80 units per Type 0 generator and 79 units per Type 1 generator for each period\"\n    \"base_cost\": {0: 80, 1: 79},\n\n    # Power output cost per MW\n    # \"3 units per MW for Type 0 generators and 4 units per MW for Type 1\"\n    \"power_cost\": {0: 3, 1: 4},\n\n    # Startup cost\n    # \"352 units for Type 0 generators and 346 units for Type 1\"\n    \"startup_cost\": {0: 352, 1: 346},\n\n    # Demand per period (MW)\n    # \"217 MW in period 0, 209 MW in period 1, 194 MW in period 2, 182 MW in period 3, 164 MW in period 4\"\n    \"demand\": {0: 217, 1: 209, 2: 194, 3: 182, 4: 164},\n\n    # Min / max MW per active generator\n    # \"Type 0 ... at least 34 MW and at most 129 MW\"; \"Type 1 ... at least 34 MW and at most 127 MW\"\n    \"min_mw\": {0: 34, 1: 34},\n    \"max_mw\": {0: 129, 1: 127},\n\n    # Capacity requirement per period (MW)\n    # \"249.55 MW in period 0, 240.35 MW in period 1, 223.1 MW in period 2, 209.3 MW in period 3, 188.6 MW in period 4\"\n    \"cap_req\": {0: 249.55, 1: 240.35, 2: 223.1, 3: 209.3, 4: 188.6},\n\n    # Availability limits\n    # \"No more than 1 Type 0 generator and 2 Type 1 generators can be active in any period\"\n    \"max_avail\": {0: 1, 1: 2},\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.T = pyo.Set(initialize=d[\"types\"])\n    model.P = pyo.Set(initialize=d[\"periods\"])\n\n    # gen[t,p]: number of active generators of type t in period p\n    model.gen = pyo.Var(\n        model.T, model.P,\n        within=pyo.NonNegativeIntegers,\n        bounds=lambda m, t, p: (0, d[\"max_avail\"][t]),\n    )\n\n    # start[t,p]: number of startups of type t in period p\n    model.start = pyo.Var(\n        model.T, model.P,\n        within=pyo.NonNegativeIntegers,\n        bounds=lambda m, t, p: (0, d[\"max_avail\"][t]),\n    )\n\n    # power[t,p]: total MW output from type t in period p\n    model.power = pyo.Var(\n        model.T, model.P,\n        within=pyo.NonNegativeReals,\n        bounds=lambda m, t, p: (0, d[\"max_avail\"][t] * d[\"max_mw\"][t]),\n    )\n\n    # Objective: minimize base + power + startup costs\n    def obj_rule(m):\n        base = sum(\n            d[\"base_cost\"][t] * m.gen[t, p]\n            for t in m.T for p in m.P\n        )\n        power = sum(\n            d[\"power_cost\"][t] * m.power[t, p]\n            for t in m.T for p in m.P\n        )\n        startup = sum(\n            d[\"startup_cost\"][t] * m.start[t, p]\n            for t in m.T for p in m.P\n        )\n        return base + power + startup\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand: total power across all types >= demand[p]\n    def demand_rule(m, p):\n        return sum(m.power[t, p] for t in m.T) >= d[\"demand\"][p]\n\n    model.demand_con = pyo.Constraint(model.P, rule=demand_rule)\n\n    # Capacity requirement: sum_t max_mw[t] * gen[t,p] >= cap_req[p]\n    def cap_rule(m, p):\n        return sum(d[\"max_mw\"][t] * m.gen[t, p] for t in m.T) >= d[\"cap_req\"][p]\n\n    model.cap_con = pyo.Constraint(model.P, rule=cap_rule)\n\n    # Per-generator min power: power[t,p] >= min_mw[t] * gen[t,p]\n    def min_power_rule(m, t, p):\n        return m.power[t, p] >= d[\"min_mw\"][t] * m.gen[t, p]\n\n    model.min_power_con = pyo.Constraint(model.T, model.P, rule=min_power_rule)\n\n    # Per-generator max power: power[t,p] <= max_mw[t] * gen[t,p]\n    def max_power_rule(m, t, p):\n        return m.power[t, p] <= d[\"max_mw\"][t] * m.gen[t, p]\n\n    model.max_power_con = pyo.Constraint(model.T, model.P, rule=max_power_rule)\n\n    # Startup logic: for p>0, start[t,p] >= gen[t,p] - gen[t,p-1]\n    def startup_rule(m, t, p):\n        if p == d[\"periods\"][0]:\n            # no previous period: startups >= active in first period\n            return m.start[t, p] >= m.gen[t, p]\n        return m.start[t, p] >= m.gen[t, p] - m.gen[t, p - 1]\n\n    model.startup_con = pyo.Constraint(model.T, model.P, rule=startup_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1366,
+      "completion_tokens": 1714
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.8321709632873535,
+   "position": 8,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"periods\": [0, 1, 2, 3, 4],\n    \"types\": [0, 1],\n    \"base_cost\":    {0: 80, 1: 79},\n    \"power_cost\":   {0: 3,  1: 4},\n    \"startup_cost\": {0: 352, 1: 346},\n    \"pmin\": {0: 34, 1: 34},\n    \"pmax\": {0: 129, 1: 127},\n    \"avail\": {0: 1, 1: 2},\n    \"demand\": {0: 217, 1: 209, 2: 194, 3: 182, 4: 164},\n    \"reqcap\": {0: 249.55, 1: 240.35, 2: 223.1, 3: 209.3, 4: 188.6},\n    \"max_active\": {0: 1, 1: 2},\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.T = pyo.Set(initialize=d[\"periods\"], ordered=True)\n    m.G = pyo.Set(initialize=d[\"types\"], ordered=True)\n\n    # number of active generators of type g in period t\n    m.n = pyo.Var(\n        m.T, m.G,\n        within=pyo.NonNegativeIntegers,\n        bounds=lambda mm, t, g: (0, d[\"avail\"][g]),\n    )\n\n    # total power (MW) delivered by all generators of type g in period t\n    m.P = pyo.Var(m.T, m.G, within=pyo.NonNegativeReals, bounds=(0, None))\n\n    # startups of type g at start of period t\n    m.su = pyo.Var(\n        m.T, m.G,\n        within=pyo.NonNegativeIntegers,\n        bounds=lambda mm, t, g: (0, d[\"avail\"][g]),\n    )\n\n    # ---- device-level power bounds (also enforces p>=pmin for active units) ----\n    def rule_plo(mm, t, g):\n        return mm.P[t, g] >= d[\"pmin\"][g] * mm.n[t, g]\n    m.power_lower = pyo.Constraint(m.T, m.G, rule=rule_plo)\n\n    def rule_phi(mm, t, g):\n        return mm.P[t, g] <= d[\"pmax\"][g] * mm.n[t, g]\n    m.power_upper = pyo.Constraint(m.T, m.G, rule=rule_phi)\n\n    # ---- per-period total generating capacity requirement ----\n    def rule_capbase(mm, t):\n        return sum(d[\"pmax\"][g] * mm.n[t, g] for g in mm.G) >= d[\"reqcap\"][t]\n    m.capacity_req = pyo.Constraint(m.T, rule=rule_capbase)\n\n    # ---- demand requirement: delivered power must meet demand ----\n    def rule_demand(mm, t):\n        return sum(mm.P[t, g] for g in mm.G) >= d[\"demand\"][t]\n    m.demand_req = pyo.Constraint(m.T, rule=rule_demand)\n\n    # ---- per-period active-count limit by type ----\n    def rule_maxact(mm, t, g):\n        return mm.n[t, g] <= d[\"max_active\"][g]\n    m.max_active = pyo.Constraint(m.T, m.G, rule=rule_maxact)\n\n    # ---- startup accounting: su >= n_t - n_{t-1}  (t=0 uses zero prior) ----\n    def rule_su(mm, t, g):\n        if t == mm.T.first():\n            n_prev = 0\n        else:\n            n_prev = mm.n[mm.T.prev(t), g]\n        return mm.su[t, g] >= mm.n[t, g] - n_prev\n    m.startup_def = pyo.Constraint(m.T, m.G, rule=rule_su)\n\n    # ---- objective ----\n    def rule_obj(mm):\n        base = sum(\n            d[\"base_cost\"][g] * mm.n[t, g] for t in mm.T for g in mm.G\n        )\n        pw = sum(\n            d[\"power_cost\"][g] * mm.P[t, g] for t in mm.T for g in mm.G\n        )\n        st = sum(\n            d[\"startup_cost\"][g] * mm.su[t, g] for t in mm.T for g in mm.G\n        )\n        return base + pw + st\n    m.obj = pyo.Objective(expr=rule_obj, sense=pyo.minimize)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1368,
+      "completion_tokens": 1631
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2586,
+      "completion_tokens": 1090
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 12.321233987808228,
+   "position": 9,
+   "recipe_index": 3
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T10:36:31"
+}

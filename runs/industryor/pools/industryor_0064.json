@@ -1,0 +1,330 @@
+{
+ "pid": "industryor_0064",
+ "question": "The current problem the company is facing is how to use the minimum number of containers to transport the current goods, while considering the weight, volume, specific packaging requirements, and inventory limitations of the goods. Professional modeling and analysis are needed to provide a transportation strategy for a batch of goods to ensure the maximum utilization of limited container space.\n\nCurrently, the company has a batch of goods that need to be transported. Each container can hold a maximum of 60 tons of goods, and each container used must contain at least 18 tons of goods. The dimensions of the container are 15.5 meters in length, 2.8 meters in width, and 2.8 meters in height. The goods that need to be loaded include five types: A, B, C, D, and E, with 120, 90, 300, 90, and 120 units respectively. The weight of type A is 0.5 tons, type B is 1 ton, type C is 0.4 tons, type D is 0.6 tons, and type E is 0.65 tons. The dimensions of goods A, B, C, D, and E are 0.65*1*1, 0.2*2*2, 0.35*2*1, 0.2*3*1, and 0.15*5*1 meters respectively. Additionally, to meet specific usage requirements, whenever loading goods A, at least 1 unit of goods C must be loaded at the same time, while loading goods C alone does not require loading goods A at the same time. Furthermore, considering the demand restrictions of goods D, we need to load at least 12 units of goods D in each container.\n\nCreate an operations research model so that the company can use the minimum number of containers to transport this batch of goods.",
+ "templates": [
+  "Transportation",
+  "Bin Packing / Cutting Stock",
+  "Scheduling"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"goods\": [\"A\", \"B\", \"C\", \"D\", \"E\"],\n    \"available\": {\"A\": 120, \"B\": 90, \"C\": 300, \"D\": 90, \"E\": 120},\n    \"weight\": {\"A\": 0.5, \"B\": 1.0, \"C\": 0.4, \"D\": 0.6, \"E\": 0.65},\n    # dimensions (l, w, h) in meters\n    \"dims\": {\n        \"A\": (0.65, 1.0, 1.0),\n        \"B\": (0.2, 2.0, 2.0),\n        \"C\": (0.35, 2.0, 1.0),\n        \"D\": (0.2, 3.0, 1.0),\n        \"E\": (0.15, 5.0, 1.0),\n    },\n    \"container_length\": 15.5,\n    \"container_width\": 2.8,\n    \"container_height\": 2.8,\n    \"max_weight\": 60.0,       # tons per container\n    \"min_weight\": 18.0,       # tons per used container\n    \"min_D_per_container\": 12,\n    \"min_C_with_A\": 1,        # if A loaded, at least this many C\n    \"num_containers\": 30,     # upper bound for bin packing\n    \"bigM\": 1000,             # big-M for linking\n}\n\n\ndef _volume(dims):\n    l, w, h = dims\n    return l * w * h\n\n\ndef build_model(data=None):\n    d = data or DATA\n    goods = d[\"goods\"]\n    ncont = d[\"num_containers\"]\n    conts = list(range(ncont))\n\n    vol = {i: _volume(d[\"dims\"][i]) for i in goods}\n    container_volume = d[\"container_length\"] * d[\"container_width\"] * d[\"container_height\"]\n\n    m = pyo.ConcreteModel()\n\n    m.GOODS = pyo.Set(initialize=goods)\n    m.CONTS = pyo.Set(initialize=conts)\n\n    # decision variables\n    m.use = pyo.Var(m.CONTS, within=pyo.Binary)\n    m.qty = pyo.Var(m.GOODS, m.CONTS, within=pyo.NonNegativeIntegers)\n    m.has_A = pyo.Var(m.CONTS, within=pyo.Binary)\n\n    # objective: minimize number of containers used\n    def obj_rule(mm):\n        return sum(mm.use[k] for k in mm.CONTS)\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ship all available goods\n    def demand_rule(mm, i):\n        return sum(mm.qty[i, k] for k in mm.CONTS) == d[\"available\"][i]\n    m.demand = pyo.Constraint(m.GOODS, rule=demand_rule)\n\n    # weight capacity linked to use\n    def weight_cap_rule(mm, k):\n        return sum(d[\"weight\"][i] * mm.qty[i, k] for i in mm.GOODS) <= d[\"max_weight\"] * mm.use[k]\n    m.weight_cap = pyo.Constraint(m.CONTS, rule=weight_cap_rule)\n\n    # minimum weight if container used\n    def weight_min_rule(mm, k):\n        return sum(d[\"weight\"][i] * mm.qty[i, k] for i in mm.GOODS) >= d[\"min_weight\"] * mm.use[k]\n    m.weight_min = pyo.Constraint(m.CONTS, rule=weight_min_rule)\n\n    # volume capacity linked to use\n    def volume_cap_rule(mm, k):\n        return sum(vol[i] * mm.qty[i, k] for i in mm.GOODS) <= container_volume * mm.use[k]\n    m.volume_cap = pyo.Constraint(m.CONTS, rule=volume_cap_rule)\n\n    # at least min_D_per_container units of D in each used container\n    def min_D_rule(mm, k):\n        return mm.qty[\"D\", k] >= d[\"min_D_per_container\"] * mm.use[k]\n    m.min_D = pyo.Constraint(m.CONTS, rule=min_D_rule)\n\n    # link load to use (empty container loads nothing)\n    def link_rule(mm, i, k):\n        return mm.qty[i, k] <= d[\"bigM\"] * mm.use[k]\n    m.link = pyo.Constraint(m.GOODS, m.CONTS, rule=link_rule)\n\n    # A => C: if A loaded, at least min_C_with_A units of C\n    def A_implies_C_rule(mm, k):\n        return mm.qty[\"C\", k] >= d[\"min_C_with_A\"] * mm.has_A[k]\n    m.A_implies_C = pyo.Constraint(m.CONTS, rule=A_implies_C_rule)\n\n    # has_A link: A can only be loaded if has_A is 1\n    def has_A_link_rule(mm, k):\n        return mm.qty[\"A\", k] <= d[\"bigM\"] * mm.has_A[k]\n    m.has_A_link = pyo.Constraint(m.CONTS, rule=has_A_link_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1563,
+      "completion_tokens": 1686
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "reserved_pyomo_component_name",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2912,
+      "completion_tokens": 1236
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 12.338006019592285,
+   "position": 0,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"goods include five types: A, B, C, D, and E\"\n    \"GOODS\": [\"A\", \"B\", \"C\", \"D\", \"E\"],\n\n    # \"with 120, 90, 300, 90, and 120 units respectively\"\n    \"QTY\": {\"A\": 120, \"B\": 90, \"C\": 300, \"D\": 90, \"E\": 120},\n\n    # \"weight of type A is 0.5 tons, type B is 1 ton, type C is 0.4 tons,\n    #  type D is 0.6 tons, and type E is 0.65 tons\"\n    \"WEIGHT\": {\"A\": 0.5, \"B\": 1.0, \"C\": 0.4, \"D\": 0.6, \"E\": 0.65},\n\n    # \"dimensions of goods A..E are 0.65*1*1, 0.2*2*2, 0.35*2*1,\n    #  0.2*3*1, and 0.15*5*1 meters respectively\" -> volume = product\n    \"VOLUME\": {\n        \"A\": 0.65 * 1 * 1,\n        \"B\": 0.2 * 2 * 2,\n        \"C\": 0.35 * 2 * 1,\n        \"D\": 0.2 * 3 * 1,\n        \"E\": 0.15 * 5 * 1,\n    },\n\n    # \"Each container can hold a maximum of 60 tons of goods\"\n    \"MAX_WEIGHT\": 60.0,\n    # \"each container used must contain at least 18 tons of goods\"\n    \"MIN_WEIGHT\": 18.0,\n\n    # \"dimensions of the container are 15.5 length, 2.8 width, 2.8 height\"\n    \"CONT_LENGTH\": 15.5,\n    \"CONT_WIDTH\": 2.8,\n    \"CONT_HEIGHT\": 2.8,\n\n    # \"load at least 12 units of goods D in each container\"\n    \"MIN_D_PER_CONT\": 12,\n\n    # Big-M for the A->C packaging rule (max units of A ever in one container)\n    \"BIG_M_A\": 120,\n\n    # Upper bound on number of containers (candidate bins)\n    \"MAX_CONTAINERS\": 200,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    goods = d[\"GOODS\"]\n    qty = d[\"QTY\"]\n    weight = d[\"WEIGHT\"]\n    volume = d[\"VOLUME\"]\n    cont_volume = d[\"CONT_LENGTH\"] * d[\"CONT_WIDTH\"] * d[\"CONT_HEIGHT\"]\n\n    model = pyo.ConcreteModel()\n\n    model.GOODS = pyo.Set(initialize=goods, ordered=True)\n    model.CONTAINERS = pyo.RangeSet(1, d[\"MAX_CONTAINERS\"])\n\n    # y[c] = 1 if container c is used\n    model.y = pyo.Var(model.CONTAINERS, within=pyo.Binary)\n\n    # x[g,c] = units of good g loaded into container c\n    model.x = pyo.Var(\n        model.GOODS, model.CONTAINERS,\n        within=pyo.NonNegativeIntegers,\n        bounds=(0, None),\n    )\n\n    # z[c] = 1 if any good A is loaded in container c (for A->C rule)\n    model.z = pyo.Var(model.CONTAINERS, within=pyo.Binary)\n\n    # Objective: minimise number of containers used\n    def obj_rule(m):\n        return sum(m.y[c] for c in m.CONTAINERS)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each good fully transported\n    def demand_rule(m, g):\n        return sum(m.x[g, c] for c in m.CONTAINERS) == qty[g]\n    model.demand = pyo.Constraint(model.GOODS, rule=demand_rule)\n\n    # Link x[g,c] <= qty[g] * y[c]\n    def link_rule(m, g, c):\n        return m.x[g, c] <= qty[g] * m.y[c]\n    model.link = pyo.Constraint(model.GOODS, model.CONTAINERS, rule=link_rule)\n\n    # Weight capacity per container\n    def weight_cap_rule(m, c):\n        return sum(weight[g] * m.x[g, c] for g in m.GOODS) <= d[\"MAX_WEIGHT\"] * m.y[c]\n    model.weight_cap = pyo.Constraint(model.CONTAINERS, rule=weight_cap_rule)\n\n    # Minimum weight per used container\n    def weight_min_rule(m, c):\n        return sum(weight[g] * m.x[g, c] for g in m.GOODS) >= d[\"MIN_WEIGHT\"] * m.y[c]\n    model.weight_min = pyo.Constraint(model.CONTAINERS, rule=weight_min_rule)\n\n    # Volume capacity per container\n    def volume_cap_rule(m, c):\n        return sum(volume[g] * m.x[g, c] for g in m.GOODS) <= cont_volume * m.y[c]\n    model.volume_cap = pyo.Constraint(model.CONTAINERS, rule=volume_cap_rule)\n\n    # At least 12 units of D per used container\n    def min_d_rule(m, c):\n        return m.x[\"D\", c] >= d[\"MIN_D_PER_CONT\"] * m.y[c]\n    model.min_d = pyo.Constraint(model.CONTAINERS, rule=min_d_rule)\n\n    # A -> C packaging rule: if A loaded then z[c]=1 and C>=1\n    def a_indicator_rule(m, c):\n        return m.x[\"A\", c] <= d[\"BIG_M_A\"] * m.z[c]\n    model.a_indicator = pyo.Constraint(model.CONTAINERS, rule=a_indicator_rule)\n\n    def c_required_rule(m, c):\n        return m.x[\"C\", c] >= m.z[c]\n    model.c_required = pyo.Constraint(model.CONTAINERS, rule=c_required_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1567,
+      "completion_tokens": 1890
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.16447114944458,
+   "position": 1,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"Each container can hold a maximum of 60 tons of goods\"\n    \"max_weight_per_container\": 60.0,\n    # \"each container used must contain at least 18 tons of goods\"\n    \"min_weight_per_container\": 18.0,\n    # \"dimensions of the container are 15.5 m in length, 2.8 m in width, 2.8 m in height\"\n    \"container_length\": 15.5,\n    \"container_width\": 2.8,\n    \"container_height\": 2.8,\n    # \"goods include five types: A, B, C, D, and E\"\n    \"goods\": [\"A\", \"B\", \"C\", \"D\", \"E\"],\n    # \"120, 90, 300, 90, and 120 units respectively\"\n    \"inventory\": {\"A\": 120, \"B\": 90, \"C\": 300, \"D\": 90, \"E\": 120},\n    # \"weight of type A is 0.5 tons, B is 1, C is 0.4, D is 0.6, E is 0.65\"\n    \"weight\": {\"A\": 0.5, \"B\": 1.0, \"C\": 0.4, \"D\": 0.6, \"E\": 0.65},\n    # \"dimensions of goods A,B,C,D,E are 0.65*1*1, 0.2*2*2, 0.35*2*1, 0.2*3*1, 0.15*5*1\"\n    \"volume\": {\n        \"A\": 0.65 * 1 * 1,\n        \"B\": 0.2 * 2 * 2,\n        \"C\": 0.35 * 2 * 1,\n        \"D\": 0.2 * 3 * 1,\n        \"E\": 0.15 * 5 * 1,\n    },\n    # \"whenever loading goods A, at least 1 unit of goods C must be loaded at the same time\"\n    \"A_to_C_ratio\": 1,  # units of C per unit of A (at least 1 C per A)\n    # \"we need to load at least 12 units of goods D in each container\"\n    \"min_D_per_container\": 12,\n    # Upper bound on number of containers (heuristic; sum of inventories is safe)\n    \"num_containers_upper\": 120 + 90 + 300 + 90 + 120,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    goods = d[\"goods\"]\n    n_containers = d[\"num_containers_upper\"]\n    container_vol = d[\"container_length\"] * d[\"container_width\"] * d[\"container_height\"]\n\n    # Big-M for A -> C linkage: max units of A that can fit (bounded by inventory)\n    bigM_A = d[\"inventory\"][\"A\"]\n\n    model = pyo.ConcreteModel()\n\n    model.GOODS = pyo.Set(initialize=goods)\n    model.CONTAINERS = pyo.RangeSet(1, n_containers)\n\n    # y[k] = 1 if container k is used\n    model.y = pyo.Var(model.CONTAINERS, within=pyo.Binary)\n\n    # x[i,k] = units of good i in container k\n    def x_bounds(m, i, k):\n        return (0, d[\"inventory\"][i])\n\n    model.x = pyo.Var(\n        model.GOODS,\n        model.CONTAINERS,\n        within=pyo.NonNegativeIntegers,\n        bounds=x_bounds,\n    )\n\n    # Objective: minimize number of containers used\n    def obj_rule(m):\n        return sum(m.y[k] for k in m.CONTAINERS)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each container weight <= max, and >= min if used\n    def weight_upper_rule(m, k):\n        return sum(d[\"weight\"][i] * m.x[i, k] for i in m.GOODS) <= \\\n            d[\"max_weight_per_container\"] * m.y[k]\n\n    model.weight_upper = pyo.Constraint(model.CONTAINERS, rule=weight_upper_rule)\n\n    def weight_lower_rule(m, k):\n        return sum(d[\"weight\"][i] * m.x[i, k] for i in m.GOODS) >= \\\n            d[\"min_weight_per_container\"] * m.y[k]\n\n    model.weight_lower = pyo.Constraint(model.CONTAINERS, rule=weight_lower_rule)\n\n    # Each container volume <= container volume (only if used)\n    def volume_rule(m, k):\n        return sum(d[\"volume\"][i] * m.x[i, k] for i in m.GOODS) <= \\\n            container_vol * m.y[k]\n\n    model.volume = pyo.Constraint(model.CONTAINERS, rule=volume_rule)\n\n    # Each good's total placed = inventory\n    def inventory_rule(m, i):\n        return sum(m.x[i, k] for k in m.CONTAINERS) == d[\"inventory\"][i]\n\n    model.inventory = pyo.Constraint(model.GOODS, rule=inventory_rule)\n\n    # A -> C linkage: x_A,k <= bigM_A * (x_C,k / ratio) ... linear form:\n    # x_A,k <= bigM_A * x_C,k (since ratio = 1 means >=1 C per A)\n    def a_to_c_rule(m, k):\n        return m.x[\"A\", k] <= bigM_A * m.x[\"C\", k] / d[\"A_to_C_ratio\"]\n\n    model.a_to_c = pyo.Constraint(model.CONTAINERS, rule=a_to_c_rule)\n\n    # At least 12 units of D in each used container\n    def min_d_rule(m, k):\n        return m.x[\"D\", k] >= d[\"min_D_per_container\"] * m.y[k]\n\n    model.min_d = pyo.Constraint(model.CONTAINERS, rule=min_d_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1567,
+      "completion_tokens": 1763
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.901873588562012,
+   "position": 2,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"goods\": [\"A\", \"B\", \"C\", \"D\", \"E\"],\n    \"quantity\": {\"A\": 120, \"B\": 90, \"C\": 300, \"D\": 90, \"E\": 120},\n    \"weight\":   {\"A\": 0.5, \"B\": 1.0, \"C\": 0.4, \"D\": 0.6, \"E\": 0.65},\n    \"volume\":   {\"A\": 0.65*1*1, \"B\": 0.2*2*2, \"C\": 0.35*2*1, \"D\": 0.2*3*1, \"E\": 0.15*5*1},\n    \"container_max_weight\": 60.0,\n    \"container_min_weight\": 18.0,\n    \"container_volume\": 15.5*2.8*2.8,\n    \"min_D_per_container\": 12,\n    \"upper_containers\": 12,\n}\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.I = pyo.Set(initialize=d[\"goods\"])\n    m.J = pyo.RangeSet(1, d[\"upper_containers\"])\n\n    m.y = pyo.Var(m.J, within=pyo.Binary)\n    m.x = pyo.Var(m.I, m.J, within=pyo.NonNegativeIntegers)\n    m.z = pyo.Var(m.J, within=pyo.Binary)  # z[j] = 1 iff container j loads any A\n\n    m.obj = pyo.Objective(expr=sum(m.y[j] for j in m.J), sense=pyo.minimize)\n\n    def total_qty_rule(m, i):\n        return sum(m.x[i, j] for j in m.J) == d[\"quantity\"][i]\n    m.total_qty = pyo.Constraint(m.I, rule=total_qty_rule)\n\n    def weight_up_rule(m, j):\n        return sum(d[\"weight\"][i] * m.x[i, j] for i in m.I) <= d[\"container_max_weight\"] * m.y[j]\n    m.weight_up = pyo.Constraint(m.J, rule=weight_up_rule)\n\n    def weight_low_rule(m, j):\n        return sum(d[\"weight\"][i] * m.x[i, j] for i in m.I) >= d[\"container_min_weight\"] * m.y[j]\n    m.weight_low = pyo.Constraint(m.J, rule=weight_low_rule)\n\n    def volume_rule(m, j):\n        return sum(d[\"volume\"][i] * m.x[i, j] for i in m.I) <= d[\"container_volume\"]\n    m.volume = pyo.Constraint(m.J, rule=volume_rule)\n\n    def x_link_rule(m, i, j):\n        return m.x[i, j] <= d[\"quantity\"][i] * m.y[j]\n    m.x_link = pyo.Constraint(m.I, m.J, rule=x_link_rule)\n\n    def d_min_rule(m, j):\n        return m.x[\"D\", j] >= d[\"min_D_per_container\"] * m.y[j]\n    m.d_min = pyo.Constraint(m.J, rule=d_min_rule)\n\n    bigA = d[\"quantity\"][\"A\"]\n    def a_imply_c_1_rule(m, j):\n        return m.x[\"A\", j] <= bigA * m.z[j]\n    m.a_imply_c_1 = pyo.Constraint(m.J, rule=a_imply_c_1_rule)\n\n    def a_imply_c_2_rule(m, j):\n        return m.x[\"C\", j] >= m.z[j]\n    m.a_imply_c_2 = pyo.Constraint(m.J, rule=a_imply_c_2_rule)\n\n    return m\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1569,
+      "completion_tokens": 3402
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 13.428786039352417,
+   "position": 3,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # containers\n    \"n_max\": 22,                      # safe upper bound on number of containers\n    \"max_weight\": 60.0,               # tons per container\n    \"min_weight\": 18.0,               # tons per used container\n    \"cont_len\": 15.5,\n    \"cont_wid\": 2.8,\n    \"cont_hgt\": 2.8,\n    # goods types\n    \"goods\": [\"A\", \"B\", \"C\", \"D\", \"E\"],\n    \"inventory\": {\"A\": 120, \"B\": 90, \"C\": 300, \"D\": 90, \"E\": 120},\n    \"weight\":    {\"A\": 0.5, \"B\": 1.0, \"C\": 0.4, \"D\": 0.6, \"E\": 0.65},\n    # unit dimensions (length, width, height) in meters\n    \"dims\": {\n        \"A\": (0.65, 1.0, 1.0),\n        \"B\": (0.2, 2.0, 2.0),\n        \"C\": (0.35, 2.0, 1.0),\n        \"D\": (0.2, 3.0, 1.0),\n        \"E\": (0.15, 5.0, 1.0),\n    },\n    \"min_D_per_container\": 12,        # each used container needs >= 12 units of D\n    \"bigM\": 120,                      # >= max inventory of A\n    \"a_type\": \"A\",\n    \"c_type\": \"C\",\n    \"d_type\": \"D\",\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    goods = d[\"goods\"]\n    n_max = d[\"n_max\"]\n    cont_vol = d[\"cont_len\"] * d[\"cont_wid\"] * d[\"cont_hgt\"]\n    vol = {g: d[\"dims\"][g][0] * d[\"dims\"][g][1] * d[\"dims\"][g][2] for g in goods}\n\n    m = pyo.ConcreteModel()\n\n    m.I = pyo.Set(initialize=goods)\n    m.J = pyo.RangeSet(1, n_max)\n\n    # x[i,j]: integer units of good i in container j\n    m.x = pyo.Var(m.I, m.J, within=pyo.NonNegativeIntegers)\n\n    # y[j]: 1 if container j is used\n    m.y = pyo.Var(m.J, within=pyo.Binary)\n\n    # t[j]: 1 if container j contains any A\n    m.t = pyo.Var(m.J, within=pyo.Binary)\n\n    # Objective: minimize number of containers used\n    def obj_rule(mm):\n        return sum(mm.y[j] for j in mm.J)\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # 1) Each good type fully loaded (inventory exactly used)\n    def inv_rule(mm, i):\n        return sum(mm.x[i, j] for j in mm.J) == d[\"inventory\"][i]\n    m.inv = pyo.Constraint(m.I, rule=inv_rule)\n\n    # 2) Weight capacity of each used container (<=)\n    def cap_w_rule(mm, j):\n        return sum(d[\"weight\"][i] * mm.x[i, j] for i in mm.I) <= d[\"max_weight\"] * mm.y[j]\n    m.cap_w = pyo.Constraint(m.J, rule=cap_w_rule)\n\n    # 3) Volume capacity of each used container (<=)\n    def cap_v_rule(mm, j):\n        return sum(vol[i] * mm.x[i, j] for i in mm.I) <= cont_vol * mm.y[j]\n    m.cap_v = pyo.Constraint(m.J, rule=cap_v_rule)\n\n    # 4) Minimum weight of each used container (>=)\n    def min_w_rule(mm, j):\n        return sum(d[\"weight\"][i] * mm.x[i, j] for i in mm.I) >= d[\"min_weight\"] * mm.y[j]\n    m.min_w = pyo.Constraint(m.J, rule=min_w_rule)\n\n    # 5) A => C: if any A in j then t[j]=1; x[A,j] <= M*t[j]\n    a = d[\"a_type\"]\n    c = d[\"c_type\"]\n    dst = d[\"d_type\"]\n\n    def a_link_rule(mm, j):\n        return mm.x[a, j] <= d[\"bigM\"] * mm.t[j]\n    m.a_link = pyo.Constraint(m.J, rule=a_link_rule)\n\n    # 6) If t[j]=1 then at least 1 unit of C in container j\n    def c_req_rule(mm, j):\n        return mm.x[c, j] >= mm.t[j]\n    m.c_req = pyo.Constraint(m.J, rule=c_req_rule)\n\n    # 7) At least 12 units of D in each used container (>=)\n    def d_req_rule(mm, j):\n        return mm.x[dst, j] >= d[\"min_D_per_container\"] * mm.y[j]\n    m.d_req = pyo.Constraint(m.J, rule=d_req_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1579,
+      "completion_tokens": 2031
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.209818840026855,
+   "position": 4,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Problem data\n# ---------------------------------------------------------------------------\nDATA = {\n    # Container limits\n    \"max_weight\": 60.0,          # tons per container (upper bound)\n    \"min_weight\": 18.0,          # tons per container (lower bound)\n    \"container_length\": 15.5,    # m\n    \"container_width\": 2.8,      # m\n    \"container_height\": 2.8,     # m\n\n    # Goods types\n    \"goods\": [\"A\", \"B\", \"C\", \"D\", \"E\"],\n\n    # Available units of each good\n    \"units\": {\"A\": 120, \"B\": 90, \"C\": 300, \"D\": 90, \"E\": 120},\n\n    # Weight per unit (tons)\n    \"weight\": {\"A\": 0.5, \"B\": 1.0, \"C\": 0.4, \"D\": 0.6, \"E\": 0.65},\n\n    # Volume per unit (m^3) = product of dimensions\n    \"volume\": {\n        \"A\": 0.65 * 1 * 1,\n        \"B\": 0.2 * 2 * 2,\n        \"C\": 0.35 * 2 * 1,\n        \"D\": 0.2 * 3 * 1,\n        \"E\": 0.15 * 5 * 1,\n    },\n\n    # Minimum units of D per container\n    \"min_D_per_container\": 12,\n\n    # Big-M for linking constraints\n    \"bigM\": 1000.0,\n\n    # Upper bound on number of containers (safe over-estimate)\n    \"max_containers\": 60,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    goods = d[\"goods\"]\n    max_cont = d[\"max_containers\"]\n\n    model = pyo.ConcreteModel()\n\n    # ------------------------------------------------------------------\n    # Sets\n    # ------------------------------------------------------------------\n    model.G = pyo.Set(initialize=goods)\n    model.K = pyo.RangeSet(1, max_cont)\n\n    # ------------------------------------------------------------------\n    # Decision variables\n    # ------------------------------------------------------------------\n    # x[g, k] : units of good g loaded into container k\n    model.x = pyo.Var(\n        model.G, model.K,\n        domain=pyo.NonNegativeIntegers,\n        bounds=(0, None),\n    )\n\n    # y[k] : 1 if container k is used\n    model.y = pyo.Var(model.K, domain=pyo.Binary)\n\n    # ------------------------------------------------------------------\n    # Objective: minimise number of containers used\n    # ------------------------------------------------------------------\n    def obj_rule(m):\n        return sum(m.y[k] for k in m.K)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ------------------------------------------------------------------\n    # Constraint 1: all units of each good must be shipped\n    # ------------------------------------------------------------------\n    def demand_rule(m, g):\n        return sum(m.x[g, k] for k in m.K) == d[\"units\"][g]\n\n    model.demand = pyo.Constraint(model.G, rule=demand_rule)\n\n    # ------------------------------------------------------------------\n    # Constraint 2: container weight upper bound (60 tons)\n    # ------------------------------------------------------------------\n    def max_weight_rule(m, k):\n        return sum(d[\"weight\"][g] * m.x[g, k] for g in m.G) <= d[\"max_weight\"] * m.y[k]\n\n    model.max_weight = pyo.Constraint(model.K, rule=max_weight_rule)\n\n    # ------------------------------------------------------------------\n    # Constraint 3: container weight lower bound (18 tons) when used\n    # ------------------------------------------------------------------\n    def min_weight_rule(m, k):\n        return sum(d[\"weight\"][g] * m.x[g, k] for g in m.G) >= d[\"min_weight\"] * m.y[k]\n\n    model.min_weight = pyo.Constraint(model.K, rule=min_weight_rule)\n\n    # ------------------------------------------------------------------\n    # Constraint 4: container volume capacity\n    # ------------------------------------------------------------------\n    container_vol = d[\"container_length\"] * d[\"container_width\"] * d[\"container_height\"]\n\n    def volume_rule(m, k):\n        return sum(d[\"volume\"][g] * m.x[g, k] for g in m.G) <= container_vol * m.y[k]\n\n    model.volume = pyo.Constraint(model.K, rule=volume_rule)\n\n    # ------------------------------------------------------------------\n    # Constraint 5: at least 12 units of D per used container\n    # ------------------------------------------------------------------\n    def min_D_rule(m, k):\n        return m.x[\"D\", k] >= d[\"min_D_per_container\"] * m.y[k]\n\n    model.min_D = pyo.Constraint(model.K, rule=min_D_rule)\n\n    # ------------------------------------------------------------------\n    # Constraint 6: if A is loaded in container k, then C must also be loaded\n    #   x[A,k] > 0  =>  x[C,k] >= 1\n    # Linearised: x[A,k] <= M * x[C,k]\n    # ------------------------------------------------------------------\n    def A_implies_C_rule(m, k):\n        return m.x[\"A\", k] <= d[\"bigM\"] * m.x[\"C\", k]\n\n    model.A_implies_C = pyo.Constraint(model.K, rule=A_implies_C_rule)\n\n    # ------------------------------------------------------------------\n    # Constraint 7: symmetry breaking - container k+1 used only if k used\n    # ------------------------------------------------------------------\n    def symmetry_rule(m, k):\n        if k == max_cont:\n            return pyo.Constraint.Skip\n        return m.y[k + 1] <= m.y[k]\n\n    model.symmetry = pyo.Constraint(model.K, rule=symmetry_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1583,
+      "completion_tokens": 5999
+     },
+     "finish_reason": "length"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1633,
+      "completion_tokens": 1285
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 51.35931086540222,
+   "position": 5,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant used by the model lives here.\n# ---------------------------------------------------------------------------\nDATA = {\n    # Goods types\n    \"goods\": [\"A\", \"B\", \"C\", \"D\", \"E\"],\n\n    # Inventory (units available) for A, B, C, D, E\n    \"inventory\": {\"A\": 120, \"B\": 90, \"C\": 300, \"D\": 90, \"E\": 120},\n\n    # Weight per unit (tons) for A, B, C, D, E\n    \"weight\": {\"A\": 0.5, \"B\": 1.0, \"C\": 0.4, \"D\": 0.6, \"E\": 0.65},\n\n    # Volume per unit (cubic metres), computed from the given dimensions:\n    #   A: 0.65*1*1, B: 0.2*2*2, C: 0.35*2*1, D: 0.2*3*1, E: 0.15*5*1\n    \"volume\": {\"A\": 0.65, \"B\": 0.80, \"C\": 0.70, \"D\": 0.60, \"E\": 0.75},\n\n    # Container limits\n    \"container_max_weight\": 60.0,   # tons\n    \"container_min_weight\": 18.0,   # tons (if a container is used)\n    \"container_length\": 15.5,       # metres\n    \"container_width\": 2.8,         # metres\n    \"container_height\": 2.8,        # metres\n\n    # Special packaging: whenever A is loaded, at least 1 unit of C must be\n    # loaded in the same container.\n    \"a_requires_c_units\": 1,\n\n    # Demand restriction: at least 12 units of D in each used container.\n    \"min_d_per_container\": 12,\n\n    # Upper bound on the number of candidate containers (safe over-estimate).\n    # Total weight / minimum container weight, rounded up, plus slack.\n    \"max_containers\": 40,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    goods = d[\"goods\"]\n    inv = d[\"inventory\"]\n    wt = d[\"weight\"]\n    vol = d[\"volume\"]\n\n    w_max = d[\"container_max_weight\"]\n    w_min = d[\"container_min_weight\"]\n    v_cap = d[\"container_length\"] * d[\"container_width\"] * d[\"container_height\"]\n\n    a_req_c = d[\"a_requires_c_units\"]\n    d_min = d[\"min_d_per_container\"]\n    n_cont = d[\"max_containers\"]\n\n    m = pyo.ConcreteModel()\n\n    # ------------------------------------------------------------------\n    # Sets\n    # ------------------------------------------------------------------\n    m.G = pyo.Set(initialize=goods, ordered=True)\n    m.J = pyo.RangeSet(0, n_cont - 1)\n\n    # ------------------------------------------------------------------\n    # Decision variables\n    # ------------------------------------------------------------------\n    # x[i, j] : units of good i loaded into container j\n    m.x = pyo.Var(m.G, m.J, within=pyo.NonNegativeIntegers)\n\n    # y[j] : 1 if container j is used, 0 otherwise\n    m.y = pyo.Var(m.J, within=pyo.Binary)\n\n    # ------------------------------------------------------------------\n    # Objective: minimise the number of containers used\n    # ------------------------------------------------------------------\n    def obj_rule(m):\n        return sum(m.y[j] for j in m.J)\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ------------------------------------------------------------------\n    # C1: every unit of every good must be loaded exactly once\n    # ------------------------------------------------------------------\n    def demand_rule(m, i):\n        return sum(m.x[i, j] for j in m.J) == inv[i]\n\n    m.demand = pyo.Constraint(m.G, rule=demand_rule)\n\n    # ------------------------------------------------------------------\n    # C2: container weight capacity (only for used containers)\n    # ------------------------------------------------------------------\n    def max_weight_rule(m, j):\n        return sum(wt[i] * m.x[i, j] for i in m.G) <= w_max * m.y[j]\n\n    m.max_weight = pyo.Constraint(m.J, rule=max_weight_rule)\n\n    # ------------------------------------------------------------------\n    # C3: minimum weight per used container\n    # ------------------------------------------------------------------\n    def min_weight_rule(m, j):\n        return sum(wt[i] * m.x[i, j] for i in m.G) >= w_min * m.y[j]\n\n    m.min_weight = pyo.Constraint(m.J, rule=min_weight_rule)\n\n    # ------------------------------------------------------------------\n    # C4: container volume capacity (only for used containers)\n    # ------------------------------------------------------------------\n    def volume_rule(m, j):\n        return sum(vol[i] * m.x[i, j] for i in m.G) <= v_cap * m.y[j]\n\n    m.volume = pyo.Constraint(m.J, rule=volume_rule)\n\n    # ------------------------------------------------------------------\n    # C5: packaging rule - if A is loaded in a container, at least\n    #     a_req_c units of C must be loaded in the same container.\n    #     Linearised with a big-M on the A quantity.\n    # ------------------------------------------------------------------\n    big_m_a = inv[\"A\"]\n\n    def a_requires_c_rule(m, j):\n        return m.x[\"C\", j] >= a_req_c * m.x[\"A\", j] / big_m_a\n\n    # The above is linear (constant coefficient), but to keep the\n    # \"at least one C per A\" intent in a clean MILP form we instead use\n    # an indicator-style big-M constraint:\n    #   x[A,j] <= big_m_a * z[j]   and   x[C,j] >= a_req_c * z[j]\n    # where z[j] is a binary that is 1 iff A is loaded in container j.\n    m.z = pyo.Var(m.J, within=pyo.Binary)\n\n    def a_link_rule(m, j):\n        return m.x[\"A\", j] <= big_m_a * m.z[j]\n\n    m.a_link = pyo.Constraint(m.J, rule=a_link_rule)\n\n    def c_link_rule(m, j):\n        return m.x[\"C\", j] >= a_req_c * m.z[j]\n\n    m.c_link = pyo.Constraint(m.J, rule=c_link_rule)\n\n    # ------------------------------------------------------------------\n    # C6: at least d_min units of D in each used container\n    # ------------------------------------------------------------------\n    def min_d_rule(m, j):\n        return m.x[\"D\", j] >= d_min * m.y[j]\n\n    m.min_d = pyo.Constraint(m.J, rule=min_d_rule)\n\n    # ------------------------------------------------------------------\n    # C7: symmetry breaking - container j can only be used if j-1 is used\n    # ------------------------------------------------------------------\n    def order_rule(m, j):\n        if j == 0:\n            return pyo.Constraint.Skip\n        return m.y[j] <= m.y[j - 1]\n\n    m.order = pyo.Constraint(m.J, rule=order_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1583,
+      "completion_tokens": 2959
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 4461,
+      "completion_tokens": 1601
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 27.610172033309937,
+   "position": 6,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # goods\n    \"goods\": [\"A\", \"B\", \"C\", \"D\", \"E\"],\n    # total units of each type available (must all be shipped)\n    \"units\": {\"A\": 120, \"B\": 90, \"C\": 300, \"D\": 90, \"E\": 120},\n    # tonnes per unit of each type\n    \"unit_weight\": {\"A\": 0.5, \"B\": 1.0, \"C\": 0.4, \"D\": 0.6, \"E\": 0.65},\n    # box dimensions (m) : (length, width, height)\n    \"dim\": {\n        \"A\": (0.65, 1.0, 1.0),\n        \"B\": (0.20, 2.0, 2.0),\n        \"C\": (0.35, 2.0, 1.0),\n        \"D\": (0.20, 3.0, 1.0),\n        \"E\": (0.15, 5.0, 1.0),\n    },\n    # container geometry (m)\n    \"L\": 15.5, \"W\": 2.8, \"H\": 2.8,\n    # weight rules (tonnes)\n    \"max_weight\": 60.0, \"min_weight_if_used\": 18.0,\n    # packaging rule: units of C per coupled unit A loaded\n    \"coupling_C_per_A\": 1.0,\n    # D rule\n    \"min_D_per_container\": 12,\n    # upper bound on containers\n    \"n_containers_upper\": 60,\n    # big-M for linking payload to container usage\n    \"bigM_y\": 10 ** 4,\n    # big-M for the A->C coupling\n    \"bigM_couple\": 10 ** 5,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    g = list(d[\"goods\"])\n    cnt_vol = d[\"L\"] * d[\"W\"] * d[\"H\"]\n    N = int(d[\"n_containers_upper\"])\n\n    model = pyo.ConcreteModel()\n\n    # -------- Sets --------\n    model.I = pyo.Set(initialize=g)\n    model.O = pyo.RangeSet(1, N)\n\n    I = model.I\n    O = model.O\n\n    # -------- Variables --------\n    model.y = pyo.Var(O, within=pyo.Binary, bounds=(0, 1))\n    model.n = pyo.Var(I, O, within=pyo.NonNegativeIntegers, bounds=(0, None))\n    model.p = pyo.Var(I, O, within=pyo.Binary, bounds=(0, 1))\n\n    # -------- Objective: minimise number of containers used --------\n    def rule_obj(m):\n        return sum(m.y[o] for o in m.O)\n    model.obj = pyo.Objective(rule=rule_obj, sense=pyo.minimize)\n\n    # 1) Max weight per container.\n    def rule_max_weight(m, o):\n        return sum(m.n[i, o] * d[\"unit_weight\"][i] for i in m.I) <= d[\"max_weight\"]\n    model.max_weight_flag = pyo.Constraint(O, rule=rule_max_weight)\n\n    # 2) A used container needs >= min weight (18 t); 0 if it is not used.\n    def rule_min_weight(m, o):\n        return sum(m.n[i, o] * d[\"unit_weight\"][i] for i in m.I) >= d[\"min_weight_if_used\"] * m.y[o]\n    model.min_weight_flag = pyo.Constraint(O, rule=rule_min_weight)\n\n    # 3) Volume capacity per container.\n    def rule_volume(m, o):\n        return sum(\n            m.n[i, o] * (d[\"dim\"][i][0] * d[\"dim\"][i][1] * d[\"dim\"][i][2])\n            for i in m.I\n        ) <= cnt_vol\n    model.volume_flag = pyo.Constraint(O, rule=rule_volume)\n\n    # 4) Any payload implies the container counts as used (link to binary y).\n    def rule_contain_load(m, o, i):\n        return m.n[i, o] <= d[\"bigM_y\"] * m.y[o]\n    model.contain_load_flag = pyo.Constraint(O, I, rule=rule_contain_load)\n\n    # 5) Ship exactly the full available inventory of each good.\n    def rule_ship_all(m, i):\n        return sum(m.n[i, o] for o in m.O) == d[\"units\"][i]\n    model.ship_all_flag = pyo.Constraint(I, rule=rule_ship_all)\n\n    # 6) At least 12 units of D per used container.\n    def rule_min_D(m, o):\n        return m.n[\"D\", o] >= d[\"min_D_per_container\"] * m.y[o]\n    model.min_D_flag = pyo.Constraint(O, rule=rule_min_D)\n\n    # --- Linearised if-then indicator: good i present in container o ---\n    def rule_present_ub(m, i, o):\n        return m.n[i, o] <= d[\"units\"][i] * m.p[i, o]\n    model.present_ub_flag = pyo.Constraint(I, O, rule=rule_present_ub)\n\n    def rule_present_lb(m, i, o):\n        return m.n[i, o] >= m.p[i, o]\n    model.present_lb_flag = pyo.Constraint(I, O, rule=rule_present_lb)\n\n    # 7) If any A is loaded in o, at least `coupling` units of C must be loaded.\n    def rule_A_needs_C(m, o):\n        return d[\"coupling_C_per_A\"] - m.n[\"C\", o] <= d[\"bigM_couple\"] * (1 - m.p[\"A\", o])\n    model.A_needs_C_flag = pyo.Constraint(O, rule=rule_A_needs_C)\n\n    # 8) Per-container cap on each good type based on container length.\n    def rule_pack_cap_per_length(m, i, o):\n        return m.n[i, o] <= (d[\"L\"] / max(d[\"dim\"][i]))\n    model.pack_cap_flag = pyo.Constraint(I, O, rule=rule_pack_cap_per_length)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1569,
+      "completion_tokens": 2595
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3597,
+      "completion_tokens": 1452
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3134,
+      "completion_tokens": 1452
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 21.97165536880493,
+   "position": 7,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Every numeric constant from the problem statement lives here.\n# ---------------------------------------------------------------------------\nDATA = {\n    # goods labels\n    \"goods\": [\"A\", \"B\", \"C\", \"D\", \"E\"],\n    # available units of each good\n    \"qty\": {\"A\": 120, \"B\": 90, \"C\": 300, \"D\": 90, \"E\": 120},\n    # weight per unit (tons)\n    \"weight\": {\"A\": 0.5, \"B\": 1.0, \"C\": 0.4, \"D\": 0.6, \"E\": 0.65},\n    # dimensions (length, width, height) meters per unit\n    \"dim\": {\n        \"A\": (0.65, 1.0, 1.0),\n        \"B\": (0.2, 2.0, 2.0),\n        \"C\": (0.35, 2.0, 1.0),\n        \"D\": (0.2, 3.0, 1.0),\n        \"E\": (0.15, 5.0, 1.0),\n    },\n    # container limits\n    \"cont_len\": 15.5,\n    \"cont_wid\": 2.8,\n    \"cont_hgt\": 2.8,\n    \"max_weight\": 60.0,   # tons per container\n    \"min_weight\": 18.0,   # tons per container (if used)\n    # packing rule: at least this many D units per used container\n    \"min_D_per_cont\": 12,\n    # big-M for \"container has any A\" linking (max possible A per container)\n    \"M_A\": 120,\n}\n\n# Derived data (kept here so the model body has no magic numbers)\n_q = DATA[\"qty\"]\n_total_weight = sum(DATA[\"weight\"][g] * _q[g] for g in DATA[\"goods\"])\n# Safe upper bound on containers: limited by min load per container.\n_num_containers = int(_total_weight / DATA[\"min_weight\"]) + 1\n\n\ndef build_model(data=None):\n    d = data or DATA\n    goods = d[\"goods\"]\n    n_cont = _num_containers  # derived from DATA, not a magic number\n\n    vol_cont = d[\"cont_len\"] * d[\"cont_wid\"] * d[\"cont_hgt\"]\n    unit_vol = {\n        g: d[\"dim\"][g][0] * d[\"dim\"][g][1] * d[\"dim\"][g][2] for g in goods\n    }\n\n    model = pyo.ConcreteModel()\n\n    # ---- Sets -------------------------------------------------------------\n    model.I = pyo.Set(initialize=goods)              # goods types\n    model.J = pyo.RangeSet(1, n_cont)                # candidate containers\n\n    # ---- Variables --------------------------------------------------------\n    # integer units of each good in each container\n    model.x = pyo.Var(model.I, model.J,\n                      domain=pyo.NonNegativeIntegers)\n    # container j is used\n    model.y = pyo.Var(model.J, domain=pyo.Binary)\n    # container j carries at least one unit of good A\n    model.z = pyo.Var(model.J, domain=pyo.Binary)\n\n    # ---- Objective: minimise number of containers used --------------------\n    model.obj = pyo.Objective(\n        expr=sum(model.y[j] for j in model.J),\n        sense=pyo.minimize,\n    )\n\n    # ---- Constraints ------------------------------------------------------\n\n    # (a) Meet every good's required quantity  (== demand)\n    def demand_rule(m, i):\n        return sum(m.x[i, j] for j in m.J) == d[\"qty\"][i]\n    model.demand = pyo.Constraint(model.I, rule=demand_rule)\n\n    # (b) Weight capacity links to container usage  (<=)\n    def weight_rule(m, j):\n        return (sum(d[\"weight\"][i] * m.x[i, j] for i in m.I)\n                <= d[\"max_weight\"] * m.y[j])\n    model.weight_cap = pyo.Constraint(model.J, rule=weight_rule)\n\n    # (c) Minimum load whenever a container is used  (>=)\n    def minload_rule(m, j):\n        return (sum(d[\"weight\"][i] * m.x[i, j] for i in m.I)\n                >= d[\"min_weight\"] * m.y[j])\n    model.min_load = pyo.Constraint(model.J, rule=minload_rule)\n\n    # (d) Volume capacity links to container usage  (<=)\n    def volume_rule(m, j):\n        return (sum(unit_vol[i] * m.x[i, j] for i in m.I)\n                <= vol_cont * m.y[j])\n    model.volume_cap = pyo.Constraint(model.J, rule=volume_rule)\n\n    # (e) At least min_D_per_cont units of D in each used container  (>=)\n    def d_rule(m, j):\n        return m.x[\"D\", j] >= d[\"min_D_per_cont\"] * m.y[j]\n    model.min_D = pyo.Constraint(model.J, rule=d_rule)\n\n    # (f) A -> C linking:  x[A,j] <= M_A * z[j]   (if any A, z forced on)\n    def a_link_rule(m, j):\n        return m.x[\"A\", j] <= d[\"M_A\"] * m.z[j]\n    model.a_link = pyo.Constraint(model.J, rule=a_link_rule)\n\n    #     if z[j] on, at least 1 unit of C in container j\n    def c_link_rule(m, j):\n        return m.x[\"C\", j] >= m.z[j]\n    model.c_link = pyo.Constraint(model.J, rule=c_link_rule)\n\n    #     z[j] can only be on if container j is used\n    def z_use_rule(m, j):\n        return m.z[j] <= m.y[j]\n    model.z_use = pyo.Constraint(model.J, rule=z_use_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1579,
+      "completion_tokens": 1739
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.522710800170898,
+   "position": 8,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"goods\": [\"A\", \"B\", \"C\", \"D\", \"E\"],\n    \"inventory\": {\"A\": 120, \"B\": 90, \"C\": 300, \"D\": 90, \"E\": 120},\n    \"weight\": {\"A\": 0.5, \"B\": 1.0, \"C\": 0.4, \"D\": 0.6, \"E\": 0.65},\n    # dimensions given as L*W*H (meters)\n    \"dims\": {\n        \"A\": (0.65, 1.0, 1.0),\n        \"B\": (0.2, 2.0, 2.0),\n        \"C\": (0.35, 2.0, 1.0),\n        \"D\": (0.2, 3.0, 1.0),\n        \"E\": (0.15, 5.0, 1.0),\n    },\n    \"container_length\": 15.5,\n    \"container_width\": 2.8,\n    \"container_height\": 2.8,\n    \"max_weight_per_container\": 60.0,\n    \"min_weight_per_container\": 18.0,\n    \"min_D_per_container\": 12,\n    # upper bound on number of containers (safe over-estimate)\n    \"max_containers\": 60,\n    # big-M for A -> C linking (max units of A could be inventory A)\n    \"bigM_A\": 120,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    goods = d[\"goods\"]\n    n_containers = d[\"max_containers\"]\n\n    container_volume = (\n        d[\"container_length\"] * d[\"container_width\"] * d[\"container_height\"]\n    )\n\n    model = pyo.ConcreteModel()\n\n    model.G = pyo.Set(initialize=goods)\n    model.K = pyo.RangeSet(1, n_containers)\n\n    model.use_container = pyo.Var(model.K, within=pyo.Binary)\n    model.qty = pyo.Var(model.G, model.K, within=pyo.NonNegativeIntegers)\n\n    # Objective: minimise number of containers used\n    def obj_rule(m):\n        return sum(m.use_container[k] for k in m.K)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # (a) max weight per container\n    def max_weight_rule(m, k):\n        return sum(d[\"weight\"][g] * m.qty[g, k] for g in m.G) <= \\\n            d[\"max_weight_per_container\"] * m.use_container[k]\n    model.max_weight = pyo.Constraint(model.K, rule=max_weight_rule)\n\n    # (b) min weight per used container\n    def min_weight_rule(m, k):\n        return sum(d[\"weight\"][g] * m.qty[g, k] for g in m.G) >= \\\n            d[\"min_weight_per_container\"] * m.use_container[k]\n    model.min_weight = pyo.Constraint(model.K, rule=min_weight_rule)\n\n    # (c) max volume per container\n    def max_volume_rule(m, k):\n        return sum(\n            (d[\"dims\"][g][0] * d[\"dims\"][g][1] * d[\"dims\"][g][2]) * m.qty[g, k]\n            for g in m.G\n        ) <= container_volume * m.use_container[k]\n    model.max_volume = pyo.Constraint(model.K, rule=max_volume_rule)\n\n    # (d) ship all inventory\n    def inventory_rule(m, g):\n        return sum(m.qty[g, k] for k in m.K) == d[\"inventory\"][g]\n    model.inventory = pyo.Constraint(model.G, rule=inventory_rule)\n\n    # (e) if A loaded in container k, at least 1 unit of C in k\n    def a_implies_c_rule(m, k):\n        return m.qty[\"A\", k] <= d[\"bigM_A\"] * m.qty[\"C\", k]\n    model.a_implies_c = pyo.Constraint(model.K, rule=a_implies_c_rule)\n\n    # (f) each used container has at least min_D_per_container units of D\n    def min_d_rule(m, k):\n        return m.qty[\"D\", k] >= d[\"min_D_per_container\"] * m.use_container[k]\n    model.min_d = pyo.Constraint(model.K, rule=min_d_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1563,
+      "completion_tokens": 1432
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "reserved_pyomo_component_name",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2714,
+      "completion_tokens": 1029
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "reserved_pyomo_component_name",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2714,
+      "completion_tokens": 1037
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 13.825715780258179,
+   "position": 9,
+   "recipe_index": 5
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T10:00:30"
+}

@@ -1,0 +1,269 @@
+{
+ "pid": "industryor_0100",
+ "question": "A certain shoe store employs 5 full-time salespeople and 4 part-time salespeople. Their working hours and salary information are shown in Table 3.3.\n\nTable 3.3\n\n|  | Monthly Working Hours | Sales Volume (pairs/hour) | Salary (CNY/hour) | Overtime Pay (CNY/hour) |\n| :---: | :---: | :---: | :---: | :---: |\n| Full-time | 160 | 5 | 1 | 1.5 |\n| Part-time | 80 | 2 | 0.6 | 0.7 |\n\nA profit of 0.5 CNY is made for each pair of shoes sold. The store has the following objectives:\n\n$p_{1}$: Monthly sales volume reaches 5500 pairs;\n$p_{2}$: Full-time salespeople do not exceed 100 hours of overtime;\n\n$p_{3}$: All salespeople are fully employed, but full-time employees should be given double consideration;\n\n$p_{4}$: Minimize overtime hours as much as possible.\n\nTry to establish an objective programming model for this problem.",
+ "templates": [
+  "Production Planning / Product Mix",
+  "Workforce / Shift Scheduling"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   xF : overtime hours assigned to each full-time salesperson (indexed by F)\n#        domain: NonNegativeReals, bounds (0, OT_max)\n#   xP : overtime hours assigned to each part-time salesperson (indexed by P)\n#        domain: NonNegativeReals, bounds (0, OT_max)\n#   d1 : negative deviation from the sales-volume goal p1 (shortfall)\n#        domain: NonNegativeReals\n#   d2 : positive deviation from the full-time overtime ceiling goal p2 (excess)\n#        domain: NonNegativeReals\n#   d3F: under-employment deviation for full-time staff (goal p3)\n#        domain: NonNegativeReals\n#   d3P: under-employment deviation for part-time staff (goal p3)\n#        domain: NonNegativeReals\n#   d4 : total overtime hours (goal p4, to be minimised)\n#        domain: NonNegativeReals\n#\n# Objective (in words):\n#   Lexicographic-style weighted goal program.  Minimise the weighted sum of\n#   the unwanted deviations:\n#     - shortfall d1 below the 5500-pair sales target          (p1)\n#     - excess d2 of full-time overtime above 100 hours        (p2)\n#     - under-employment d3F, d3P, with full-time weighted\n#       double relative to part-time                           (p3)\n#     - total overtime hours d4                                (p4)\n#\n# Constraints (numbered, with source sentence):\n#   (1) Sales volume achieved = regular + overtime output must meet the\n#       target, with d1 absorbing any shortfall.                  [p1]\n#   (2) Full-time overtime total minus d2 must not exceed 100 h.  [p2]\n#   (3) Full-time staff must reach their standard monthly hours;\n#       d3F absorbs any shortfall.                                [p3]\n#   (4) Part-time staff must reach their standard monthly hours;\n#       d3P absorbs any shortfall.                                [p3]\n#   (5) d4 equals the total overtime hours worked.                [p4]\n# ---------------------------------------------------------------------------\n\nDATA = {\n    # index sets\n    \"full_ids\": [1, 2, 3, 4, 5],   # 5 full-time salespeople\n    \"part_ids\": [1, 2, 3, 4],      # 4 part-time salespeople\n\n    # standard monthly hours\n    \"full_hours\": 160,             # hours/month, full-time\n    \"part_hours\": 80,              # hours/month, part-time\n\n    # sales productivity (pairs per hour)\n    \"full_sales_rate\": 5,\n    \"part_sales_rate\": 2,\n\n    # salary (CNY per hour)\n    \"full_salary\": 1.0,\n    \"part_salary\": 0.6,\n\n    # overtime pay (CNY per hour)\n    \"full_ot_pay\": 1.5,\n    \"part_ot_pay\": 0.7,\n\n    # profit per pair sold (CNY)\n    \"margin_per_pair\": 0.5,\n\n    # goal targets\n    \"sales_target\": 5500,          # p1: monthly sales volume target (pairs)\n    \"full_ot_ceiling\": 100,        # p2: full-time overtime ceiling (hours)\n\n    # goal-programming weights\n    \"w1\": 1.0,                     # weight on sales shortfall\n    \"w2\": 1.0,                     # weight on full-time overtime excess\n    \"w3_full\": 2.0,                # weight on full-time under-employment (double)\n    \"w3_part\": 1.0,                # weight on part-time under-employment\n    \"w4\": 1.0,                     # weight on total overtime hours\n\n    # big-M for overtime bounds (generous upper limit on overtime hours)\n    \"ot_max\": 1000,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ---- sets -------------------------------------------------------------\n    model.F = pyo.Set(initialize=d[\"full_ids\"])\n    model.P = pyo.Set(initialize=d[\"part_ids\"])\n\n    # ---- decision variables ----------------------------------------------\n    model.xF = pyo.Var(\n        model.F,\n        domain=pyo.NonNegativeReals,\n        bounds=(0, d[\"ot_max\"]),\n    )\n    model.xP = pyo.Var(\n        model.P,\n        domain=pyo.NonNegativeReals,\n        bounds=(0, d[\"ot_max\"]),\n    )\n    model.d1 = pyo.Var(domain=pyo.NonNegativeReals)\n    model.d2 = pyo.Var(domain=pyo.NonNegativeReals)\n    model.d3F = pyo.Var(domain=pyo.NonNegativeReals)\n    model.d3P = pyo.Var(domain=pyo.NonNegativeReals)\n    model.d4 = pyo.Var(domain=pyo.NonNegativeReals)\n\n    # ---- objective --------------------------------------------------------\n    model.obj = pyo.Objective(\n        expr=(\n            d[\"w1\"] * model.d1\n            + d[\"w2\"] * model.d2\n            + d[\"w3_full\"] * model.d3F\n            + d[\"w3_part\"] * model.d3P\n            + d[\"w4\"] * model.d4\n        ),\n        sense=pyo.minimize,\n    )\n\n    # ---- constraints ------------------------------------------------------\n\n    # (1) sales volume target with shortfall d1\n    def sales_rule(m):\n        regular = (\n            len(d[\"full_ids\"]) * d[\"full_hours\"] * d[\"full_sales_rate\"]\n            + len(d[\"part_ids\"]) * d[\"part_hours\"] * d[\"part_sales_rate\"]\n        )\n        overtime = (\n            d[\"full_sales_rate\"] * sum(m.xF[i] for i in m.F)\n            + d[\"part_sales_rate\"] * sum(m.xP[j] for j in m.P)\n        )\n        return regular + overtime + m.d1 >= d[\"sales_target\"]\n\n    model.sales_goal = pyo.Constraint(rule=sales_rule)\n\n    # (2) full-time overtime ceiling with excess d2\n    def full_ot_rule(m):\n        return sum(m.xF[i] for i in m.F) - m.d2 <= d[\"full_ot_ceiling\"]\n\n    model.full_ot_goal = pyo.Constraint(rule=full_ot_rule)\n\n    # (3) full-time full employment with shortfall d3F\n    def full_emp_rule(m):\n        return (\n            len(d[\"full_ids\"]) * d[\"full_hours\"]\n            + sum(m.xF[i] for i in m.F)\n            + m.d3F\n            >= len(d[\"full_ids\"]) * d[\"full_hours\"]\n        )\n\n    model.full_emp_goal = pyo.Constraint(rule=full_emp_rule)\n\n    # (4) part-time full employment with shortfall d3P\n    def part_emp_rule(m):\n        return (\n            len(d[\"part_ids\"]) * d[\"part_hours\"]\n            + sum(m.xP[j] for j in m.P)\n            + m.d3P\n            >= len(d[\"part_ids\"]) * d[\"part_hours\"]\n        )\n\n    model.part_emp_goal = pyo.Constraint(rule=part_emp_rule)\n\n    # (5) total overtime definition\n    def total_ot_rule(m):\n        return m.d4 == sum(m.xF[i] for i in m.F) + sum(m.xP[j] for j in m.P)\n\n    model.total_ot_def = pyo.Constraint(rule=total_ot_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1217,
+      "completion_tokens": 3757
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1429,
+      "completion_tokens": 1758
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 37.06612038612366,
+   "position": 0,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"types\": [\"full_time\", \"part_time\"],\n    \"num_workers\": {\"full_time\": 5, \"part_time\": 4},\n    \"monthly_hours\": {\"full_time\": 160, \"part_time\": 80},\n    \"sales_per_hour\": {\"full_time\": 5, \"part_time\": 2},\n    \"salary_per_hour\": {\"full_time\": 1.0, \"part_time\": 0.6},\n    \"overtime_pay_per_hour\": {\"full_time\": 1.5, \"part_time\": 0.7},\n    \"profit_per_pair\": 0.5,\n    \"sales_target\": 5500,\n    \"ft_overtime_cap\": 100.0,\n    # priority weights (objective programming)\n    \"w_sales_neg\": 1000.0,\n    \"w_sales_pos\": 0.0,\n    \"w_ft_over\": 500.0,\n    \"w_full_ft\": 100.0,\n    \"w_full_pt\": 50.0,\n    \"w_overtime\": 1.0,\n    \"bigM_sales\": 20000.0,\n    \"bigM_overtime\": 2000.0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    T = d[\"types\"]\n\n    model = pyo.ConcreteModel()\n    model.T = pyo.Set(initialize=T)\n\n    # Decision variables\n    def work_ub(m, t):\n        return (0.0, float(d[\"num_workers\"][t] * d[\"monthly_hours\"][t]))\n\n    def work_lb(m, t):\n        return (0.0, float(d[\"num_workers\"][t] * d[\"monthly_hours\"][t]))\n\n    model.work = pyo.Var(model.T, bounds=work_lb, within=pyo.NonNegativeReals)\n\n    def over_ub(m, t):\n        return (0.0, d[\"bigM_overtime\"])\n\n    model.over = pyo.Var(model.T, bounds=over_ub, within=pyo.NonNegativeReals)\n\n    # Sales deviation variables\n    model.dev_sales_neg = pyo.Var(bounds=(0.0, d[\"bigM_sales\"]), within=pyo.NonNegativeReals)\n    model.dev_sales_pos = pyo.Var(bounds=(0.0, d[\"bigM_sales\"]), within=pyo.NonNegativeReals)\n\n    # Full-time overtime excess deviation\n    model.dev_ft_over = pyo.Var(bounds=(0.0, d[\"bigM_overtime\"]), within=pyo.NonNegativeReals)\n\n    # Total monthly sales volume (pairs)\n    def savexpression(m):\n        return sum(\n            d[\"num_workers\"][t] * d[\"sales_per_hour\"][t] * (m.work[t] + m.over[t])\n            for t in m.T\n        )\n\n    model.sales_expr = pyo.Expression(rule=savexpression)\n\n    # Goal p1: monthly sales reach the target\n    def sales_balance_rule(m):\n        return m.sales_expr + m.dev_sales_neg - m.dev_sales_pos == d[\"sales_target\"]\n\n    model.sales_balance = pyo.Constraint(rule=sales_balance_rule)\n\n    # Goal p2: full-time overtime does not exceed the cap\n    def ft_overtime_rule(m):\n        return m.over[\"full_time\"] - m.dev_ft_over <= d[\"ft_overtime_cap\"]\n\n    model.ft_overtime_cap = pyo.Constraint(rule=ft_overtime_rule)\n\n    # Goal p3: all salespeople fully employed, with full-time weighted double\n    def full_employment_rule(m, t):\n        target_hours = d[\"num_workers\"][t] * d[\"monthly_hours\"][t]\n        return m.work[t] + m.over[t] >= target_hours\n\n    model.full_employment = pyo.Constraint(model.T, rule=full_employment_rule)\n\n    # Objective: weighted deviation minimisation (objective programming)\n    def obj_rule(m):\n        sales_term = (\n            d[\"w_sales_neg\"] * m.dev_sales_neg\n            + d[\"w_sales_pos\"] * m.dev_sales_pos\n        )\n        ft_term = d[\"w_ft_over\"] * m.dev_ft_over\n        full_term = (\n            d[\"w_full_ft\"] * m.work[\"full_time\"]\n            + d[\"w_full_pt\"] * m.work[\"part_time\"]\n        )\n        over_term = d[\"w_overtime\"] * sum(m.over[t] for t in m.T)\n        return sales_term + ft_term + full_term + over_term\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1203,
+      "completion_tokens": 1447
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.670244216918945,
+   "position": 1,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"types\": [\"full\", \"part\"],\n\n    # head-count per type\n    \"count_full\": 5,\n    \"count_part\": 4,\n\n    # monthly regular hours per person\n    \"hours_full\": 160,\n    \"hours_part\": 80,\n\n    # sales volume (pairs per hour) per type\n    \"rate_full\": 5,\n    \"rate_part\": 2,\n\n    # regular salary (CNY/hour)\n    \"salary_full\": 1.0,\n    \"salary_part\": 0.6,\n\n    # overtime pay (CNY/hour)\n    \"otpay_full\": 1.5,\n    \"otpay_part\": 0.7,\n\n    # profit per pair of shoes (CNY)\n    \"profit_per_pair\": 0.5,\n\n    # goal 1: desired monthly sales\n    \"goal_sales\": 5500,\n    # goal 2: cap on full-time overtime (hours, total across full-timers)\n    \"goal_ft_ot\": 100.0,\n\n    # goal-programming weights (priorities)\n    \"w_sales\": 100.0,\n    \"w_ft_ot\": 50.0,\n    \"w_under_full\": 10.0,\n    \"w_under_part\": 5.0,\n    \"w_ot_total\": 1.0,\n\n    \"full_priority_double\": 2.0,\n\n    # big-M used nowhere; kept for contract clarity with none-dependent\n    \"bigM\": 0.0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # ---- Sets ----\n    m.S = pyo.Set(initialize=d[\"types\"], ordered=True)\n\n    # ---- Data maps inferred from the type set ----\n    def headcount_rule(m, s):\n        return d[\"count_full\"] if s == \"full\" else d[\"count_part\"]\n    def avail_hours_rule(m, s):\n        return d[\"hours_full\"] if s == \"full\" else d[\"hours_part\"]\n    def rate_rule(m, s):\n        return d[\"rate_full\"] if s == \"full\" else d[\"rate_part\"]\n    def salary_rule(m, s):\n        return d[\"salary_full\"] if s == \"full\" else d[\"salary_part\"]\n    def otpay_rule(m, s):\n        return d[\"otpay_full\"] if s == \"full\" else d[\"otpay_part\"]\n\n    headcount = {s: headcount_rule(m, s) for s in d[\"types\"]}\n    avail_hrs = {s: avail_hours_rule(m, s) for s in d[\"types\"]}\n    rate = {s: rate_rule(m, s) for s in d[\"types\"]}\n    salary = {s: salary_rule(m, s) for s in d[\"types\"]}\n    otpay = {s: otpay_rule(m, s) for s in d[\"types\"]}\n\n    # ---- Variables ----\n    # regular (contract) hours worked this month by each person of type s\n    m.H = pyo.Var(m.S, domain=pyo.NonNegativeReals,\n                  bounds=lambda m, s: (0.0, avail_hrs[s]))\n    # overtime hours worked this month by each person of type s\n    m.O = pyo.Var(m.S, domain=pyo.NonNegativeReals)\n\n    # Goal-programming deviational variables (all >= 0)\n    m.v1 = pyo.Var(domain=pyo.NonNegativeReals)  # under-achievement of goal 1 (sales)\n    m.u1 = pyo.Var(domain=pyo.NonNegativeReals)  # over-achievement of goal 1\n    m.u2 = pyo.Var(domain=pyo.NonNegativeReals)  # over-achievement of goal 2 (FT OT cap)\n    m.u3 = pyo.Var(m.S, domain=pyo.NonNegativeReals)  # underemployment per type\n    m.u4 = pyo.Var(domain=pyo.NonNegativeReals)  # total overtime (goal 4)\n\n    # ---- Constraint: goal 1 (monthly sales reaches target) ----\n    def sales_balance_rule(m):\n        total = sum(headcount[s] * rate[s] * (m.H[s] + m.O[s]) for s in m.S)\n        return total + m.v1 - m.u1 == d[\"goal_sales\"]\n    m.sales_balance = pyo.Constraint(rule=sales_balance_rule)\n\n    # ---- Constraint: goal 2 (full-time overtime does not exceed cap) ----\n    def ft_ot_rule(m):\n        full_ot = headcount[\"full\"] * m.O[\"full\"]\n        return full_ot - m.u2 <= d[\"goal_ft_ot\"]\n    m.ft_ot_cap = pyo.Constraint(rule=ft_ot_rule)\n\n    # ---- Constraint: goal 3 (all salespeople fully employed; measured as shortfall) ----\n    def full_employment_rule(m, s):\n        # H + O + shortfall = available regular-hours capacity for that type (per person)\n        return m.H[s] + m.O[s] + m.u3[s] == avail_hrs[s]\n    m.fully_employed = pyo.Constraint(m.S, rule=full_employment_rule)\n\n    # ---- Constraint: goal 4 relation (total overtime) ----\n    def total_ot_rule(m):\n        return m.u4 == sum(headcount[s] * m.O[s] for s in m.S)\n    m.total_ot = pyo.Constraint(rule=total_ot_rule)\n\n    # ---- Objective: weighted achievement of the four goals (minimise deviations) ----\n    def obj_rule(m):\n        return (d[\"w_sales\"] * m.v1\n                + d[\"w_ft_ot\"] * m.u2\n                + d[\"w_under_full\"] * d[\"full_priority_double\"] * m.u3[\"full\"]\n                + d[\"w_under_part\"] * m.u3[\"part\"]\n                + d[\"w_ot_total\"] * m.u4)\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1203,
+      "completion_tokens": 1924
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.368934392929077,
+   "position": 2,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # headcounts\n    \"n_full\": 5,          # number of full-time salespeople\n    \"n_part\": 4,          # number of part-time salespeople\n    # monthly regular working hours (per person)\n    \"hrs_full\": 160,\n    \"hrs_part\": 80,\n    # sales volume (pairs per hour) per category\n    \"sales_rate_full\": 5,\n    \"sales_rate_part\": 2,\n    # salaries (CNY/hour)\n    \"salary_full\": 1,\n    \"salary_part\": 0.6,\n    # overtime pay (CNY/hour)\n    \"ot_full\": 1.5,\n    \"ot_part\": 0.7,\n    # profit per pair (CNY)\n    \"profit_pair\": 0.5,\n    # goal targets\n    \"sales_target\": 5500,          # p1: monthly sales volume target (pairs)\n    \"ot_full_target\": 100,         # p2: full-time overtime ceiling (hours, total)\n    # goal weights (preemptive priorities, lexicographic via large weights)\n    \"w1\": 1e12,   # p1 priority\n    \"w2\": 1e9,    # p2 priority\n    \"w3\": 1e6,    # p3 priority\n    \"w_full_weight\": 2,  # p3: full-time employment given double consideration\n    \"w4\": 1.0,    # p4: minimize overtime\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ---- Sets ----\n    model.C = pyo.Set(initialize=[\"FT\", \"PT\"], doc=\"salespeople categories\")\n\n    # ---- Variables (per-person hours) ----\n    model.rft = pyo.Var(within=pyo.NonNegativeReals,\n                        bounds=(0, d[\"hrs_full\"]))          # full-time regular hours\n    model.rpt = pyo.Var(within=pyo.NonNegativeReals,\n                        bounds=(0, d[\"hrs_part\"]))          # part-time regular hours\n    model.oft = pyo.Var(within=pyo.NonNegativeReals)        # full-time overtime hours\n    model.opt = pyo.Var(within=pyo.NonNegativeReals)        # part-time overtime hours\n\n    # Deviation variables for goal programming (dev = under, devp = over)\n    model.d1m = pyo.Var(within=pyo.NonNegativeReals)        # p1 sales shortfall\n    model.d1p = pyo.Var(within=pyo.NonNegativeReals)        # p1 sales surplus\n    model.d2m = pyo.Var(within=pyo.NonNegativeReals)        # p2 under full-time OT target\n    model.d2p = pyo.Var(within=pyo.NonNegativeReals)        # p2 over full-time OT target\n    model.d3m = pyo.Var(within=pyo.NonNegativeReals)        # p3 full-time under-employment\n    model.d3p = pyo.Var(within=pyo.NonNegativeReals)        # p3 full-time over-employment\n    model.d4m = pyo.Var(within=pyo.NonNegativeReals)        # p3 part-time under-employment\n    model.d4p = pyo.Var(within=pyo.NonNegativeReals)        # p3 part-time over-employment\n\n    # ---- p1: sales volume goal (>= 5500) ----\n    def sales_goal_rule(m):\n        # total sales (pairs) = sum over people of hours * pairs-per-hour\n        total_sales = (d[\"n_full\"] * (m.rft + m.oft) * d[\"sales_rate_full\"]\n                       + d[\"n_part\"] * (m.rpt + m.opt) * d[\"sales_rate_part\"])\n        return total_sales + m.d1m - m.d1p == d[\"sales_target\"]\n    model.sales_goal = pyo.Constraint(rule=sales_goal_rule)\n\n    # ---- p2: full-time overtime ceiling (total full-time OT <= 100) ----\n    def ot_goal_rule(m):\n        return (d[\"n_full\"] * m.oft + m.d2m - m.d2p) == d[\"ot_full_target\"]\n    model.ot_goal = pyo.Constraint(rule=ot_goal_rule)\n\n    # ---- p3: full employment goal ----\n    def full_emp_rule(m):\n        # all full-time regular hours are used (target = total capacity) \n        return (d[\"n_full\"] * m.rft + m.d3m - m.d3p\n                == d[\"n_full\"] * d[\"hrs_full\"])\n    model.full_emp = pyo.Constraint(rule=full_emp_rule)\n\n    def part_emp_rule(m):\n        # all part-time regular hours are used (target = total capacity)\n        return (d[\"n_part\"] * m.rpt + m.d4m - m.d4p\n                == d[\"n_part\"] * d[\"hrs_part\"])\n    model.part_emp = pyo.Constraint(rule=part_emp_rule)\n\n    # ---- Objective: weighted (preemptive) deviation minimization ----\n    def obj_rule(m):\n        p1 = d[\"w1\"] * m.d1m                                  # meet sales target\n        p2 = d[\"w2\"] * m.d2p                                  # keep full-time OT <= 100\n        p3 = d[\"w3\"] * (d[\"w_full_weight\"] * m.d3m + m.d4m)   # full employment (FT weighted x2)\n        p4 = d[\"w4\"] * (d[\"n_full\"] * m.oft + d[\"n_part\"] * m.opt)  # minimize total overtime\n        return p1 + p2 + p3 + p4\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1213,
+      "completion_tokens": 1958
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.76641058921814,
+   "position": 3,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # salesperson categories\n    \"types\": [\"full\", \"part\"],\n    # headcount\n    \"num_full\": 5,\n    \"num_part\": 4,\n    # monthly regular working hours per person\n    \"monthly_hours\": {\"full\": 160, \"part\": 80},\n    # sales volume (pairs per hour)\n    \"sales_rate\": {\"full\": 5, \"part\": 2},\n    # salary (CNY per hour)\n    \"salary\": {\"full\": 1.0, \"part\": 0.6},\n    # overtime pay (CNY per hour)\n    \"overtime_pay\": {\"full\": 1.5, \"part\": 0.7},\n    # profit per pair sold (CNY)\n    \"profit_per_pair\": 0.5,\n    # goal targets\n    \"p1_sales_target\": 5500,\n    \"p2_fulltime_overtime_cap\": 100,\n    # priority weights for goal programming (higher = more important)\n    \"priority_weight\": {\"p1\": 1000.0, \"p2\": 10.0, \"p3\": 100.0, \"p4\": 1.0},\n    # double consideration for full-time employees in the full-employment goal\n    \"fulltime_full_employment_weight\": 2.0,\n    # big-M for overtime activation\n    \"big_m\": 100000.0,\n    # goals list\n    \"goals\": [\"p1\", \"p2\", \"p3\", \"p4\"],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.TYPES = pyo.Set(initialize=d[\"types\"])\n    model.GOALS = pyo.Set(initialize=d[\"goals\"])\n\n    # ---- Variables ----\n    def regular_hours_bounds(m, t):\n        return (0.0, d[\"monthly_hours\"][t])\n\n    model.regular_hours = pyo.Var(\n        model.TYPES, within=pyo.NonNegativeReals, bounds=regular_hours_bounds\n    )\n    model.overtime_hours = pyo.Var(model.TYPES, within=pyo.NonNegativeReals)\n\n    # deviation variables for each goal\n    model.dev_neg = pyo.Var(model.GOALS, within=pyo.NonNegativeReals)\n    model.dev_pos = pyo.Var(model.GOALS, within=pyo.NonNegativeReals)\n\n    # ---- Objective: weighted goal programming ----\n    # p1 (sales target): penalise shortfall (dev_neg)\n    # p2 (overtime cap): penalise excess (dev_pos)\n    # p3 (full employment): penalise shortfall (dev_neg)\n    # p4 (minimise overtime): penalise excess (dev_pos)\n    def obj_rule(m):\n        return (\n            d[\"priority_weight\"][\"p1\"] * m.dev_neg[\"p1\"]\n            + d[\"priority_weight\"][\"p2\"] * m.dev_pos[\"p2\"]\n            + d[\"priority_weight\"][\"p3\"] * m.dev_neg[\"p3\"]\n            + d[\"priority_weight\"][\"p4\"] * m.dev_pos[\"p4\"]\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---- Constraint: p1 - monthly sales volume reaches target ----\n    def sales_goal_rule(m):\n        total_pairs = (\n            d[\"num_full\"] * d[\"sales_rate\"][\"full\"] * m.regular_hours[\"full\"]\n            + d[\"num_full\"] * d[\"sales_rate\"][\"full\"] * m.overtime_hours[\"full\"]\n            + d[\"num_part\"] * d[\"sales_rate\"][\"part\"] * m.regular_hours[\"part\"]\n            + d[\"num_part\"] * d[\"sales_rate\"][\"part\"] * m.overtime_hours[\"part\"]\n        )\n        return total_pairs + m.dev_neg[\"p1\"] - m.dev_pos[\"p1\"] == d[\"p1_sales_target\"]\n\n    model.sales_goal = pyo.Constraint(rule=sales_goal_rule)\n\n    # ---- Constraint: p2 - full-time overtime does not exceed cap ----\n    def fulltime_overtime_goal_rule(m):\n        full_overtime_total = d[\"num_full\"] * m.overtime_hours[\"full\"]\n        return (\n            full_overtime_total - m.dev_pos[\"p2\"] + m.dev_neg[\"p2\"]\n            == d[\"p2_fulltime_overtime_cap\"]\n        )\n\n    model.fulltime_overtime_goal = pyo.Constraint(rule=fulltime_overtime_goal_rule)\n\n    # ---- Constraint: p3 - all salespeople fully employed ----\n    # full-time employees weighted double in this goal\n    def full_employment_goal_rule(m):\n        full_shortfall = (\n            d[\"monthly_hours\"][\"full\"] - m.regular_hours[\"full\"]\n        )\n        part_shortfall = (\n            d[\"monthly_hours\"][\"part\"] - m.regular_hours[\"part\"]\n        )\n        weighted_shortfall = (\n            d[\"fulltime_full_employment_weight\"] * d[\"num_full\"] * full_shortfall\n            + d[\"num_part\"] * part_shortfall\n        )\n        return weighted_shortfall - m.dev_pos[\"p3\"] + m.dev_neg[\"p3\"] == 0.0\n\n    model.full_employment_goal = pyo.Constraint(rule=full_employment_goal_rule)\n\n    # ---- Constraint: p4 - minimise total overtime ----\n    def overtime_min_goal_rule(m):\n        total_overtime = (\n            d[\"num_full\"] * m.overtime_hours[\"full\"]\n            + d[\"num_part\"] * m.overtime_hours[\"part\"]\n        )\n        return total_overtime - m.dev_pos[\"p4\"] + m.dev_neg[\"p4\"] == 0.0\n\n    model.overtime_min_goal = pyo.Constraint(rule=overtime_min_goal_rule)\n\n    # ---- Constraint: regular hours cannot exceed monthly hours (already bounded) ----\n\n    # ---- Constraint: overtime only meaningful after regular hours ----\n    # Link overtime to regular hours via big-M so overtime is discouraged unless\n    # regular hours are near full.  This keeps the model linear.\n    def overtime_link_rule(m, t):\n        return m.overtime_hours[t] <= d[\"big_m\"] * m.regular_hours[t]\n\n    model.overtime_link = pyo.Constraint(model.TYPES, rule=overtime_link_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1197,
+      "completion_tokens": 1910
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.066396713256836,
+   "position": 4,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   xF : regular (non-overtime) hours worked by full-time salespeople\n#   xP : regular (non-overtime) hours worked by part-time salespeople\n#   oF : overtime hours worked by full-time salespeople\n#   oP : overtime hours worked by part-time salespeople\n#   d1m, d1p : negative/positive deviation from the sales target p1\n#   d2p      : positive deviation (excess) over the full-time overtime cap p2\n#   d3Fm, d3Fp : negative/positive deviation from full employment for full-time\n#   d3Pm, d3Pp : negative/positive deviation from full employment for part-time\n#   d4p      : positive deviation = total overtime hours (p4)\n#\n# Objective (lexicographic priorities p1 > p2 > p3 > p4, weighted):\n#   minimize  W1*d1m + W2*d2p + W3*(2*d3Fm + 2*d3Fp + d3Pm + d3Pp) + W4*d4p\n#\n# Constraints\n#   (1) Sales target p1:  5*xF + 2*xP + 5*oF + 2*oP + d1m - d1p = 5500\n#   (2) Overtime cap p2:  oF - d2p <= 100\n#   (3) Full employment p3 (full-time):  xF + oF + d3Fm - d3Fp = 5*160\n#   (4) Full employment p3 (part-time):  xP + oP + d3Pm - d3Pp = 4*80\n#   (5) Overtime definition p4:  oF + oP - d4p = 0\n#   (6) Regular-hour capacity:  xF <= 5*160 ; xP <= 4*80\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"n_full\": 5,\n    \"n_part\": 4,\n    \"hours_full\": 160,\n    \"hours_part\": 80,\n    \"sales_full\": 5,\n    \"sales_part\": 2,\n    \"sales_target\": 5500,\n    \"ot_cap_full\": 100,\n    \"W1\": 1000.0,\n    \"W2\": 100.0,\n    \"W3\": 10.0,\n    \"W4\": 1.0,\n    \"full_weight\": 2.0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Decision variables\n    model.xF = pyo.Var(within=pyo.NonNegativeReals,\n                       bounds=(0, d[\"n_full\"] * d[\"hours_full\"]))\n    model.xP = pyo.Var(within=pyo.NonNegativeReals,\n                       bounds=(0, d[\"n_part\"] * d[\"hours_part\"]))\n    model.oF = pyo.Var(within=pyo.NonNegativeReals)\n    model.oP = pyo.Var(within=pyo.NonNegativeReals)\n\n    model.d1m = pyo.Var(within=pyo.NonNegativeReals)\n    model.d1p = pyo.Var(within=pyo.NonNegativeReals)\n    model.d2p = pyo.Var(within=pyo.NonNegativeReals)\n    model.d3Fm = pyo.Var(within=pyo.NonNegativeReals)\n    model.d3Fp = pyo.Var(within=pyo.NonNegativeReals)\n    model.d3Pm = pyo.Var(within=pyo.NonNegativeReals)\n    model.d3Pp = pyo.Var(within=pyo.NonNegativeReals)\n    model.d4p = pyo.Var(within=pyo.NonNegativeReals)\n\n    # (1) Sales target p1\n    def rule_sales(m):\n        return (d[\"sales_full\"] * m.xF + d[\"sales_part\"] * m.xP\n                + d[\"sales_full\"] * m.oF + d[\"sales_part\"] * m.oP\n                + m.d1m - m.d1p == d[\"sales_target\"])\n    model.c_sales = pyo.Constraint(rule=rule_sales)\n\n    # (2) Full-time overtime cap p2\n    def rule_otcap(m):\n        return m.oF - m.d2p <= d[\"ot_cap_full\"]\n    model.c_otcap = pyo.Constraint(rule=rule_otcap)\n\n    # (3) Full employment - full-time p3\n    def rule_emp_full(m):\n        return (m.xF + m.oF + m.d3Fm - m.d3Fp\n                == d[\"n_full\"] * d[\"hours_full\"])\n    model.c_emp_full = pyo.Constraint(rule=rule_emp_full)\n\n    # (4) Full employment - part-time p3\n    def rule_emp_part(m):\n        return (m.xP + m.oP + m.d3Pm - m.d3Pp\n                == d[\"n_part\"] * d[\"hours_part\"])\n    model.c_emp_part = pyo.Constraint(rule=rule_emp_part)\n\n    # (5) Overtime definition p4\n    def rule_otdef(m):\n        return m.oF + m.oP - m.d4p == 0\n    model.c_otdef = pyo.Constraint(rule=rule_otdef)\n\n    # Objective: weighted achievement of the four priorities\n    def rule_obj(m):\n        return (d[\"W1\"] * m.d1m\n                + d[\"W2\"] * m.d2p\n                + d[\"W3\"] * (d[\"full_weight\"] * m.d3Fm\n                             + d[\"full_weight\"] * m.d3Fp\n                             + m.d3Pm + m.d3Pp)\n                + d[\"W4\"] * m.d4p)\n    model.obj = pyo.Objective(rule=rule_obj, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1217,
+      "completion_tokens": 4368
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "missing_constraints",
+      "missing_objective",
+      "missing_variables",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1191,
+      "completion_tokens": 1397
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 42.80469799041748,
+   "position": 5,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Every numeric constant from the problem, with the sentence it comes from.\n# ---------------------------------------------------------------------------\nDATA = {\n    # \"5 full-time salespeople\" / \"4 part-time salespeople\"\n    \"n_full\": 5,\n    \"n_part\": 4,\n\n    # Table 3.3 -> Monthly Working Hours\n    \"hours_full\": 160,      # Full-time monthly working hours\n    \"hours_part\": 80,       # Part-time monthly working hours\n\n    # Table 3.3 -> Sales Volume (pairs/hour)\n    \"sales_per_hour_full\": 5,\n    \"sales_per_hour_part\": 2,\n\n    # Table 3.3 -> Salary (CNY/hour)\n    \"salary_full\": 1.0,\n    \"salary_part\": 0.6,\n\n    # Table 3.3 -> Overtime Pay (CNY/hour)\n    \"ot_pay_full\": 1.5,\n    \"ot_pay_part\": 0.7,\n\n    # \"A profit of 0.5 CNY is made for each pair of shoes sold.\"\n    \"profit_per_pair\": 0.5,\n\n    # p1: \"Monthly sales volume reaches 5500 pairs\"\n    \"sales_target\": 5500,\n\n    # p2: \"Full-time salespeople do not exceed 100 hours of overtime\"\n    \"ot_cap_full\": 100,\n\n    # p3: full-time employees given \"double consideration\"\n    \"weight_full_dev\": 2.0,\n    \"weight_part_dev\": 1.0,\n\n    # Pre-emptive priority weights (p1 >> p2 >> p3 >> p4)\n    \"W1\": 1_000_000.0,\n    \"W2\": 1_000.0,\n    \"W3\": 1.0,\n    \"W4\": 0.001,\n}\n\n# Placeholder for a reference answer (never populated here).\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ------------------------------------------------------------------\n    # Sets\n    # ------------------------------------------------------------------\n    model.G = pyo.Set(initialize=[\"full\", \"part\"], doc=\"salesperson groups\")\n\n    # ------------------------------------------------------------------\n    # Variables\n    # ------------------------------------------------------------------\n    # Regular hours worked by each group (monthly aggregate)\n    model.h = pyo.Var(model.G, domain=pyo.NonNegativeReals)\n    # Overtime hours worked by each group\n    model.o = pyo.Var(model.G, domain=pyo.NonNegativeReals)\n\n    # Deviational variables\n    model.u1 = pyo.Var(domain=pyo.NonNegativeReals)   # p1 under-achievement (sales short)\n    model.v2 = pyo.Var(domain=pyo.NonNegativeReals)   # p2 over-achievement (overtime excess)\n    model.u3f = pyo.Var(domain=pyo.NonNegativeReals)  # p3 full-time under-employment\n    model.u3p = pyo.Var(domain=pyo.NonNegativeReals)  # p3 part-time under-employment\n\n    # ------------------------------------------------------------------\n    # p1: Monthly sales volume reaches the target\n    # ------------------------------------------------------------------\n    def sales_goal_rule(m):\n        return (\n            d[\"n_full\"] * (d[\"sales_per_hour_full\"] * m.h[\"full\"]\n                           + d[\"sales_per_hour_full\"] * m.o[\"full\"])\n            + d[\"n_part\"] * (d[\"sales_per_hour_part\"] * m.h[\"part\"]\n                             + d[\"sales_per_hour_part\"] * m.o[\"part\"])\n            + m.u1\n            >= d[\"sales_target\"]\n        )\n    model.sales_goal = pyo.Constraint(rule=sales_goal_rule)\n\n    # ------------------------------------------------------------------\n    # p2: Full-time overtime does not exceed the cap\n    # ------------------------------------------------------------------\n    def ot_cap_rule(m):\n        return m.o[\"full\"] - m.v2 <= d[\"ot_cap_full\"]\n    model.ot_cap = pyo.Constraint(rule=ot_cap_rule)\n\n    # ------------------------------------------------------------------\n    # p3: All salespeople fully employed\n    # ------------------------------------------------------------------\n    def full_employment_full_rule(m):\n        return m.h[\"full\"] + m.o[\"full\"] + m.u3f >= d[\"hours_full\"]\n    model.full_employment_full = pyo.Constraint(rule=full_employment_full_rule)\n\n    def full_employment_part_rule(m):\n        return m.h[\"part\"] + m.o[\"part\"] + m.u3p >= d[\"hours_part\"]\n    model.full_employment_part = pyo.Constraint(rule=full_employment_part_rule)\n\n    # ------------------------------------------------------------------\n    # Objective: weighted sum of deviations (p1 >> p2 >> p3 >> p4)\n    # ------------------------------------------------------------------\n    def obj_rule(m):\n        return (\n            d[\"W1\"] * m.u1\n            + d[\"W2\"] * m.v2\n            + d[\"W3\"] * (d[\"weight_full_dev\"] * m.u3f\n                         + d[\"weight_part_dev\"] * m.u3p)\n            + d[\"W4\"] * (m.o[\"full\"] + m.o[\"part\"])\n        )\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1201,
+      "completion_tokens": 1542
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.905794143676758,
+   "position": 6,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# All numeric constants, each tied to its source in the problem statement.\n# ---------------------------------------------------------------------------\nDATA = {\n    # Table 3.3 columns\n    \"headcount\":        {\"full\": 5,    \"part\": 4},     # 5 full-time, 4 part-time salespeople\n    \"monthly_hours\":    {\"full\": 160,  \"part\": 80},    # Monthly Working Hours\n    \"sales_per_hour\":   {\"full\": 5,    \"part\": 2},     # Sales Volume (pairs/hour)\n    \"salary_per_hour\":  {\"full\": 1.0,  \"part\": 0.6},   # Salary (CNY/hour)\n    \"overtime_per_hour\":{\"full\": 1.5,  \"part\": 0.7},   # Overtime Pay (CNY/hour)\n\n    # \"A profit of 0.5 CNY is made for each pair of shoes sold.\"\n    \"profit_per_pair\": 0.5,\n\n    # Goal priorities / goal-programming weights (p1..p4)\n    \"w_sales\":    1.0,   # p1: reach 5500 pairs\n    \"w_ot_cap\":   1.0,   # p2: full-time overtime <= 100 h\n    \"w_full_emp\": 1.0,   # p3: full employment, full-time double consideration...\n    \"w_part_emp\": 0.5,   # ...hence part-time weight is half of full-time\n    \"w_overtime\": 1.0,   # p4: minimize overtime hours\n\n    # Goal targets stated in prose\n    \"sales_target\": 5500,   # p1: monthly sales reach 5500 pairs\n    \"ot_cap_full\":  100,    # p2: full-time overtime not to exceed 100 hours\n\n    # Big-M for the overtime-cap deviation (generous upper bound on full-time OT)\n    \"bigM_ot\": 800,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ---------------- Sets ----------------\n    model.T = pyo.Set(initialize=[\"full\", \"part\"])   # salesperson types\n\n    # ---------------- Variables ----------------\n    def _normal_ub(m, t):\n        return d[\"headcount\"][t] * d[\"monthly_hours\"][t]\n\n    model.x = pyo.Var(model.T, domain=pyo.NonNegativeReals,\n                      bounds=lambda m, t: (0, _normal_ub(m, t)))   # normal hours\n    model.y = pyo.Var(model.T, domain=pyo.NonNegativeReals)         # overtime hours\n\n    # Deviation variables for soft goals\n    model.d_sales = pyo.Var(domain=pyo.NonNegativeReals)   # p1 shortfall (pairs)\n    model.d_otcap = pyo.Var(domain=pyo.NonNegativeReals)   # p2 excess over 100 h (full-time)\n    model.d_idle_full = pyo.Var(domain=pyo.NonNegativeReals)  # p3 idle hours (full-time)\n    model.d_idle_part = pyo.Var(domain=pyo.NonNegativeReals)  # p3 idle hours (part-time)\n\n    # ---------------- Objective ----------------\n    # Weighted goal programming: penalise sales shortfall, overtime-cap excess,\n    # idle hours (full-time doubled), and total overtime.\n    def _obj(m):\n        return (d[\"w_sales\"] * m.d_sales\n                + d[\"w_ot_cap\"] * m.d_otcap\n                + d[\"w_full_emp\"] * m.d_idle_full\n                + d[\"w_part_emp\"] * m.d_idle_part\n                + d[\"w_overtime\"] * (m.y[\"full\"] + m.y[\"part\"]))\n\n    model.obj = pyo.Objective(rule=_obj, sense=pyo.minimize)\n\n    # ---------------- Constraints ----------------\n\n    # Overtime cannot exceed regular hours worked (standard overtime rule).\n    def _ot_limit(m, t):\n        return m.y[t] <= m.x[t]\n\n    model.ot_limit = pyo.Constraint(model.T, rule=_ot_limit)\n\n    # p1: sales volume plus shortfall must reach 5500 pairs.\n    #     sales = sum_t sales_per_hour[t] * (x[t] + y[t])\n    def _sales_goal(m):\n        return (d[\"sales_per_hour\"][\"full\"] * (m.x[\"full\"] + m.y[\"full\"])\n                + d[\"sales_per_hour\"][\"part\"] * (m.x[\"part\"] + m.y[\"part\"])\n                + m.d_sales >= d[\"sales_target\"])\n\n    model.sales_goal = pyo.Constraint(rule=_sales_goal)\n\n    # p2: full-time overtime must not exceed 100 h; d_otcap is the excess.\n    def _ot_cap(m):\n        return m.y[\"full\"] - m.d_otcap <= d[\"ot_cap_full\"]\n\n    model.ot_cap = pyo.Constraint(rule=_ot_cap)\n\n    # p3: full employment -> idle hours for each type.\n    def _idle_full(m):\n        return m.d_idle_full == (d[\"headcount\"][\"full\"] * d[\"monthly_hours\"][\"full\"]\n                                 - m.x[\"full\"])\n\n    model.idle_full = pyo.Constraint(rule=_idle_full)\n\n    def _idle_part(m):\n        return m.d_idle_part == (d[\"headcount\"][\"part\"] * d[\"monthly_hours\"][\"part\"]\n                                 - m.x[\"part\"])\n\n    model.idle_part = pyo.Constraint(rule=_idle_part)\n\n    # Big-M link so d_otcap can absorb excess beyond the cap without allowing\n    # arbitrary values (guarantees a bounded, well-posed deviation).\n    def _otcap_bigm(m):\n        return m.d_otcap <= d[\"bigM_ot\"]\n\n    model.otcap_bigm = pyo.Constraint(rule=_otcap_bigm)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1201,
+      "completion_tokens": 1921
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 9.03866195678711,
+   "position": 7,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # categories: 0 = full-time, 1 = part-time\n    \"n_fulltime\": 5,\n    \"n_parttime\": 4,\n    \"reg_hours\": {0: 160, 1: 80},       # monthly working hours per person\n    \"sales_rate\": {0: 5, 1: 2},         # pairs / hour\n    \"salary\": {0: 1.0, 1: 0.6},         # CNY / hour\n    \"overtime_pay\": {0: 1.5, 1: 0.7},   # CNY / hour\n    \"profit_per_pair\": 0.5,             # CNY / pair\n    # goal targets\n    \"sales_target\": 5500,               # p1\n    \"ot_cap_fulltime\": 100,             # p2 (hours, full-time)\n    # goal weights (lexicographic-ish: p1 >> p2 >> p3 >> p4)\n    \"w1\": 100000,   # priority of sales target\n    \"w2\": 1000,     # priority of overtime cap\n    \"w3\": 100,      # priority of full employment\n    \"w4\": 1,        # priority of minimizing overtime\n    \"weight_fulltime\": 2,  # double consideration for full-timers in p3\n    \"weight_parttime\": 1,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # ----- Sets -----\n    m.K = pyo.RangeSet(0, 1)  # 0 = full-time, 1 = part-time\n\n    # total regular capacity per category = people * hours per person\n    cap = {\n        0: d[\"n_fulltime\"] * d[\"reg_hours\"][0],\n        1: d[\"n_parttime\"] * d[\"reg_hours\"][1],\n    }\n\n    # ----- Variables -----\n    # regular hours used per category (<= total regular capacity)\n    m.x = pyo.Var(m.K, domain=pyo.NonNegativeReals,\n                  bounds=lambda m, k: (0, cap[k]))\n    # overtime hours per category\n    m.o = pyo.Var(m.K, domain=pyo.NonNegativeReals)\n    # sales (pairs) per category\n    m.s = pyo.Var(m.K, domain=pyo.NonNegativeReals)\n\n    # deviation variables for goal programming\n    m.d1p = pyo.Var(domain=pyo.NonNegativeReals)  # sales over target\n    m.d1m = pyo.Var(domain=pyo.NonNegativeReals)  # sales under target\n    m.d2p = pyo.Var(domain=pyo.NonNegativeReals)  # overtime above cap\n    m.d3p = pyo.Var(domain=pyo.NonNegativeReals)  # weighted over-employment\n    m.d3m = pyo.Var(domain=pyo.NonNegativeReals)  # weighted under-employment\n\n    # ----- Objective -----\n    # minimize weighted deviations + small penalty pushing overtime down (p4)\n    m.obj = pyo.Objective(\n        expr=(d[\"w1\"] * m.d1m\n              + d[\"w2\"] * m.d2p\n              + d[\"w3\"] * (m.d3p + m.d3m)\n              + d[\"w4\"] * (m.o[0] + m.o[1])),\n        sense=pyo.minimize,\n    )\n\n    # ----- Constraints -----\n\n    # sales produced per category = rate * (regular + overtime hours)\n    def sales_rule(m, k):\n        return m.s[k] == d[\"sales_rate\"][k] * (m.x[k] + m.o[k])\n    m.sales_con = pyo.Constraint(m.K, rule=sales_rule)\n\n    # p1: total sales + shortfall - surplus == target  (reach 5500)\n    def goal_sales_rule(m):\n        return (m.s[0] + m.s[1]) + m.d1m - m.d1p == d[\"sales_target\"]\n    m.goal_sales = pyo.Constraint(rule=goal_sales_rule)\n\n    # p2: full-time overtime must not exceed 100 hours (soft goal)\n    #     o[0] - d2p <= 100\n    def goal_ot_rule(m):\n        return m.o[0] - m.d2p <= d[\"ot_cap_fulltime\"]\n    m.goal_ot = pyo.Constraint(rule=goal_ot_rule)\n\n    # p3: full employment target, full-time given double weight.\n    # target full employment hours = weighted sum of regular capacities.\n    # weighted achieved = w_ft*(x0+o0) + w_pt*(x1+o1)\n    # Add deviation d3p (over) - d3m (under).\n    def goal_emp_rule(m):\n        target = (d[\"weight_fulltime\"] * cap[0]\n                  + d[\"weight_parttime\"] * cap[1])\n        achieved = (d[\"weight_fulltime\"] * (m.x[0] + m.o[0])\n                    + d[\"weight_parttime\"] * (m.x[1] + m.o[1]))\n        return achieved + m.d3m - m.d3p == target\n    m.goal_emp = pyo.Constraint(rule=goal_emp_rule)\n\n    # regular hours cannot exceed category capacity (redundant with bounds, kept explicit)\n    def reg_cap_rule(m, k):\n        return m.x[k] <= cap[k]\n    m.reg_cap = pyo.Constraint(m.K, rule=reg_cap_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1213,
+      "completion_tokens": 1641
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.657026767730713,
+   "position": 8,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"n_full\": 5,\n    \"n_part\": 4,\n    \"full_regular_hours\": 160,\n    \"part_regular_hours\": 80,\n    \"full_sales_rate\": 5,       # pairs per hour\n    \"part_sales_rate\": 2,       # pairs per hour\n    \"full_salary\": 1.0,         # CNY/hour\n    \"full_overtime_pay\": 1.5,   # CNY/hour\n    \"part_salary\": 0.6,         # CNY/hour\n    \"part_overtime_pay\": 0.7,   # CNY/hour\n    \"profit_per_pair\": 0.5,     # CNY\n    \"sales_goal\": 5500,         # pairs per month (p1)\n    \"full_ot_cap\": 100,         # hours (p2)\n    \"full_employment_target\": 160,  # hours per full-timer (p3)\n    \"part_employment_target\": 80,   # hours per part-timer (p3)\n    \"weight_p1\": 1000,\n    \"weight_p2\": 100,\n    \"weight_p3_full\": 20,       # double consideration for full-timers\n    \"weight_p3_part\": 10,\n    \"weight_p4\": 1,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # --- Sets ---\n    model.F = pyo.RangeSet(1, d[\"n_full\"])\n    model.P = pyo.RangeSet(1, d[\"n_part\"])\n\n    # --- Variables ---\n    model.full_hours = pyo.Var(\n        model.F,\n        within=pyo.NonNegativeReals,\n        bounds=(0, d[\"full_regular_hours\"]),\n    )\n    model.full_ot = pyo.Var(model.F, within=pyo.NonNegativeReals)\n    model.part_hours = pyo.Var(\n        model.P,\n        within=pyo.NonNegativeReals,\n        bounds=(0, d[\"part_regular_hours\"]),\n    )\n    model.part_ot = pyo.Var(model.P, within=pyo.NonNegativeReals)\n\n    # Deviation variables for each priority goal\n    model.d1_minus = pyo.Var(within=pyo.NonNegativeReals)\n    model.d1_plus = pyo.Var(within=pyo.NonNegativeReals)\n    model.d2_minus = pyo.Var(within=pyo.NonNegativeReals)\n    model.d2_plus = pyo.Var(within=pyo.NonNegativeReals)\n    model.d3_minus_ft = pyo.Var(within=pyo.NonNegativeReals)\n    model.d3_plus_ft = pyo.Var(within=pyo.NonNegativeReals)\n    model.d3_minus_pt = pyo.Var(within=pyo.NonNegativeReals)\n    model.d3_plus_pt = pyo.Var(within=pyo.NonNegativeReals)\n    model.d4_minus = pyo.Var(within=pyo.NonNegativeReals)\n    model.d4_plus = pyo.Var(within=pyo.NonNegativeReals)\n\n    # --- Objective: weighted sum of goal deviations ---\n    def obj_rule(m):\n        return (\n            d[\"weight_p1\"] * m.d1_minus\n            + d[\"weight_p2\"] * m.d2_plus\n            + d[\"weight_p3_full\"] * (m.d3_minus_ft + m.d3_plus_ft)\n            + d[\"weight_p3_part\"] * (m.d3_minus_pt + m.d3_plus_pt)\n            + d[\"weight_p4\"] * m.d4_plus\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --- p1: monthly sales volume reaches 5500 pairs ---\n    def sales_goal_rule(m):\n        total_sales = (\n            d[\"full_sales_rate\"]\n            * sum(m.full_hours[f] + m.full_ot[f] for f in m.F)\n            + d[\"part_sales_rate\"]\n            * sum(m.part_hours[p] + m.part_ot[p] for p in m.P)\n        )\n        return total_sales + m.d1_minus - m.d1_plus == d[\"sales_goal\"]\n\n    model.sales_goal = pyo.Constraint(rule=sales_goal_rule)\n\n    # --- p2: full-time overtime does not exceed 100 hours ---\n    def overtime_cap_rule(m):\n        total_full_ot = sum(m.full_ot[f] for f in m.F)\n        return total_full_ot - m.d2_plus + m.d2_minus == d[\"full_ot_cap\"]\n\n    model.overtime_cap = pyo.Constraint(rule=overtime_cap_rule)\n\n    # --- p3a: full-time employees fully employed ---\n    def full_employment_rule(m):\n        total_full_hours = sum(m.full_hours[f] for f in m.F)\n        target = d[\"n_full\"] * d[\"full_employment_target\"]\n        return total_full_hours + m.d3_minus_ft - m.d3_plus_ft == target\n\n    model.full_employment = pyo.Constraint(rule=full_employment_rule)\n\n    # --- p3b: part-time employees fully employed ---\n    def part_employment_rule(m):\n        total_part_hours = sum(m.part_hours[p] for p in m.P)\n        target = d[\"n_part\"] * d[\"part_employment_target\"]\n        return total_part_hours + m.d3_minus_pt - m.d3_plus_pt == target\n\n    model.part_employment = pyo.Constraint(rule=part_employment_rule)\n\n    # --- p4: minimise total overtime hours ---\n    def overtime_min_rule(m):\n        total_ot = sum(m.full_ot[f] for f in m.F) + sum(\n            m.part_ot[p] for p in m.P\n        )\n        return total_ot - m.d4_plus + m.d4_minus == 0\n\n    model.overtime_min = pyo.Constraint(rule=overtime_min_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1197,
+      "completion_tokens": 1945
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.569350957870483,
+   "position": 9,
+   "recipe_index": 0
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T10:41:24"
+}

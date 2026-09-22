@@ -1,0 +1,266 @@
+{
+ "pid": "mamo_complex_0100",
+ "question": "Imagine a salesperson tasked with visiting four distinct cities\u2014let's call them A, B, C, and D\u2014to promote their products. The salesperson can commence their journey from any of these cities, with the requirement that they visit each city exactly once before returning to the starting point. The primary objective is to minimize the total travel cost incurred during this journey.\n\nHere's a breakdown of the travel costs between the cities:\n- To travel from City A to B, it costs 61 units.\n- To journey from City A to C, the cost is 65 units.\n- The travel cost from City A to D is 63 units.\n- If the salesperson begins from City B, it costs 61 units to reach A, 94 units to get to C, and 31 units to D.\n- From City C, the costs are 65 units to A, 94 units to B, and 19 units to D.\n- Finally, from City D, the costs are 63 units to A, 31 units to B, and 19 units to C.\n\nNow, what is the minimum total travel cost for the salesperson to visit each city exactly once and return to the starting city?",
+ "templates": [
+  "Vehicle Routing / TSP",
+  "Production Planning / Product Mix"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"N\": 4,\n    \"cities\": [\"A\", \"B\", \"C\", \"D\"],\n    # cost[i][j] = travel cost from city i to city j (i != j)\n    \"cost\": {\n        (0, 1): 61, (0, 2): 65, (0, 3): 63,\n        (1, 0): 61, (1, 2): 94, (1, 3): 31,\n        (2, 0): 65, (2, 1): 94, (2, 3): 19,\n        (3, 0): 63, (3, 1): 31, (3, 2): 19,\n    },\n    \"bigM\": 4,  # = N, used in MTZ subtour elimination\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    N = d[\"N\"]\n    cities = d[\"cities\"]\n    cost = d[\"cost\"]\n\n    model = pyo.ConcreteModel()\n\n    # ---- Sets ----\n    model.I = pyo.RangeSet(0, N - 1)          # city indices 0..N-1\n    # arcs (i, j) with i != j\n    model.A = pyo.Set(\n        dimen=2,\n        initialize=[(i, j) for i in range(N) for j in range(N) if i != j],\n    )\n    # MTZ pairs: (i, j) with i != j and j != 0 (anchor city is 0)\n    model.MTZ = pyo.Set(\n        dimen=2,\n        initialize=[(i, j) for i in range(N) for j in range(N)\n                    if i != j and j != 0],\n    )\n\n    # ---- Variables ----\n    # x[i,j] = 1 if the tour travels directly from city i to city j\n    model.x = pyo.Var(model.A, domain=pyo.Binary)\n\n    # u[i] = visit order of city i (MTZ continuous positioning variable)\n    model.u = pyo.Var(model.I, domain=pyo.NonNegativeReals,\n                      bounds=(0, N - 1))\n\n    # ---- Objective: minimise total travel cost ----\n    model.obj = pyo.Objective(\n        expr=sum(cost[(i, j)] * model.x[i, j] for (i, j) in model.A),\n        sense=pyo.minimize,\n    )\n\n    # ---- Constraints ----\n    # Each city is departed from exactly once (out-degree = 1)\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in range(N) if i != j) == 1\n    model.out_deg = pyo.Constraint(model.I, rule=out_rule)\n\n    # Each city is entered exactly once (in-degree = 1)\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in range(N) if i != j) == 1\n    model.in_deg = pyo.Constraint(model.I, rule=in_rule)\n\n    # Anchor the order of city 0 to zero (breaks rotational symmetry)\n    model.anchor = pyo.Constraint(expr=model.u[0] == 0)\n\n    # MTZ subtour elimination:\n    #   u[j] >= u[i] + 1 - bigM * (1 - x[i,j])   for i != j, j != 0\n    def mtz_rule(m, i, j):\n        return m.u[j] >= m.u[i] + 1 - d[\"bigM\"] * (1 - m.x[i, j])\n    model.mtz = pyo.Constraint(model.MTZ, rule=mtz_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1264,
+      "completion_tokens": 1237
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.185654878616333,
+   "position": 0,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"cities\": [\"A\", \"B\", \"C\", \"D\"],\n    \"cost\": {\n        (\"A\", \"B\"): 61, (\"A\", \"C\"): 65, (\"A\", \"D\"): 63,\n        (\"B\", \"A\"): 61, (\"B\", \"C\"): 94, (\"B\", \"D\"): 31,\n        (\"C\", \"A\"): 65, (\"C\", \"B\"): 94, (\"C\", \"D\"): 19,\n        (\"D\", \"A\"): 63, (\"D\", \"B\"): 31, (\"D\", \"C\"): 19,\n    },\n    \"n\": 4,\n    \"big_m_pos\": 1,          # lower bound / minimum allowed order value\n    \"big_m_pos_max\": 4,      # upper bound / maximum allowed order value\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    n = d[\"n\"]\n    arcs = [(i, j) for i in cities for j in cities if i != j]\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.cities = pyo.Set(initialize=cities)\n    model.arcs = pyo.Set(dimen=2, initialize=arcs)\n\n    # Variables\n    model.x = pyo.Var(model.arcs, within=pyo.Binary)\n    model.u = pyo.Var(\n        model.cities,\n        within=pyo.NonNegativeReals,\n        bounds=(d[\"big_m_pos\"], d[\"big_m_pos_max\"]),\n    )\n\n    # Objective: minimize total travel cost\n    def obj_rule(m):\n        return sum(d[\"cost\"][(i, j)] * m.x[(i, j)] for (i, j) in arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each city is departed exactly once\n    def out_rule(m, i):\n        return sum(m.x[(i, j)] for j in cities if j != i) == 1\n\n    model.out_once = pyo.Constraint(model.cities, rule=out_rule)\n\n    # Each city is entered exactly once\n    def in_rule(m, j):\n        return sum(m.x[(i, j)] for i in cities if i != j) == 1\n\n    model.in_once = pyo.Constraint(model.cities, rule=in_rule)\n\n    # MTZ subtour elimination relative to a root city\n    root = cities[0]\n\n    def ut_root_rule(m):\n        return m.u[root] == d[\"big_m_pos\"]\n\n    model.u_root = pyo.Constraint(rule=ut_root_rule)\n\n    def subtree_rule(m, i, j):\n        if i == root:\n            return pyo.Constraint.Skip\n        return m.u[j] >= m.u[i] + 1 - n * (1 - m.x[(i, j)])\n\n    model.subtour = pyo.Constraint(model.arcs, rule=subtree_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1254,
+      "completion_tokens": 1098
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.328310489654541,
+   "position": 1,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"cities\": [\"A\", \"B\", \"C\", \"D\"],\n    # directed travel cost from city i to city j (i != j)\n    \"cost\": {\n        (\"A\", \"B\"): 61, (\"A\", \"C\"): 65, (\"A\", \"D\"): 63,\n        (\"B\", \"A\"): 61, (\"B\", \"C\"): 94, (\"B\", \"D\"): 31,\n        (\"C\", \"A\"): 65, (\"C\", \"B\"): 94, (\"C\", \"D\"): 19,\n        (\"D\", \"A\"): 63, (\"D\", \"B\"): 31, (\"D\", \"C\"): 19,\n    },\n    \"n\": 4,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    cities = d[\"cities\"]\n    n = d[\"n\"]\n\n    # Sets: node indices and arc pairs (i != j)\n    model.I = pyo.Set(initialize=cities, ordered=True)\n    model.O = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n\n    # Decision variables\n    # x[i,j] = 1 if tour goes directly from i to j\n    model.x = pyo.Var(model.O, within=pyo.Binary)\n    # u[i] = visit order position (MTZ), between 1 and n\n    model.u = pyo.Var(model.I, within=pyo.NonNegativeReals, bounds=(1, n))\n\n    # Objective: minimize total travel cost\n    def obj_rule(m):\n        return sum(d[\"cost\"][(i, j)] * m.x[i, j] for (i, j) in m.O)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint: exactly one outgoing arc per city\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in m.I if j != i) == 1\n\n    model.out_arc = pyo.Constraint(model.I, rule=out_rule)\n\n    # Constraint: exactly one incoming arc per city\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in m.I if i != j) == 1\n\n    model.in_arc = pyo.Constraint(model.I, rule=in_rule)\n\n    # Constraint (MTZ subtour elimination): u[j] >= u[i] + 1 - n*(1 - x[i,j])\n    def mtz_rule(m, i, j):\n        return m.u[j] >= m.u[i] + 1 - n * (1 - m.x[i, j])\n\n    model.mtz = pyo.Constraint(model.O, rule=mtz_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1264,
+      "completion_tokens": 959
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.798142433166504,
+   "position": 2,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"cities\": [\"A\", \"B\", \"C\", \"D\"],\n    \"n\": 4,\n    \"start\": \"A\",\n    # cost[i][j] = travel cost from city i to city j (only i != j meaningful)\n    \"cost\": {\n        (\"A\", \"B\"): 61,\n        (\"A\", \"C\"): 65,\n        (\"A\", \"D\"): 63,\n        (\"B\", \"A\"): 61,\n        (\"B\", \"C\"): 94,\n        (\"B\", \"D\"): 31,\n        (\"C\", \"A\"): 65,\n        (\"C\", \"B\"): 94,\n        (\"C\", \"D\"): 19,\n        (\"D\", \"A\"): 63,\n        (\"D\", \"B\"): 31,\n        (\"D\", \"C\"): 19,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    n = d[\"n\"]\n    cost = d[\"cost\"]\n    start = d[\"start\"]\n\n    arcs = [(i, j) for i in cities for j in cities if i != j]\n\n    model = pyo.ConcreteModel()\n\n    model.CITIES = pyo.Set(initialize=cities)\n    model.ARCS = pyo.Set(initialize=arcs, dimen=2)\n\n    # x[i,j] = 1 if we travel directly from i to j\n    model.x = pyo.Var(model.ARCS, domain=pyo.Binary)\n\n    # u[i] = visit order / position of city i (MTZ potential)\n    model.u = pyo.Var(model.CITIES, domain=pyo.NonNegativeReals,\n                      bounds=(0, n - 1))\n\n    # Objective: minimize total travel cost\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[i, j] for (i, j) in m.ARCS)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each city: exactly one outgoing arc\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in m.CITIES if (i, j) in m.ARCS) == 1\n\n    model.out_degree = pyo.Constraint(model.CITIES, rule=out_rule)\n\n    # Each city: exactly one incoming arc\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in m.CITIES if (i, j) in m.ARCS) == 1\n\n    model.in_degree = pyo.Constraint(model.CITIES, rule=in_rule)\n\n    # Subtour elimination (MTZ): u_j >= u_i + 1 - n*(1 - x_ij)\n    def mtz_rule(m, i, j):\n        return m.u[j] >= m.u[i] + 1 - n * (1 - m.x[i, j])\n\n    model.subtour = pyo.Constraint(\n        [(i, j) for (i, j) in arcs if i != start], rule=mtz_rule\n    )\n\n    # Anchor the start city at position 0\n    def start_rule(m):\n        return m.u[start] == 0\n\n    model.start_position = pyo.Constraint(rule=start_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1248,
+      "completion_tokens": 1069
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.167642831802368,
+   "position": 3,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"cities\": [\"A\", \"B\", \"C\", \"D\"],\n    \"cost\": {\n        (\"A\", \"B\"): 61,\n        (\"A\", \"C\"): 65,\n        (\"A\", \"D\"): 63,\n        (\"B\", \"A\"): 61,\n        (\"B\", \"C\"): 94,\n        (\"B\", \"D\"): 31,\n        (\"C\", \"A\"): 65,\n        (\"C\", \"B\"): 94,\n        (\"C\", \"D\"): 19,\n        (\"D\", \"A\"): 63,\n        (\"D\", \"B\"): 31,\n        (\"D\", \"C\"): 19,\n    },\n    \"big_m\": 1000,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    cost = d[\"cost\"]\n    big_m = d[\"big_m\"]\n\n    model = pyo.ConcreteModel()\n\n    # Decision variables\n    # x[i, j] = 1 if the tour travels directly from city i to city j\n    model.x = pyo.Var(\n        [(i, j) for i in cities for j in cities if i != j],\n        domain=pyo.Binary,\n    )\n\n    # u[i] = position/order of city i in the tour (MTZ subtour elimination)\n    model.u = pyo.Var(cities, domain=pyo.NonNegativeReals, bounds=(0, len(cities) - 1))\n\n    # Objective: minimize total travel cost\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[(i, j)] for i in cities for j in cities if i != j)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint 1: each city has exactly one outgoing arc\n    def out_rule(m, i):\n        return sum(m.x[(i, j)] for j in cities if j != i) == 1\n\n    model.out_degree = pyo.Constraint(cities, rule=out_rule)\n\n    # Constraint 2: each city has exactly one incoming arc\n    def in_rule(m, j):\n        return sum(m.x[(i, j)] for i in cities if i != j) == 1\n\n    model.in_degree = pyo.Constraint(cities, rule=in_rule)\n\n    # Constraint 3: MTZ subtour elimination\n    # u[j] >= u[i] + 1 - M * (1 - x[i, j]) for all i != j, i, j not the start\n    start = cities[0]\n\n    def mtz_rule(m, i, j):\n        if i == start or j == start:\n            return pyo.Constraint.Skip\n        return m.u[j] >= m.u[i] + 1 - big_m * (1 - m.x[(i, j)])\n\n    model.mtz = pyo.Constraint(\n        [(i, j) for i in cities for j in cities if i != j],\n        rule=mtz_rule,\n    )\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1268,
+      "completion_tokens": 3795
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1228,
+      "completion_tokens": 715
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 28.795749187469482,
+   "position": 4,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nGOLD_ANSWER = None\n\nDATA = {\n    \"cities\": [\"A\", \"B\", \"C\", \"D\"],\n    \"n\": 4,\n    # cost[i][j] = cost to travel directly from city i to city j\n    # Only defined for i != j; matched to the problem statement.\n    \"cost\": {\n        (\"A\", \"B\"): 61,\n        (\"A\", \"C\"): 65,\n        (\"A\", \"D\"): 63,\n        (\"B\", \"A\"): 61,\n        (\"B\", \"C\"): 94,\n        (\"B\", \"D\"): 31,\n        (\"C\", \"A\"): 65,\n        (\"C\", \"B\"): 94,\n        (\"C\", \"D\"): 19,\n        (\"D\", \"A\"): 63,\n        (\"D\", \"B\"): 31,\n        (\"D\", \"C\"): 19,\n    },\n    \"big_m\": 10,       # big-M for MTZ: any value >= n is sufficient\n    \"start_city\": \"A\", # anchor the order variables to break rotational symmetry\n    \"ub_order\": 3,     # n - 1\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = list(d[\"cities\"])\n    n = d[\"n\"]\n\n    model = pyo.ConcreteModel()\n\n    # --- Sets ---\n    model.CITY = pyo.Set(initialize=cities)\n    # ordered pairs with i != j\n    arcs = [(i, j) for i in cities for j in cities if i != j]\n    model.ARC = pyo.Set(dimen=2, initialize=arcs)\n\n    # --- Variables ---\n    model.x = pyo.Var(model.ARC, domain=pyo.Binary)\n\n    # MTZ order variables: bounded over [0, n-1], continuous suffices for pure TSP\n    model.u = pyo.Var(\n        model.CITY,\n        domain=pyo.NonNegativeReals,\n        bounds=(0, d[\"ub_order\"]),\n    )\n\n    # --- Objective: minimise total travel cost ---\n    def obj_rule(m):\n        return sum(d[\"cost\"][(i, j)] * m.x[i, j] for (i, j) in m.ARC)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --- Constraint: each city must be arrived at exactly once ---\n    def arrive_rule(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n    model.arrive = pyo.Constraint(model.CITY, rule=arrive_rule)\n\n    # --- Constraint: each city must be departed from exactly once ---\n    def depart_rule(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n    model.depart = pyo.Constraint(model.CITY, rule=depart_rule)\n\n    # --- Constraint: MTZ subtour elimination ---\n    M = d[\"big_m\"]\n    start = d[\"start_city\"]\n    mt_arcs = [(i, j) for (i, j) in arcs if j != start]\n\n    def mtz_rule(m, i, j):\n        return m.u[j] >= m.u[i] + 1 - M * (1 - m.x[i, j])\n    model.mtz = pyo.Constraint(mt_arcs, rule=mtz_rule)\n\n    # --- Constraint: fix the order variable of the anchored start city ---\n    def start_rule(m):\n        return m.u[start] == 0\n    model.start = pyo.Constraint(rule=start_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1254,
+      "completion_tokens": 1144
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.461610794067383,
+   "position": 5,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# Every numeric constant from the problem, with its source sentence.\nDATA = {\n    # \"visiting four distinct cities\u2014let's call them A, B, C, and D\"\n    \"cities\": [\"A\", \"B\", \"C\", \"D\"],\n    \"n_cities\": 4,\n\n    # Travel-cost matrix.  cost[i][j] = cost to travel from city i to city j.\n    # \"To travel from City A to B, it costs 61 units.\"  -> A,B = 61\n    # \"To journey from City A to C, the cost is 65 units.\" -> A,C = 65\n    # \"The travel cost from City A to D is 63 units.\" -> A,D = 63\n    # \"If the salesperson begins from City B, it costs 61 units to reach A,\n    #  94 units to get to C, and 31 units to D.\"          -> B,A=61; B,C=94; B,D=31\n    # \"From City C, the costs are 65 units to A, 94 units to B, and 19 units to D.\"\n    #                                                       -> C,A=65; C,B=94; C,D=19\n    # \"Finally, from City D, the costs are 63 units to A, 31 units to B, and 19 units to C.\"\n    #                                                       -> D,A=63; D,B=31; D,C=19\n    \"cost\": {\n        (\"A\", \"B\"): 61,\n        (\"A\", \"C\"): 65,\n        (\"A\", \"D\"): 63,\n        (\"B\", \"A\"): 61,\n        (\"B\", \"C\"): 94,\n        (\"B\", \"D\"): 31,\n        (\"C\", \"A\"): 65,\n        (\"C\", \"B\"): 94,\n        (\"C\", \"D\"): 19,\n        (\"D\", \"A\"): 63,\n        (\"D\", \"B\"): 31,\n        (\"D\", \"C\"): 19,\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    n = d[\"n_cities\"]\n    cost = d[\"cost\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets: cities, and directed arcs between distinct cities.\n    model.Cities = pyo.Set(initialize=cities, ordered=True)\n    model.Arcs = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n\n    # Variables.\n    model.x = pyo.Var(model.Arcs, domain=pyo.Binary)\n    model.u = pyo.Var(model.Cities, domain=pyo.NonNegativeReals, bounds=(1, n))\n\n    # Objective: minimise total travel cost of the tour.\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[i, j] for (i, j) in m.Arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each city has exactly one outgoing arc.\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in m.Cities if (i, j) in m.Arcs) == 1\n\n    model.out_degree = pyo.Constraint(model.Cities, rule=out_rule)\n\n    # Each city has exactly one incoming arc.\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in m.Cities if (i, j) in m.Arcs) == 1\n\n    model.in_degree = pyo.Constraint(model.Cities, rule=in_rule)\n\n    # MTZ subtour elimination: for arcs between distinct non-depot cities.\n    # Choose the first city in the list as the fixed reference (depot) for MTZ.\n    depot = cities[0]\n\n    def mtz_rule(m, i, j):\n        if i == depot or j == depot:\n            return pyo.Constraint.Skip\n        return m.u[j] >= m.u[i] + 1 - n * (1 - m.x[i, j])\n\n    model.subtour = pyo.Constraint(model.Arcs, rule=mtz_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1252,
+      "completion_tokens": 1376
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.0742433071136475,
+   "position": 6,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem, with its source sentence.\n# ---------------------------------------------------------------------------\nDATA = {\n    # Cities A, B, C, D\n    \"cities\": [\"A\", \"B\", \"C\", \"D\"],\n    \"n_cities\": 4,  # \"visiting four distinct cities\"\n\n    # \"To travel from City A to B, it costs 61 units.\"\n    # \"To journey from City A to C, the cost is 65 units.\"\n    # \"The travel cost from City A to D is 63 units.\"\n    # \"If the salesperson begins from City B, it costs 61 units to reach A,\n    #  94 units to get to C, and 31 units to D.\"\n    # \"From City C, the costs are 65 units to A, 94 units to B, and 19 units to D.\"\n    # \"Finally, from City D, the costs are 63 units to A, 31 units to B,\n    #  and 19 units to C.\"\n    \"cost\": {\n        (\"A\", \"B\"): 61,\n        (\"A\", \"C\"): 65,\n        (\"A\", \"D\"): 63,\n        (\"B\", \"A\"): 61,\n        (\"B\", \"C\"): 94,\n        (\"B\", \"D\"): 31,\n        (\"C\", \"A\"): 65,\n        (\"C\", \"B\"): 94,\n        (\"C\", \"D\"): 19,\n        (\"D\", \"A\"): 63,\n        (\"D\", \"B\"): 31,\n        (\"D\", \"C\"): 19,\n    },\n\n    # Big-M constant = number of cities (used in MTZ subtour elimination)\n    \"big_m\": 4,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    n = d[\"n_cities\"]\n    cost = d[\"cost\"]\n\n    model = pyo.ConcreteModel()\n\n    # --- Sets -------------------------------------------------------------\n    model.N = pyo.Set(initialize=cities, doc=\"cities\")\n    model.arcs = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n        doc=\"directed arcs between distinct cities\",\n    )\n\n    # --- Variables --------------------------------------------------------\n    # x[i,j] = 1 if tour travels directly from i to j\n    model.x = pyo.Var(model.arcs, within=pyo.Binary)\n\n    # u[i]: MTZ order/position variable (prevents subtours)\n    model.u = pyo.Var(model.N, within=pyo.NonNegativeReals,\n                      bounds=(1, n))\n\n    # --- Objective: minimize total travel cost ---------------------------\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[i, j] for (i, j) in m.arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --- Constraints ------------------------------------------------------\n    # Each city: exactly one outgoing arc\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in m.N if j != i) == 1\n\n    model.out_degree = pyo.Constraint(model.N, rule=out_rule)\n\n    # Each city: exactly one incoming arc\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in m.N if i != j) == 1\n\n    model.in_degree = pyo.Constraint(model.N, rule=in_rule)\n\n    # MTZ subtour elimination: u[j] >= u[i] + 1 - n*(1 - x[i,j])\n    def mtz_rule(m, i, j):\n        return m.u[j] >= m.u[i] + 1 - d[\"big_m\"] * (1 - m.x[i, j])\n\n    model.mtz = pyo.Constraint(model.arcs, rule=mtz_rule)\n\n    # Fix the reference city's position to break rotational symmetry\n    model.fix_root = pyo.Constraint(expr=model.u[cities[0]] == 1)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1252,
+      "completion_tokens": 1312
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.904607772827148,
+   "position": 7,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"cities\": [\"A\", \"B\", \"C\", \"D\"],\n    \"cost\": {\n        (\"A\", \"B\"): 61, (\"A\", \"C\"): 65, (\"A\", \"D\"): 63,\n        (\"B\", \"A\"): 61, (\"B\", \"C\"): 94, (\"B\", \"D\"): 31,\n        (\"C\", \"A\"): 65, (\"C\", \"B\"): 94, (\"C\", \"D\"): 19,\n        (\"D\", \"A\"): 63, (\"D\", \"B\"): 31, (\"D\", \"C\"): 19,\n    },\n    \"n\": 4,\n    \"start_city\": \"A\",\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    n = d[\"n\"]\n    start = d[\"start_city\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.cities = pyo.Set(initialize=cities)\n    model.arcs = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n    model.non_start = pyo.Set(initialize=[c for c in cities if c != start])\n\n    # Variables\n    model.x = pyo.Var(model.arcs, domain=pyo.Binary)\n    model.u = pyo.Var(\n        model.cities, domain=pyo.NonNegativeReals, bounds=(1, n)\n    )\n\n    # Objective: minimize total travel cost\n    def obj_rule(m):\n        return sum(d[\"cost\"][(i, j)] * m.x[i, j] for (i, j) in m.arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each city: exactly one outgoing arc\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in m.cities if j != i) == 1\n\n    model.out_degree = pyo.Constraint(model.cities, rule=out_rule)\n\n    # Each city: exactly one incoming arc\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in m.cities if i != j) == 1\n\n    model.in_degree = pyo.Constraint(model.cities, rule=in_rule)\n\n    # MTZ subtour elimination over non-start nodes\n    def mtz_rule(m, i, j):\n        if i == j or i == start or j == start:\n            return pyo.Constraint.Skip\n        return m.u[j] >= m.u[i] + 1 - n * (1 - m.x[i, j])\n\n    model.subtour = pyo.Constraint(model.cities, model.cities, rule=mtz_rule)\n\n    # Anchor the order variable at the start city\n    def anchor_rule(m):\n        return m.u[start] == 1\n\n    model.anchor = pyo.Constraint(rule=anchor_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1248,
+      "completion_tokens": 1146
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.403536558151245,
+   "position": 8,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   x[i, j] in {0,1}  for i != j : 1 if the tour travels directly from city i\n#                                   to city j, else 0.\n#   u[i]    >= 0      (continuous order/position variable for MTZ subtour\n#                      elimination), defined for every city.\n#\n# Objective (minimize, in words):\n#   Minimize the total travel cost of a single Hamiltonian cycle that visits\n#   every city exactly once and returns to the starting city.\n#\n# Constraints\n#   1) Out-degree:  each city is departed exactly once.        (source: \"visit\n#      each city exactly once before returning\")\n#   2) In-degree:   each city is entered exactly once.         (source: same)\n#   3) MTZ subtour elimination: u[j] >= u[i] + 1 - N*(1 - x[i,j]) for i != j,\n#      which forbids disconnected sub-tours.                   (source: \"return\n#      to the starting point\" / single tour requirement)\n#   4) No self arcs: x[i,i] fixed to 0 via the arc set excluding i == j.\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"cities\": [\"A\", \"B\", \"C\", \"D\"],\n    \"cost\": {\n        (\"A\", \"B\"): 61,\n        (\"A\", \"C\"): 65,\n        (\"A\", \"D\"): 63,\n        (\"B\", \"A\"): 61,\n        (\"B\", \"C\"): 94,\n        (\"B\", \"D\"): 31,\n        (\"C\", \"A\"): 65,\n        (\"C\", \"B\"): 94,\n        (\"C\", \"D\"): 19,\n        (\"D\", \"A\"): 63,\n        (\"D\", \"B\"): 31,\n        (\"D\", \"C\"): 19,\n    },\n    \"num_cities\": 4,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    cost = d[\"cost\"]\n    n = d[\"num_cities\"]\n\n    model = pyo.ConcreteModel()\n\n    # Arc set: all ordered pairs of distinct cities.\n    model.arcs = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n    model.nodes = pyo.Set(initialize=cities)\n\n    # Decision variables.\n    model.x = pyo.Var(model.arcs, domain=pyo.Binary)\n    model.u = pyo.Var(model.nodes, domain=pyo.NonNegativeReals,\n                      bounds=(0, n - 1))\n\n    # Objective: minimize total travel cost.\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[i, j] for (i, j) in m.arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint 1: out-degree \u2014 leave each city exactly once.\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n\n    model.out_degree = pyo.Constraint(model.nodes, rule=out_rule)\n\n    # Constraint 2: in-degree \u2014 enter each city exactly once.\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n\n    model.in_degree = pyo.Constraint(model.nodes, rule=in_rule)\n\n    # Constraint 3: MTZ subtour elimination.\n    def mtz_rule(m, i, j):\n        if i == j:\n            return pyo.Constraint.Skip\n        return m.u[j] >= m.u[i] + 1 - n * (1 - m.x[i, j])\n\n    model.mtz = pyo.Constraint(model.arcs, rule=mtz_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1268,
+      "completion_tokens": 6000
+     },
+     "finish_reason": "length"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1872,
+      "completion_tokens": 910
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 47.89470410346985,
+   "position": 9,
+   "recipe_index": 4
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T10:37:33"
+}

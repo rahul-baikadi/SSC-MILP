@@ -1,0 +1,267 @@
+{
+ "pid": "optmath_0099",
+ "question": "Facility Dispersion in a Network\n\nImagine you are tasked with selecting a set of facilities to maximize their dispersion across a network of five locations (nodes). The goal is to ensure that the selected facilities are as spread out as possible, which is measured by the pairwise distances between them. You must select exactly two facilities out of the five available locations.\n\nEach pair of locations has a specific distance value associated with it, representing how far apart they are. These distances are as follows:\n\n- Distance between Node 0 and Node 1: 24 units  \n- Distance between Node 0 and Node 2: 22 units  \n- Distance between Node 0 and Node 3: 23 units  \n- Distance between Node 0 and Node 4: 21 units  \n- Distance between Node 1 and Node 0: 20 units  \n- Distance between Node 1 and Node 2: 19 units  \n- Distance between Node 1 and Node 3: 19 units  \n- Distance between Node 1 and Node 4: 25 units  \n- Distance between Node 2 and Node 0: 17 units  \n- Distance between Node 2 and Node 1: 20 units  \n- Distance between Node 2 and Node 3: 18 units  \n- Distance between Node 2 and Node 4: 20 units  \n- Distance between Node 3 and Node 0: 25 units  \n- Distance between Node 3 and Node 1: 18 units  \n- Distance between Node 3 and Node 2: 21 units  \n- Distance between Node 3 and Node 4: 24 units  \n- Distance between Node 4 and Node 0: 21 units  \n- Distance between Node 4 and Node 1: 18 units  \n- Distance between Node 4 and Node 2: 15 units  \n- Distance between Node 4 and Node 3: 23 units  \n\nYour objective is to maximize the total dispersion, which is the sum of the distances between all pairs of selected facilities. However, there are specific rules governing the selection process:\n\n1. **Selection Constraint**: Exactly two facilities must be selected from the five available locations.  \n2. **Pairwise Activation**: A distance between two locations is only counted if both locations are selected as facilities. For example, the distance between Node 0 and Node 1 (24 units) is only included in the total dispersion if both Node 0 and Node 1 are chosen.  \n3. **Logical Consistency**: If a pair of locations is selected, the distance between them must be fully accounted for in the total dispersion. Conversely, if either location in a pair is not selected, the distance between them must not contribute to the total dispersion.  \n\nYour task is to determine which two locations to select as facilities to maximize the total dispersion while adhering to the constraints above. The solution must ensure that the selection of facilities is logically consistent and that the total dispersion is calculated accurately based on the pairwise distances provided.",
+ "templates": [
+  "Facility Location",
+  "Knapsack / Project Selection",
+  "Network Flow"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "\"\"\"\nFacility Dispersion on a 5-Node Network \u2014 Pyomo MILP\n====================================================\n\nDecision variables\n------------------\nx[i]   : Binary, = 1 if location i is selected as a facility (I = {0,1,2,3,4})\nz[i,j] : Binary for each unordered pair (i,j) with i<j, = 1 iff both i and j\n         are selected (AND of x[i] and x[j]).\n\nObjective (MAXIMIZE)\n--------------------\nTotal dispersion = sum over pairs (i,j), i<j, of DIST[i,j] * z[i,j],\ncounted only when both endpoints are selected.\n\nConstraints\n-----------\n(C1 \"Exactly two facilities\")       : sum_i x[i] == K\n(C2 \"Upper linkage z <= x[i]\")      : z[i,j] <= x[i]   for all i<j\n(C3 \"Upper linkage z <= x[j]\")      : z[i,j] <= x[j]   for all i<j\n(C4 \"Joint activation z >= x[i]+x[j]-1\") : z[i,j] >= x[i] + x[j] - 1  for all i<j\n\nThe distance table is asymmetric in the source text; for each unordered pair\n(i,j) with i<j we use the entry listed for the direction (i -> j) as the\nrepresentative coefficient, since the problem asks for a single distance per\npair.\n\"\"\"\n\nimport pyomo.environ as pyo\n\nDATA = {\n    \"nodes\": [0, 1, 2, 3, 4],\n    \"K\": 2,\n    # Representative distance for each unordered pair (i, j) with i < j,\n    # taken from the listed direction (i -> j).\n    \"dist\": {\n        (0, 1): 24,\n        (0, 2): 22,\n        (0, 3): 23,\n        (0, 4): 21,\n        (1, 2): 19,\n        (1, 3): 19,\n        (1, 4): 25,\n        (2, 3): 18,\n        (2, 4): 20,\n        (3, 4): 24,\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    nodes = list(d[\"nodes\"])\n    K = d[\"K\"]\n    dist = d[\"dist\"]\n\n    # Unordered pairs (i, j) with i < j\n    pairs = [(i, j) for i in nodes for j in nodes if i < j]\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=nodes, ordered=True)\n    model.P = pyo.Set(initialize=pairs, dimen=2, ordered=True)\n\n    # x[i] = 1 if node i is selected\n    model.x = pyo.Var(model.I, within=pyo.Binary)\n\n    # z[i,j] = 1 iff both i and j are selected\n    model.z = pyo.Var(model.P, within=pyo.Binary)\n\n    # Objective: maximize total dispersion over selected pairs\n    def obj_rule(m):\n        return sum(dist[(i, j)] * m.z[i, j] for (i, j) in pairs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # (C1) Exactly K facilities selected\n    def c1_rule(m):\n        return sum(m.x[i] for i in m.I) == K\n\n    model.c1 = pyo.Constraint(rule=c1_rule)\n\n    # (C2) z[i,j] <= x[i]\n    def c2_rule(m, i, j):\n        return m.z[i, j] <= m.x[i]\n\n    model.c2 = pyo.Constraint(model.P, rule=c2_rule)\n\n    # (C3) z[i,j] <= x[j]\n    def c3_rule(m, i, j):\n        return m.z[i, j] <= m.x[j]\n\n    model.c3 = pyo.Constraint(model.P, rule=c3_rule)\n\n    # (C4) z[i,j] >= x[i] + x[j] - 1\n    def c4_rule(m, i, j):\n        return m.z[i, j] >= m.x[i] + m.x[j] - 1\n\n    model.c4 = pyo.Constraint(model.P, rule=c4_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1760,
+      "completion_tokens": 2211
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3892,
+      "completion_tokens": 983
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 20.283473253250122,
+   "position": 0,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Facility Dispersion in a Network\n#\n# Decision variables\n#   y[i]  in {0,1}   for i in N = {0,1,2,3,4}   -> 1 if location i is selected\n#   z[i,j] in {0,1}  for unordered pairs i<j     -> 1 if BOTH i and j selected\n#\n# Objective (maximize)\n#   Total dispersion = sum over unordered pairs (i,j), i<j, of\n#                      D[i,j] * z[i,j]\n#   (the distance between a pair counts only when both endpoints are selected)\n#\n# Constraints\n#   (1) Selection: exactly K = 2 facilities are selected.        [Rule 1]\n#   (2) Pairwise activation (upper): z[i,j] <= y[i]              [Rule 2/3]\n#   (3) Pairwise activation (upper): z[i,j] <= y[j]              [Rule 2/3]\n#   (4) Pairwise activation (lower): z[i,j] >= y[i] + y[j] - 1   [Rule 3]\n#       Together (2)-(4) force z[i,j] = y[i]*y[j] exactly, keeping the\n#       model fully LINEAR.\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"nodes\": [0, 1, 2, 3, 4],\n    \"K\": 2,\n    # Directed distances as given in the problem statement.\n    \"dist\": {\n        (0, 1): 24, (0, 2): 22, (0, 3): 23, (0, 4): 21,\n        (1, 0): 20, (1, 2): 19, (1, 3): 19, (1, 4): 25,\n        (2, 0): 17, (2, 1): 20, (2, 3): 18, (2, 4): 20,\n        (3, 0): 25, (3, 1): 18, (3, 2): 21, (3, 4): 24,\n        (4, 0): 21, (4, 1): 18, (4, 2): 15, (4, 3): 23,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    nodes = list(d[\"nodes\"])\n    K = d[\"K\"]\n    dist = d[\"dist\"]\n\n    # Unordered pairs i < j, using the directed value D[i,j] as the pair score.\n    pairs = [(i, j) for i in nodes for j in nodes if i < j]\n\n    model = pyo.ConcreteModel()\n\n    model.N = pyo.Set(initialize=nodes, ordered=True)\n    model.P = pyo.Set(initialize=pairs, dimen=2, ordered=True)\n\n    # y[i] = 1 if location i is selected\n    model.y = pyo.Var(model.N, within=pyo.Binary)\n\n    # z[i,j] = 1 if both i and j are selected\n    model.z = pyo.Var(model.P, within=pyo.Binary)\n\n    # (1) Exactly K facilities selected\n    def sel_rule(m):\n        return sum(m.y[i] for i in m.N) == K\n    model.sel = pyo.Constraint(rule=sel_rule)\n\n    # (2) z[i,j] <= y[i]\n    def z_upper_i_rule(m, i, j):\n        return m.z[i, j] <= m.y[i]\n    model.z_upper_i = pyo.Constraint(model.P, rule=z_upper_i_rule)\n\n    # (3) z[i,j] <= y[j]\n    def z_upper_j_rule(m, i, j):\n        return m.z[i, j] <= m.y[j]\n    model.z_upper_j = pyo.Constraint(model.P, rule=z_upper_j_rule)\n\n    # (4) z[i,j] >= y[i] + y[j] - 1\n    def z_lower_rule(m, i, j):\n        return m.z[i, j] >= m.y[i] + m.y[j] - 1\n    model.z_lower = pyo.Constraint(model.P, rule=z_lower_rule)\n\n    # Objective: maximize total dispersion\n    def obj_rule(m):\n        return sum(dist[(i, j)] * m.z[i, j] for (i, j) in m.P)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1760,
+      "completion_tokens": 809
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2490,
+      "completion_tokens": 1047
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 11.203091144561768,
+   "position": 1,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem statement.\n# ---------------------------------------------------------------------------\nDATA = {\n    # \"select exactly two facilities out of the five available locations\"\n    \"num_nodes\": 5,\n    \"num_selected\": 2,\n\n    # Directed pairwise distances exactly as listed in the problem text.\n    # Keys are (from, to) tuples.\n    \"distance\": {\n        (0, 1): 24,  # Distance between Node 0 and Node 1: 24 units\n        (0, 2): 22,  # Distance between Node 0 and Node 2: 22 units\n        (0, 3): 23,  # Distance between Node 0 and Node 3: 23 units\n        (0, 4): 21,  # Distance between Node 0 and Node 4: 21 units\n        (1, 0): 20,  # Distance between Node 1 and Node 0: 20 units\n        (1, 2): 19,  # Distance between Node 1 and Node 2: 19 units\n        (1, 3): 19,  # Distance between Node 1 and Node 3: 19 units\n        (1, 4): 25,  # Distance between Node 1 and Node 4: 25 units\n        (2, 0): 17,  # Distance between Node 2 and Node 0: 17 units\n        (2, 1): 20,  # Distance between Node 2 and Node 1: 20 units\n        (2, 3): 18,  # Distance between Node 2 and Node 3: 18 units\n        (2, 4): 20,  # Distance between Node 2 and Node 4: 20 units\n        (3, 0): 25,  # Distance between Node 3 and Node 0: 25 units\n        (3, 1): 18,  # Distance between Node 3 and Node 1: 18 units\n        (3, 2): 21,  # Distance between Node 3 and Node 2: 21 units\n        (3, 4): 24,  # Distance between Node 3 and Node 4: 24 units\n        (4, 0): 21,  # Distance between Node 4 and Node 0: 21 units\n        (4, 1): 18,  # Distance between Node 4 and Node 1: 18 units\n        (4, 2): 15,  # Distance between Node 4 and Node 2: 15 units\n        (4, 3): 23,  # Distance between Node 4 and Node 3: 23 units\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"num_nodes\"]\n    dist = d[\"distance\"]\n\n    # Unordered pairs (i, j) with i < j.  Use the directed value reported for\n    # (i, j) as the pair's dispersion contribution.\n    pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]\n\n    model = pyo.ConcreteModel()\n\n    # ----- Sets -------------------------------------------------------------\n    model.I = pyo.RangeSet(0, n - 1)          # locations 0..4\n    model.P = pyo.Set(initialize=pairs, dimen=2)  # unordered candidate pairs\n\n    # ----- Variables --------------------------------------------------------\n    # y[i] = 1 if location i is selected as a facility.\n    model.y = pyo.Var(model.I, within=pyo.Binary)\n\n    # z[i,j] = 1 if pair (i,j) is selected and therefore counted.\n    model.z = pyo.Var(model.P, within=pyo.Binary)\n\n    # ----- Objective: maximise total dispersion -----------------------------\n    def obj_rule(m):\n        return sum(dist[(i, j)] * m.z[i, j] for (i, j) in m.P)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # ----- Constraint 1: exactly two facilities selected --------------------\n    def exact_two_rule(m):\n        return sum(m.y[i] for i in m.I) == d[\"num_selected\"]\n\n    model.exact_two = pyo.Constraint(rule=exact_two_rule)\n\n    # ----- Constraint 2: pair activation (z <= y_i, z <= y_j) ----------------\n    def pair_upper_i_rule(m, i, j):\n        return m.z[i, j] <= m.y[i]\n\n    def pair_upper_j_rule(m, i, j):\n        return m.z[i, j] <= m.y[j]\n\n    model.pair_upper_i = pyo.Constraint(model.P, rule=pair_upper_i_rule)\n    model.pair_upper_j = pyo.Constraint(model.P, rule=pair_upper_j_rule)\n\n    # ----- Constraint 3: both selected => pair counted (z >= y_i + y_j - 1) --\n    def pair_lower_rule(m, i, j):\n        return m.z[i, j] >= m.y[i] + m.y[j] - 1\n\n    model.pair_lower = pyo.Constraint(model.P, rule=pair_lower_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1744,
+      "completion_tokens": 1629
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.572307586669922,
+   "position": 2,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Five candidate facility locations\n    \"nodes\": [0, 1, 2, 3, 4],\n    # Number of facilities to select\n    \"num_select\": 2,\n    # Directed distances exactly as stated: dist[(i, j)] = distance from i to j\n    \"dist\": {\n        (0, 1): 24, (0, 2): 22, (0, 3): 23, (0, 4): 21,\n        (1, 0): 20, (1, 2): 19, (1, 3): 19, (1, 4): 25,\n        (2, 0): 17, (2, 1): 20, (2, 3): 18, (2, 4): 20,\n        (3, 0): 25, (3, 1): 18, (3, 2): 21, (3, 4): 24,\n        (4, 0): 21, (4, 1): 18, (4, 2): 15, (4, 3): 23,\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    nodes = list(d[\"nodes\"])\n    dist = d[\"dist\"]\n\n    # Unordered pairs i < j (each pair counted once in the dispersion sum)\n    pairs = [(i, j) for i in nodes for j in nodes if i < j]\n\n    model = pyo.ConcreteModel()\n\n    model.N = pyo.Set(initialize=nodes, ordered=True)\n    model.P = pyo.Set(initialize=pairs, dimen=2, ordered=True)\n\n    # y[i] = 1 if facility i is selected\n    model.y = pyo.Var(model.N, domain=pyo.Binary)\n\n    # z[i,j] = 1 if both i and j are selected (pair activated)\n    model.z = pyo.Var(model.P, domain=pyo.Binary)\n\n    # Objective: maximize total dispersion = sum over activated pairs of distance * z\n    # Use the (i,j) entry as listed for i<j; distance counted only when both selected.\n    def obj_rule(m):\n        return sum(dist[(i, j)] * m.z[(i, j)] for (i, j) in m.P)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # (1) Selection: exactly two facilities selected   sum_i y[i] == 2\n    def select_rule(m):\n        return sum(m.y[i] for i in m.N) == d[\"num_select\"]\n\n    model.select = pyo.Constraint(rule=select_rule)\n\n    # (2a) Pairwise activation upper: z[i,j] <= y[i]\n    def act_i_rule(m, i, j):\n        return m.z[(i, j)] <= m.y[i]\n\n    model.act_i = pyo.Constraint(model.P, rule=act_i_rule)\n\n    # (2b) Pairwise activation upper: z[i,j] <= y[j]\n    def act_j_rule(m, i, j):\n        return m.z[(i, j)] <= m.y[j]\n\n    model.act_j = pyo.Constraint(model.P, rule=act_j_rule)\n\n    # (3) Logical consistency lower: if both selected then z=1  =>  z >= y_i + y_j - 1\n    def link_rule(m, i, j):\n        return m.z[(i, j)] >= m.y[i] + m.y[j] - 1\n\n    model.link = pyo.Constraint(model.P, rule=link_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1756,
+      "completion_tokens": 1244
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.891545295715332,
+   "position": 3,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# Distance matrix D[i][j] as given (row = source node i, col = target node j)\nDATA = {\n    \"nodes\": [0, 1, 2, 3, 4],\n    \"n_select\": 2,\n    \"dist\": {\n        (0, 1): 24, (0, 2): 22, (0, 3): 23, (0, 4): 21,\n        (1, 0): 20, (1, 2): 19, (1, 3): 19, (1, 4): 25,\n        (2, 0): 17, (2, 1): 20, (2, 3): 18, (2, 4): 20,\n        (3, 0): 25, (3, 1): 18, (3, 2): 21, (3, 4): 24,\n        (4, 0): 21, (4, 1): 18, (4, 2): 15, (4, 3): 23,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    nodes = d[\"nodes\"]\n    # unordered pairs of distinct nodes, i < j\n    pairs = [(i, j) for i in nodes for j in nodes if i < j]\n\n    model = pyo.ConcreteModel()\n    model.I = pyo.Set(initialize=nodes, ordered=True)\n    model.P = pyo.Set(dimen=2, initialize=pairs, ordered=True)\n\n    # y[i] = 1 if node i is selected as a facility\n    model.y = pyo.Var(model.I, within=pyo.Binary)\n    # z[i,j] = 1 if both nodes i and j of the pair are selected\n    model.z = pyo.Var(model.P, within=pyo.Binary)\n\n    # --- Objective: maximize total pairwise dispersion of selected facilities ---\n    def obj_rule(m):\n        return sum(d[\"dist\"][(i, j)] * m.z[i, j] for (i, j) in m.P)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # --- Constraint 1: exactly two facilities selected (==) ---\n    def select_rule(m):\n        return sum(m.y[i] for i in m.I) == d[\"n_select\"]\n    model.select = pyo.Constraint(rule=select_rule)\n\n    # --- Constraint 2a: z_ij <= y_i (pair counts only if i selected) ---\n    def pair_le_i_rule(m, i, j):\n        return m.z[i, j] <= m.y[i]\n    model.pair_le_i = pyo.Constraint(model.P, rule=pair_le_i_rule)\n\n    # --- Constraint 2b: z_ij <= y_j (pair counts only if j selected) ---\n    def pair_le_j_rule(m, i, j):\n        return m.z[i, j] <= m.y[j]\n    model.pair_le_j = pyo.Constraint(model.P, rule=pair_le_j_rule)\n\n    # --- Constraint 3: z_ij >= y_i + y_j - 1 (if both selected, pair must count) ---\n    def pair_ge_rule(m, i, j):\n        return m.z[i, j] >= m.y[i] + m.y[j] - 1\n    model.pair_ge = pyo.Constraint(model.P, rule=pair_ge_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1756,
+      "completion_tokens": 1039
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.779286623001099,
+   "position": 4,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"nodes\": [0, 1, 2, 3, 4],\n    \"pairs\": [\n        (0, 1), (0, 2), (0, 3), (0, 4),\n        (1, 0), (1, 2), (1, 3), (1, 4),\n        (2, 0), (2, 1), (2, 3), (2, 4),\n        (3, 0), (3, 1), (3, 2), (3, 4),\n        (4, 0), (4, 1), (4, 2), (4, 3),\n    ],\n    \"dist\": {\n        (0, 1): 24, (0, 2): 22, (0, 3): 23, (0, 4): 21,\n        (1, 0): 20, (1, 2): 19, (1, 3): 19, (1, 4): 25,\n        (2, 0): 17, (2, 1): 20, (2, 3): 18, (2, 4): 20,\n        (3, 0): 25, (3, 1): 18, (3, 2): 21, (3, 4): 24,\n        (4, 0): 21, (4, 1): 18, (4, 2): 15, (4, 3): 23,\n    },\n    \"num_facilities\": 2,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.N = pyo.Set(initialize=d[\"nodes\"])\n    model.A = pyo.Set(initialize=d[\"pairs\"], dimen=2)\n\n    # y[i] = 1 if node i is selected as a facility\n    model.y = pyo.Var(model.N, within=pyo.Binary)\n\n    # z[i,j] = 1 if both endpoints of pair (i,j) are selected\n    model.z = pyo.Var(model.A, within=pyo.Binary)\n\n    def obj_rule(m):\n        return sum(d[\"dist\"][i, j] * m.z[i, j] for (i, j) in m.A)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Exactly two facilities must be selected\n    def select_rule(m):\n        return sum(m.y[i] for i in m.N) == d[\"num_facilities\"]\n\n    model.select = pyo.Constraint(rule=select_rule)\n\n    # z[i,j] <= y[i]  (pair counted only if first node selected)\n    def z_le_yi_rule(m, i, j):\n        return m.z[i, j] <= m.y[i]\n\n    model.z_le_yi = pyo.Constraint(model.A, rule=z_le_yi_rule)\n\n    # z[i,j] <= y[j]  (pair counted only if second node selected)\n    def z_le_yj_rule(m, i, j):\n        return m.z[i, j] <= m.y[j]\n\n    model.z_le_yj = pyo.Constraint(model.A, rule=z_le_yj_rule)\n\n    # z[i,j] >= y[i] + y[j] - 1  (if both selected, distance fully accounted for)\n    def z_ge_yij_rule(m, i, j):\n        return m.z[i, j] >= m.y[i] + m.y[j] - 1\n\n    model.z_ge_yij = pyo.Constraint(model.A, rule=z_ge_yij_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1746,
+      "completion_tokens": 1305
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.055742025375366,
+   "position": 5,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"nodes\": [0, 1, 2, 3, 4],\n    \"num_select\": 2,\n    \"bigM\": 1,\n    \"dist\": {\n        (0, 1): 24, (0, 2): 22, (0, 3): 23, (0, 4): 21,\n        (1, 0): 20, (1, 2): 19, (1, 3): 19, (1, 4): 25,\n        (2, 0): 17, (2, 1): 20, (2, 3): 18, (2, 4): 20,\n        (3, 0): 25, (3, 1): 18, (3, 2): 21, (3, 4): 24,\n        (4, 0): 21, (4, 1): 18, (4, 2): 15, (4, 3): 23,\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    nodes = list(d[\"nodes\"])\n    pairs = [(i, j) for i in nodes for j in nodes if i < j]\n\n    model = pyo.ConcreteModel()\n\n    model.N = pyo.Set(initialize=nodes, ordered=True)\n    model.P = pyo.Set(initialize=pairs, dimen=2, ordered=True)\n\n    model.select = pyo.Var(model.N, within=pyo.Binary)\n    model.pair_active = pyo.Var(model.P, within=pyo.Binary)\n\n    def obj_rule(m):\n        return sum(d[\"dist\"][(i, j)] * m.pair_active[i, j] for (i, j) in m.P)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    def selection_rule(m):\n        return sum(m.select[i] for i in m.N) == d[\"num_select\"]\n\n    model.selection = pyo.Constraint(rule=selection_rule)\n\n    def pair_le_i_rule(m, i, j):\n        return m.pair_active[i, j] <= m.select[i]\n\n    model.pair_le_i = pyo.Constraint(model.P, rule=pair_le_i_rule)\n\n    def pair_le_j_rule(m, i, j):\n        return m.pair_active[i, j] <= m.select[j]\n\n    model.pair_le_j = pyo.Constraint(model.P, rule=pair_le_j_rule)\n\n    def pair_ge_rule(m, i, j):\n        return m.pair_active[i, j] >= m.select[i] + m.select[j] - d[\"bigM\"]\n\n    model.pair_ge = pyo.Constraint(model.P, rule=pair_ge_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1740,
+      "completion_tokens": 1065
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.159748077392578,
+   "position": 6,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Nodes / locations: five locations (nodes)\n    \"nodes\": [0, 1, 2, 3, 4],\n    # Exactly two facilities must be selected\n    \"num_select\": 2,\n    # Distances between ordered pairs of nodes (from problem statement)\n    \"dist\": {\n        (0, 1): 24,  # \"Distance between Node 0 and Node 1: 24 units\"\n        (0, 2): 22,  # \"Distance between Node 0 and Node 2: 22 units\"\n        (0, 3): 23,  # \"Distance between Node 0 and Node 3: 23 units\"\n        (0, 4): 21,  # \"Distance between Node 0 and Node 4: 21 units\"\n        (1, 0): 20,  # \"Distance between Node 1 and Node 0: 20 units\"\n        (1, 2): 19,  # \"Distance between Node 1 and Node 2: 19 units\"\n        (1, 3): 19,  # \"Distance between Node 1 and Node 3: 19 units\"\n        (1, 4): 25,  # \"Distance between Node 1 and Node 4: 25 units\"\n        (2, 0): 17,  # \"Distance between Node 2 and Node 0: 17 units\"\n        (2, 1): 20,  # \"Distance between Node 2 and Node 1: 20 units\"\n        (2, 3): 18,  # \"Distance between Node 2 and Node 3: 18 units\"\n        (2, 4): 20,  # \"Distance between Node 2 and Node 4: 20 units\"\n        (3, 0): 25,  # \"Distance between Node 3 and Node 0: 25 units\"\n        (3, 1): 18,  # \"Distance between Node 3 and Node 1: 18 units\"\n        (3, 2): 21,  # \"Distance between Node 3 and Node 2: 21 units\"\n        (3, 4): 24,  # \"Distance between Node 3 and Node 4: 24 units\"\n        (4, 0): 21,  # \"Distance between Node 4 and Node 0: 21 units\"\n        (4, 1): 18,  # \"Distance between Node 4 and Node 1: 18 units\"\n        (4, 2): 15,  # \"Distance between Node 4 and Node 2: 15 units\"\n        (4, 3): 23,  # \"Distance between Node 4 and Node 3: 23 units\"\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    nodes = list(d[\"nodes\"])\n    dist = d[\"dist\"]\n    pairs = [(i, j) for i in nodes for j in nodes if i != j]\n\n    m = pyo.ConcreteModel()\n\n    m.N = pyo.Set(initialize=nodes)\n    m.P = pyo.Set(initialize=pairs, dimen=2)\n\n    # y[i] = 1 if node i is selected as a facility\n    m.y = pyo.Var(m.N, within=pyo.Binary)\n\n    # z[i,j] = 1 if both i and j are selected (pair activated)\n    m.z = pyo.Var(m.P, within=pyo.Binary)\n\n    # Objective: maximize total dispersion (sum of distances of selected pairs)\n    def obj_rule(mm):\n        return sum(dist[(i, j)] * mm.z[i, j] for (i, j) in pairs)\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Selection constraint: exactly two facilities selected\n    def select_rule(mm):\n        return sum(mm.y[i] for i in nodes) == d[\"num_select\"]\n\n    m.select = pyo.Constraint(rule=select_rule)\n\n    # Pairwise activation linking: z[i,j] <= y[i]\n    def link_i_rule(mm, i, j):\n        return mm.z[i, j] <= mm.y[i]\n\n    m.link_i = pyo.Constraint(m.P, rule=link_i_rule)\n\n    # Pairwise activation linking: z[i,j] <= y[j]\n    def link_j_rule(mm, i, j):\n        return mm.z[i, j] <= mm.y[j]\n\n    m.link_j = pyo.Constraint(m.P, rule=link_j_rule)\n\n    # Logical consistency: z[i,j] >= y[i] + y[j] - 1\n    def link_sum_rule(mm, i, j):\n        return mm.z[i, j] >= mm.y[i] + mm.y[j] - 1\n\n    m.link_sum = pyo.Constraint(m.P, rule=link_sum_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1744,
+      "completion_tokens": 1451
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.866544008255005,
+   "position": 7,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"nodes\": [0, 1, 2, 3, 4],\n    \"num_facilities\": 2,\n    \"dist\": {\n        (0, 1): 24, (0, 2): 22, (0, 3): 23, (0, 4): 21,\n        (1, 0): 20, (1, 2): 19, (1, 3): 19, (1, 4): 25,\n        (2, 0): 17, (2, 1): 20, (2, 3): 18, (2, 4): 20,\n        (3, 0): 25, (3, 1): 18, (3, 2): 21, (3, 4): 24,\n        (4, 0): 21, (4, 1): 18, (4, 2): 15, (4, 3): 23,\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.N = pyo.Set(initialize=d[\"nodes\"], ordered=True)\n    model.P = pyo.Set(\n        dimen=2,\n        initialize=[(i, j) for (i, j) in d[\"dist\"].keys()],\n        ordered=True,\n    )\n\n    # Variables\n    model.select = pyo.Var(model.N, within=pyo.Binary)\n    model.pair_active = pyo.Var(model.P, within=pyo.Binary)\n\n    # Objective: maximize total dispersion over ordered pairs\n    def obj_rule(m):\n        return sum(d[\"dist\"][(i, j)] * m.pair_active[i, j] for (i, j) in m.P)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Constraint 1: exactly two facilities selected\n    def exact_two_rule(m):\n        return sum(m.select[i] for i in m.N) == d[\"num_facilities\"]\n\n    model.exact_two = pyo.Constraint(rule=exact_two_rule)\n\n    # Constraint 2: pair_active[i,j] <= select[i]\n    def pair_upper_i_rule(m, i, j):\n        return m.pair_active[i, j] <= m.select[i]\n\n    model.pair_upper_i = pyo.Constraint(model.P, rule=pair_upper_i_rule)\n\n    # Constraint 3: pair_active[i,j] <= select[j]\n    def pair_upper_j_rule(m, i, j):\n        return m.pair_active[i, j] <= m.select[j]\n\n    model.pair_upper_j = pyo.Constraint(model.P, rule=pair_upper_j_rule)\n\n    # Constraint 4: pair_active[i,j] >= select[i] + select[j] - 1\n    def pair_lower_rule(m, i, j):\n        return m.pair_active[i, j] >= m.select[i] + m.select[j] - 1\n\n    model.pair_lower = pyo.Constraint(model.P, rule=pair_lower_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1740,
+      "completion_tokens": 1024
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.763851642608643,
+   "position": 8,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# All numeric constants from the problem statement live here.\n# Distances are given as directed (ordered) pairs; None marks \"no entry needed\".\n# ---------------------------------------------------------------------------\nDATA = {\n    \"nodes\": [0, 1, 2, 3, 4],\n    \"pair_select_count\": 2,\n    # Directed distance table exactly as written in the problem statement.\n    \"dist\": {\n        (0, 1): 24, (0, 2): 22, (0, 3): 23, (0, 4): 21,\n        (1, 0): 20, (1, 2): 19, (1, 3): 19, (1, 4): 25,\n        (2, 0): 17, (2, 1): 20, (2, 3): 18, (2, 4): 20,\n        (3, 0): 25, (3, 1): 18, (3, 2): 21, (3, 4): 24,\n        (4, 0): 21, (4, 1): 18, (4, 2): 15, (4, 3): 23,\n    },\n    \"sense\": \"maximize\",\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    nodes = tuple(d[\"nodes\"])\n    dist = d[\"dist\"]\n    p = d[\"pair_select_count\"]\n\n    # Unordered pairs (i, j) with i < j, distance taken from the (min, max)\n    # directed entry as supplied by the problem statement.\n    pair_list = []\n    pair_dist = {}\n    for a in range(len(nodes)):\n        for b in range(a + 1, len(nodes)):\n            n1 = nodes[a]\n            n2 = nodes[b]\n            if (n1, n2) in dist:\n                pair_dist[(n1, n2)] = dist[(n1, n2)]\n            elif (n2, n1) in dist:\n                pair_dist[(n1, n2)] = dist[(n2, n1)]\n            else:\n                raise KeyError(\"missing distance entry for pair (%s,%s)\" % (n1, n2))\n            pair_list.append((n1, n2))\n\n    model.N = pyo.Set(initialize=list(nodes), ordered=True)\n    model.Pairs = pyo.Set(initialize=pair_list, dimen=2, ordered=True)\n\n    # Decision: is node i selected as a facility?\n    model.x = pyo.Var(model.N, within=pyo.Binary)\n\n    # Decision: pair activation (1 iff both endpoints selected).\n    model.z = pyo.Var(model.Pairs, within=pyo.Binary)\n\n    dist_map = pair_dist\n\n    # Objective: maximize total dispersion over selected pairs.\n    def obj_rule(m):\n        return sum(dist_map[i, j] * m.z[i, j] for (i, j) in m.Pairs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Constraint 1: exactly p facilities selected.\n    def rule_exact(m):\n        return sum(m.x[i] for i in m.N) == m.p_select_count if False else sum(m.x[i] for i in m.N) == p\n\n    model.exact_selection = pyo.Constraint(rule=rule_exact)\n\n    # Constraint 2: pair activation lower bound (both endpoints => z = 1).\n    def rule_pair_lb(m, i, j):\n        return m.z[i, j] >= m.x[i] + m.x[j] - 1\n\n    model.pair_lb = pyo.Constraint(model.Pairs, rule=rule_pair_lb)\n\n    # Constraint 3: z_ij <= x_i.\n    def rule_pair_ub_i(m, i, j):\n        return m.z[i, j] <= m.x[i]\n\n    model.pair_ub_i = pyo.Constraint(model.Pairs, rule=rule_pair_ub_i)\n\n    # Constraint 4: z_ij <= x_j.\n    def rule_pair_ub_j(m, i, j):\n        return m.z[i, j] <= m.x[j]\n\n    model.pair_ub_j = pyo.Constraint(model.Pairs, rule=rule_pair_ub_j)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1746,
+      "completion_tokens": 1859
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.927446842193604,
+   "position": 9,
+   "recipe_index": 3
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T10:40:06"
+}

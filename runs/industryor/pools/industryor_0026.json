@@ -1,0 +1,265 @@
+{
+ "pid": "industryor_0026",
+ "question": "There are two products, A and B, which both require two chemical reaction processes: one before and one after. Each unit of product A requires 2 hours for the front process and 3 hours for the back process. Each unit of product B requires 3 hours for the front process and 4 hours for the back process. There are 16 hours available for the front process and 24 hours available for the back process.\n\nFor each unit of product B produced, two units of byproduct C are generated, which do not require any additional cost. Up to 5 units of byproduct C can be sold, while the remaining units must be disposed of, with a disposal cost of $2 per unit.\n\nSelling one unit of product A yields a profit of $4, selling one unit of product B yields a profit of $10, and selling one unit of byproduct C yields a profit of $3.\n\nTo maximize the total profit obtained, establish the linear programming model for this problem.",
+ "templates": [
+  "Production Planning / Product Mix"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"A\", \"B\"],\n    \"resources\": [\"front\", \"back\"],\n    # usage[product][resource]\n    \"usage\": {\n        \"A\": {\"front\": 2, \"back\": 3},\n        \"B\": {\"front\": 3, \"back\": 4},\n    },\n    \"capacity\": {\"front\": 16, \"back\": 24},\n    \"profit\": {\"A\": 4, \"B\": 10},\n    \"byproduct_per_B\": 2,      # units of C generated per unit of B\n    \"byproduct_profit\": 3,     # profit per unit of C sold\n    \"byproduct_sales_cap\": 5,  # max units of C that can be sold\n    \"disposal_cost\": 2,        # cost per unit of C disposed\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ---- Sets ----\n    model.P = pyo.Set(initialize=d[\"products\"])\n    model.R = pyo.Set(initialize=d[\"resources\"])\n\n    # ---- Variables ----\n    model.x = pyo.Var(model.P, within=pyo.NonNegativeReals)\n    model.c_sold = pyo.Var(within=pyo.NonNegativeReals,\n                           bounds=(0, d[\"byproduct_sales_cap\"]))\n    model.c_disp = pyo.Var(within=pyo.NonNegativeReals)\n\n    # ---- Objective ----\n    def obj_rule(m):\n        return (sum(d[\"profit\"][p] * m.x[p] for p in m.P)\n                + d[\"byproduct_profit\"] * m.c_sold\n                - d[\"disposal_cost\"] * m.c_disp)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # ---- Constraints ----\n    # One capacity constraint per resource.\n    def cap_rule(m, r):\n        return sum(d[\"usage\"][p][r] * m.x[p] for p in m.P) <= d[\"capacity\"][r]\n    model.cap = pyo.Constraint(model.R, rule=cap_rule)\n\n    # Byproduct balance: sold + disposed = generated (= 2 * x_B).\n    def byprod_balance_rule(m):\n        return m.c_sold + m.c_disp == d[\"byproduct_per_B\"] * m.x[\"B\"]\n    model.byprod_balance = pyo.Constraint(rule=byprod_balance_rule)\n\n    return model\n\n\nif __name__ == \"__main__\":\n    m = build_model()\n    m.pprint()\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1028,
+      "completion_tokens": 1077
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.587546348571777,
+   "position": 0,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"front_hours\":    {\"A\": 2, \"B\": 3},   # hours of front process per unit\n    \"back_hours\":     {\"A\": 3, \"B\": 4},   # hours of back process per unit\n    \"front_avail\":    16,                 # hours available for front process\n    \"back_avail\":     24,                 # hours available for back process\n    \"byproduct_per_B\": 2,                 # units of C generated per unit of B\n    \"max_C_sold\":     5,                  # max units of C that can be sold\n    \"disposal_cost\":  2,                  # $ cost per unit of C disposed\n    \"profit_A\":       4,                  # $ profit per unit of A\n    \"profit_B\":       10,                 # $ profit per unit of B\n    \"profit_C\":       3,                  # $ profit per unit of C sold\n    # index convention: 0 = A, 1 = B\n    \"front_coef\":     (2, 3),\n    \"back_coef\":      (3, 4),\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # Sets\n    m.P = pyo.RangeSet(0, 1)   # products A (0) and B (1)\n\n    # Variables\n    m.x = pyo.Var(m.P, domain=pyo.NonNegativeReals)   # units produced of A, B\n    m.s = pyo.Var(domain=pyo.NonNegativeReals, bounds=(0, d[\"max_C_sold\"]))  # units of C sold\n    m.w = pyo.Var(domain=pyo.NonNegativeReals)        # units of C disposed\n\n    # Objective: maximize total profit\n    m.obj = pyo.Objective(\n        expr=d[\"profit_A\"] * m.x[0]\n             + d[\"profit_B\"] * m.x[1]\n             + d[\"profit_C\"] * m.s\n             - d[\"disposal_cost\"] * m.w,\n        sense=pyo.maximize,\n    )\n\n    # Front process hours: 2*xA + 3*xB <= 16\n    def front_rule(m):\n        return d[\"front_coef\"][0] * m.x[0] + d[\"front_coef\"][1] * m.x[1] <= d[\"front_avail\"]\n    m.front = pyo.Constraint(rule=front_rule)\n\n    # Back process hours: 3*xA + 4*xB <= 24\n    def back_rule(m):\n        return d[\"back_coef\"][0] * m.x[0] + d[\"back_coef\"][1] * m.x[1] <= d[\"back_avail\"]\n    m.back = pyo.Constraint(rule=back_rule)\n\n    # Byproduct balance: s + w = 2 * xB\n    def balance_rule(m):\n        return m.s + m.w == d[\"byproduct_per_B\"] * m.x[1]\n    m.balance = pyo.Constraint(rule=balance_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1038,
+      "completion_tokens": 1006
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.83074688911438,
+   "position": 1,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Problem data\n# ---------------------------------------------------------------------------\nDATA = {\n    # Products that consume the two processes\n    \"products\": [\"A\", \"B\"],\n    # Hours of front process per unit of each product\n    \"front_hours\": {\"A\": 2, \"B\": 3},\n    # Hours of back process per unit of each product\n    \"back_hours\": {\"A\": 3, \"B\": 4},\n    # Available hours for each process\n    \"front_avail\": 16,\n    \"back_avail\": 24,\n    # Profit per unit sold\n    \"profit_A\": 4,\n    \"profit_B\": 10,\n    \"profit_C\": 3,\n    # Byproduct C generated per unit of B\n    \"C_per_B\": 2,\n    # Maximum units of C that can be sold\n    \"C_sell_max\": 5,\n    # Disposal cost per unit of C not sold\n    \"C_disposal_cost\": 2,\n}\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   x[p]  : units produced of product p in {A, B}   (non-negative integers)\n#   sC    : units of byproduct C sold               (non-negative integer, <= 5)\n#   dC    : units of byproduct C disposed           (non-negative integer)\n#\n# Objective (maximize):\n#   profit_A * x[A] + profit_B * x[B] + profit_C * sC - C_disposal_cost * dC\n#\n# Constraints:\n#   (1) front process capacity:  sum_p front_hours[p] * x[p] <= front_avail\n#   (2) back  process capacity:  sum_p back_hours[p]  * x[p] <= back_avail\n#   (3) byproduct balance:       sC + dC == C_per_B * x[B]\n#   (4) sales cap on C:          sC <= C_sell_max\n# ---------------------------------------------------------------------------\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.P = pyo.Set(initialize=d[\"products\"])\n\n    # Variables\n    model.x = pyo.Var(model.P, within=pyo.NonNegativeIntegers)\n    model.sC = pyo.Var(within=pyo.NonNegativeIntegers, bounds=(0, d[\"C_sell_max\"]))\n    model.dC = pyo.Var(within=pyo.NonNegativeIntegers)\n\n    # Objective\n    def obj_rule(m):\n        return (\n            d[\"profit_A\"] * m.x[\"A\"]\n            + d[\"profit_B\"] * m.x[\"B\"]\n            + d[\"profit_C\"] * m.sC\n            - d[\"C_disposal_cost\"] * m.dC\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # (1) Front process capacity\n    def front_rule(m):\n        return sum(d[\"front_hours\"][p] * m.x[p] for p in m.P) <= d[\"front_avail\"]\n\n    model.front_cap = pyo.Constraint(rule=front_rule)\n\n    # (2) Back process capacity\n    def back_rule(m):\n        return sum(d[\"back_hours\"][p] * m.x[p] for p in m.P) <= d[\"back_avail\"]\n\n    model.back_cap = pyo.Constraint(rule=back_rule)\n\n    # (3) Byproduct C balance: sold + disposed == generated\n    def c_balance_rule(m):\n        return m.sC + m.dC == d[\"C_per_B\"] * m.x[\"B\"]\n\n    model.c_balance = pyo.Constraint(rule=c_balance_rule)\n\n    # (4) Sales cap on C\n    def c_sell_cap_rule(m):\n        return m.sC <= d[\"C_sell_max\"]\n\n    model.c_sell_cap = pyo.Constraint(rule=c_sell_cap_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1042,
+      "completion_tokens": 1402
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2365,
+      "completion_tokens": 912
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 15.27257490158081,
+   "position": 2,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   xA : units of product A produced            (NonNegativeReals)\n#   xB : units of product B produced            (NonNegativeReals)\n#   xC : units of byproduct C sold              (NonNegativeReals, <= 5)\n#   xD : units of byproduct C disposed          (NonNegativeReals)\n#\n# Objective (maximize total profit):\n#   4*xA + 10*xB + 3*xC - 2*xD\n#\n# Constraints:\n#   (1) Front process capacity:  2*xA + 3*xB <= 16\n#   (2) Back process capacity:   3*xA + 4*xB <= 24\n#   (3) Byproduct balance:       xC + xD == 2*xB\n#   (4) Sales limit on C:        xC <= 5\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"front_hours_A\": 2,\n    \"front_hours_B\": 3,\n    \"back_hours_A\": 3,\n    \"back_hours_B\": 4,\n    \"front_capacity\": 16,\n    \"back_capacity\": 24,\n    \"byproduct_per_B\": 2,\n    \"max_C_sold\": 5,\n    \"profit_A\": 4,\n    \"profit_B\": 10,\n    \"profit_C\": 3,\n    \"disposal_cost_C\": 2,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Decision variables\n    model.xA = pyo.Var(within=pyo.NonNegativeReals)\n    model.xB = pyo.Var(within=pyo.NonNegativeReals)\n    model.xC = pyo.Var(within=pyo.NonNegativeReals)\n    model.xD = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Objective: maximize total profit\n    model.obj = pyo.Objective(\n        expr=(\n            d[\"profit_A\"] * model.xA\n            + d[\"profit_B\"] * model.xB\n            + d[\"profit_C\"] * model.xC\n            - d[\"disposal_cost_C\"] * model.xD\n        ),\n        sense=pyo.maximize,\n    )\n\n    # (1) Front process capacity\n    model.front_capacity = pyo.Constraint(\n        expr=(\n            d[\"front_hours_A\"] * model.xA\n            + d[\"front_hours_B\"] * model.xB\n            <= d[\"front_capacity\"]\n        )\n    )\n\n    # (2) Back process capacity\n    model.back_capacity = pyo.Constraint(\n        expr=(\n            d[\"back_hours_A\"] * model.xA\n            + d[\"back_hours_B\"] * model.xB\n            <= d[\"back_capacity\"]\n        )\n    )\n\n    # (3) Byproduct balance: C sold + C disposed == C generated\n    model.byproduct_balance = pyo.Constraint(\n        expr=(\n            model.xC\n            + model.xD\n            == d[\"byproduct_per_B\"] * model.xB\n        )\n    )\n\n    # (4) Sales limit on byproduct C\n    model.C_sales_limit = pyo.Constraint(\n        expr=model.xC <= d[\"max_C_sold\"]\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1042,
+      "completion_tokens": 1780
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1052,
+      "completion_tokens": 762
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 16.208651781082153,
+   "position": 3,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"A\", \"B\"],\n    \"front_hours\": {\"A\": 2, \"B\": 3},\n    \"back_hours\": {\"A\": 3, \"B\": 4},\n    \"front_capacity\": 16,\n    \"back_capacity\": 24,\n    \"byproduct_per_B\": 2,\n    \"C_sales_cap\": 5,\n    \"profit\": {\"A\": 4, \"B\": 10},\n    \"C_profit\": 3,\n    \"C_disposal_cost\": 2,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # Sets\n    m.P = pyo.Set(initialize=d[\"products\"])\n\n    # Variables\n    m.produce = pyo.Var(m.P, domain=pyo.NonNegativeReals)\n    m.sell_C = pyo.Var(domain=pyo.NonNegativeReals,\n                       bounds=(0, d[\"C_sales_cap\"]))\n    m.dispose_C = pyo.Var(domain=pyo.NonNegativeReals)\n\n    # Objective: maximize total profit\n    def obj_rule(m):\n        return (sum(d[\"profit\"][p] * m.produce[p] for p in m.P)\n                + d[\"C_profit\"] * m.sell_C\n                - d[\"C_disposal_cost\"] * m.dispose_C)\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Front process capacity\n    def front_cap_rule(m):\n        return sum(d[\"front_hours\"][p] * m.produce[p] for p in m.P) \\\n            <= d[\"front_capacity\"]\n    m.front_capacity = pyo.Constraint(rule=front_cap_rule)\n\n    # Back process capacity\n    def back_cap_rule(m):\n        return sum(d[\"back_hours\"][p] * m.produce[p] for p in m.P) \\\n            <= d[\"back_capacity\"]\n    m.back_capacity = pyo.Constraint(rule=back_cap_rule)\n\n    # Byproduct C mass balance: 2 * B = sold + disposed\n    def byproduct_balance_rule(m):\n        return d[\"byproduct_per_B\"] * m.produce[\"B\"] == m.sell_C + m.dispose_C\n    m.byproduct_balance = pyo.Constraint(rule=byproduct_balance_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1022,
+      "completion_tokens": 935
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.735677242279053,
+   "position": 4,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"PRODUCTS\": [\"A\", \"B\"],\n    \"PROCESSES\": [\"front\", \"back\"],\n    # hours per unit of product in each process\n    \"hours\": {\n        (\"A\", \"front\"): 2,\n        (\"A\", \"back\"): 3,\n        (\"B\", \"front\"): 3,\n        (\"B\", \"back\"): 4,\n    },\n    # available hours per process\n    \"capacity\": {\"front\": 16, \"back\": 24},\n    # profit per unit sold\n    \"profit_A\": 4,\n    \"profit_B\": 10,\n    \"profit_C\": 3,\n    # byproduct C: generated per unit of B\n    \"C_per_B\": 2,\n    # max units of C that can be sold\n    \"C_sale_cap\": 5,\n    # disposal cost per unit of C\n    \"disposal_cost\": 2,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.P = pyo.Set(initialize=d[\"PRODUCTS\"])\n    model.R = pyo.Set(initialize=d[\"PROCESSES\"])\n\n    # Decision variables\n    model.produce = pyo.Var(model.P, within=pyo.NonNegativeReals)\n    model.sell_C = pyo.Var(within=pyo.NonNegativeReals,\n                           bounds=(0, d[\"C_sale_cap\"]))\n    model.dispose_C = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Objective: maximize total profit\n    def obj_rule(m):\n        return (d[\"profit_A\"] * m.produce[\"A\"]\n                + d[\"profit_B\"] * m.produce[\"B\"]\n                + d[\"profit_C\"] * m.sell_C\n                - d[\"disposal_cost\"] * m.dispose_C)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Capacity constraints per process\n    def cap_rule(m, r):\n        return sum(d[\"hours\"][(p, r)] * m.produce[p] for p in m.P) \\\n            <= d[\"capacity\"][r]\n    model.capacity = pyo.Constraint(model.R, rule=cap_rule)\n\n    # Byproduct balance: sell_C + dispose_C = C_per_B * B\n    def byproduct_rule(m):\n        return m.sell_C + m.dispose_C == d[\"C_per_B\"] * m.produce[\"B\"]\n    model.byproduct_balance = pyo.Constraint(rule=byproduct_rule)\n\n    # Sale cap on byproduct C\n    def sale_cap_rule(m):\n        return m.sell_C <= d[\"C_sale_cap\"]\n    model.sale_cap = pyo.Constraint(rule=sale_cap_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1022,
+      "completion_tokens": 981
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.801418304443359,
+   "position": 5,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"Each unit of product A requires 2 hours for the front process\"\n    \"hours_front_A\": 2,\n    # \"Each unit of product B requires 3 hours for the front process\"\n    \"hours_front_B\": 3,\n    # \"Each unit of product A requires 3 hours for the back process\"\n    \"hours_back_A\": 3,\n    # \"Each unit of product B requires 4 hours for the back process\"\n    \"hours_back_B\": 4,\n    # \"There are 16 hours available for the front process\"\n    \"cap_front\": 16,\n    # \"There are 24 hours available for the back process\"\n    \"cap_back\": 24,\n    # \"For each unit of product B produced, two units of byproduct C are generated\"\n    \"C_per_B\": 2,\n    # \"Up to 5 units of byproduct C can be sold\"\n    \"max_sell_C\": 5,\n    # \"Selling one unit of product A yields a profit of $4\"\n    \"profit_A\": 4,\n    # \"Selling one unit of product B yields a profit of $10\"\n    \"profit_B\": 10,\n    # \"Selling one unit of byproduct C yields a profit of $3\"\n    \"profit_C\": 3,\n    # \"disposal cost of $2 per unit\"\n    \"disposal_cost_C\": 2,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Variables\n    model.xA = pyo.Var(within=pyo.NonNegativeReals)\n    model.xB = pyo.Var(within=pyo.NonNegativeReals)\n    model.sC = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, d[\"max_sell_C\"]))\n\n    # Objective: maximize total profit\n    # profit = pA*xA + pB*xB + pC*sC - disposal*(C_generated - sC)\n    # C_generated = C_per_B * xB\n    def obj_rule(m):\n        return (\n            d[\"profit_A\"] * m.xA\n            + d[\"profit_B\"] * m.xB\n            + d[\"profit_C\"] * m.sC\n            - d[\"disposal_cost_C\"] * (d[\"C_per_B\"] * m.xB - m.sC)\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Front process capacity\n    def front_rule(m):\n        return d[\"hours_front_A\"] * m.xA + d[\"hours_front_B\"] * m.xB <= d[\"cap_front\"]\n\n    model.front_cap = pyo.Constraint(rule=front_rule)\n\n    # Back process capacity\n    def back_rule(m):\n        return d[\"hours_back_A\"] * m.xA + d[\"hours_back_B\"] * m.xB <= d[\"cap_back\"]\n\n    model.back_cap = pyo.Constraint(rule=back_rule)\n\n    # Byproduct balance: sold C cannot exceed generated C\n    def c_balance_rule(m):\n        return m.sC <= d[\"C_per_B\"] * m.xB\n\n    model.c_balance = pyo.Constraint(rule=c_balance_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1026,
+      "completion_tokens": 1081
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.9596405029296875,
+   "position": 6,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Products\n    \"products\": [\"A\", \"B\"],\n    # Front-process hours required per unit\n    \"front_hours\": {\"A\": 2, \"B\": 3},\n    # Back-process hours required per unit\n    \"back_hours\": {\"A\": 3, \"B\": 4},\n    # Available process hours\n    \"front_capacity\": 16,\n    \"back_capacity\": 24,\n    # Profit per unit sold\n    \"profit_A\": 4,\n    \"profit_B\": 10,\n    \"profit_C\": 3,\n    # Byproduct C\n    \"C_per_B\": 2,          # units of C generated per unit of B\n    \"C_sales_cap\": 5,      # max units of C that can be sold\n    \"C_disposal_cost\": 2,  # cost per unit disposed\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # --- Sets ---\n    m.P = pyo.Set(initialize=d[\"products\"], ordered=True)\n\n    # --- Variables ---\n    m.x = pyo.Var(m.P, domain=pyo.NonNegativeReals, bounds=(0, None))\n    m.soldC = pyo.Var(domain=pyo.NonNegativeReals, bounds=(0, None))\n    m.disposedC = pyo.Var(domain=pyo.NonNegativeReals, bounds=(0, None))\n\n    # --- Objective: maximize profit ---\n    def obj_rule(model):\n        return (\n            d[\"profit_A\"] * model.x[\"A\"]\n            + d[\"profit_B\"] * model.x[\"B\"]\n            + d[\"profit_C\"] * model.soldC\n            - d[\"C_disposal_cost\"] * model.disposedC\n        )\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # --- Front-process capacity constraint ---\n    def front_rule(model):\n        return (\n            d[\"front_hours\"][\"A\"] * model.x[\"A\"]\n            + d[\"front_hours\"][\"B\"] * model.x[\"B\"]\n            <= d[\"front_capacity\"]\n        )\n\n    m.front_capacity = pyo.Constraint(rule=front_rule)\n\n    # --- Back-process capacity constraint ---\n    def back_rule(model):\n        return (\n            d[\"back_hours\"][\"A\"] * model.x[\"A\"]\n            + d[\"back_hours\"][\"B\"] * model.x[\"B\"]\n            <= d[\"back_capacity\"]\n        )\n\n    m.back_capacity = pyo.Constraint(rule=back_rule)\n\n    # --- Byproduct C balance: generated = sold + disposed ---\n    def c_balance_rule(model):\n        return (\n            model.soldC + model.disposedC\n            == d[\"C_per_B\"] * model.x[\"B\"]\n        )\n\n    m.c_balance = pyo.Constraint(rule=c_balance_rule)\n\n    # --- Byproduct C sales cap ---\n    def c_cap_rule(model):\n        return model.soldC <= d[\"C_sales_cap\"]\n\n    m.c_sales_cap = pyo.Constraint(rule=c_cap_rule)\n\n    return m\n\n\n# Placeholder if an external reference answer is required elsewhere\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1028,
+      "completion_tokens": 1232
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.220284700393677,
+   "position": 7,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"A\", \"B\"],\n    \"processes\": [\"front\", \"back\"],\n    # hours per unit of product p in process r:  usage[r][p]\n    \"usage\": {\n        \"front\": {\"A\": 2, \"B\": 3},\n        \"back\":  {\"A\": 3, \"B\": 4},\n    },\n    \"avail\": {\"front\": 16, \"back\": 24},\n    \"profit_A\": 4,\n    \"profit_B\": 10,\n    \"profit_C\": 3,\n    \"disposal_cost_C\": 2,\n    \"C_yield_per_B\": 2,        # units of C generated per unit of B\n    \"C_sales_cap\": 5,          # max units of C that can be sold\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.PROD = pyo.Set(initialize=d[\"products\"])\n    m.PROC = pyo.Set(initialize=d[\"processes\"])\n\n    # x[p]: units of product p produced (integer units)\n    m.x = pyo.Var(m.PROD, domain=pyo.NonNegativeIntegers)\n\n    # s: units of byproduct C sold (bounded by sales cap)\n    m.s = pyo.Var(domain=pyo.NonNegativeReals, bounds=(0, d[\"C_sales_cap\"]))\n\n    # w: units of byproduct C disposed of\n    m.w = pyo.Var(domain=pyo.NonNegativeReals)\n\n    # Objective: maximize total profit\n    #  4*x_A + 10*x_B + 3*s - 2*w\n    m.obj = pyo.Objective(\n        expr=(d[\"profit_A\"] * m.x[\"A\"]\n              + d[\"profit_B\"] * m.x[\"B\"]\n              + d[\"profit_C\"] * m.s\n              - d[\"disposal_cost_C\"] * m.w),\n        sense=pyo.maximize,\n    )\n\n    # Process capacity constraints: <= available hours (direction: <=)\n    def cap_rule(m, r):\n        return sum(d[\"usage\"][r][p] * m.x[p] for p in m.PROD) <= d[\"avail\"][r]\n\n    m.capacity = pyo.Constraint(m.PROC, rule=cap_rule)\n\n    # Byproduct balance: C generated (yield * x_B) = sold + disposed (equality)\n    # s <= 5 is enforced by the variable bound above.\n    def balance_rule(m):\n        return d[\"C_yield_per_B\"] * m.x[\"B\"] == m.s + m.w\n\n    m.byproduct_balance = pyo.Constraint(rule=balance_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1038,
+      "completion_tokens": 987
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.998817205429077,
+   "position": 8,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"Each unit of product A requires 2 hours for the front process\"\n    \"front_hours_A\": 2,\n    # \"Each unit of product B requires 3 hours for the front process\"\n    \"front_hours_B\": 3,\n    # \"Each unit of product A requires ... 3 hours for the back process\"\n    \"back_hours_A\": 3,\n    # \"Each unit of product B requires ... 4 hours for the back process\"\n    \"back_hours_B\": 4,\n    # \"There are 16 hours available for the front process\"\n    \"front_capacity\": 16,\n    # \"There are 24 hours available for the back process\"\n    \"back_capacity\": 24,\n    # \"For each unit of product B produced, two units of byproduct C are generated\"\n    \"byproduct_per_B\": 2,\n    # \"Up to 5 units of byproduct C can be sold\"\n    \"max_C_sold\": 5,\n    # \"disposal cost of $2 per unit\"\n    \"disposal_cost_C\": 2,\n    # \"Selling one unit of product A yields a profit of $4\"\n    \"profit_A\": 4,\n    # \"selling one unit of product B yields a profit of $10\"\n    \"profit_B\": 10,\n    # \"selling one unit of byproduct C yields a profit of $3\"\n    \"profit_C\": 3,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Variables\n    model.x_A = pyo.Var(within=pyo.NonNegativeReals)\n    model.x_B = pyo.Var(within=pyo.NonNegativeReals)\n    model.c_sold = pyo.Var(within=pyo.NonNegativeReals,\n                           bounds=(0, d[\"max_C_sold\"]))\n    model.c_disposed = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Objective: maximize total profit\n    model.obj = pyo.Objective(\n        expr=(d[\"profit_A\"] * model.x_A\n              + d[\"profit_B\"] * model.x_B\n              + d[\"profit_C\"] * model.c_sold\n              - d[\"disposal_cost_C\"] * model.c_disposed),\n        sense=pyo.maximize,\n    )\n\n    # Front process capacity\n    model.front_capacity = pyo.Constraint(\n        expr=(d[\"front_hours_A\"] * model.x_A\n              + d[\"front_hours_B\"] * model.x_B\n              <= d[\"front_capacity\"])\n    )\n\n    # Back process capacity\n    model.back_capacity = pyo.Constraint(\n        expr=(d[\"back_hours_A\"] * model.x_A\n              + d[\"back_hours_B\"] * model.x_B\n              <= d[\"back_capacity\"])\n    )\n\n    # Byproduct C balance\n    model.byproduct_balance = pyo.Constraint(\n        expr=(model.c_sold + model.c_disposed\n              == d[\"byproduct_per_B\"] * model.x_B)\n    )\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1026,
+      "completion_tokens": 1018
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.743609428405762,
+   "position": 9,
+   "recipe_index": 1
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:52:15"
+}

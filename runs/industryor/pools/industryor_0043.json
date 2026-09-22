@@ -1,0 +1,302 @@
+{
+ "pid": "industryor_0043",
+ "question": "A company that produces only one product has 40 workers. Each worker produces 20 units per month. The demand for the semester changes according to the following table:\n\n| Month | 1 | 2 | 3 | 4 | 5 | 6 |\n| :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n| Demand (units) | 700 | 600 | 500 | 800 | 900 | 800 |\n\nTo adjust production based on demand, the company can offer some (paid) additional working hours (each worker can produce a maximum of 6 extra units per month, with a unit cost of 5 euros), use warehouse space (10 euros per unit per month), and hire or lay off employees (the number of employees can vary by a maximum of $\\\\pm 5$ per month, with a hiring cost of 500 euros per person and a layoff cost of 700 euros per person).\n\nInitially, the warehouse space is empty, and we require it to be empty at the end of the semester as well. Develop a mathematical program to maximize revenue and solve it using COPTPY. How does the objective function change when all variables are relaxed to continuous?",
+ "templates": [
+  "Production Planning / Product Mix",
+  "Workforce / Shift Scheduling"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# =====================================================================\n# DECISION VARIABLES\n#   W[t]  : workers employed in month t                 (NonNegativeIntegers)\n#   H[t]  : workers hired at start of month t           (NonNegativeIntegers)\n#   L[t]  : workers laid off at start of month t        (NonNegativeIntegers)\n#   E[t]  : extra units produced in month t             (NonNegativeReals)\n#   I[t]  : inventory (warehouse) at end of month t     (NonNegativeReals)\n#\n# OBJECTIVE (maximize net revenue):\n#   Revenue is proportional to units sold = demand (fixed), so maximizing\n#   revenue is equivalent to minimizing total operating cost:\n#       extra-unit cost + inventory holding cost + hiring cost + layoff cost\n#   (implemented as a minimization of cost).\n#\n# CONSTRAINTS\n#   (1) Workforce balance:  W[t] = W[t-1] + H[t] - L[t]\n#   (2) Hiring/layoff limit: H[t] + L[t] <= workforce_change_max\n#   (3) Inventory balance:  I[t] = I[t-1] + 20*W[t] + E[t] - demand[t]\n#   (4) Extra-hour capacity: E[t] <= 6 * W[t]\n#   (5) Initial inventory empty: I[0] = 0\n#   (6) Final inventory empty:   I[6] = 0\n# =====================================================================\n\nDATA = {\n    \"months\": [1, 2, 3, 4, 5, 6],\n    \"initial_workers\": 40,\n    \"units_per_worker\": 20,\n    \"demand\": {1: 700, 2: 600, 3: 500, 4: 800, 5: 900, 6: 800},\n    \"max_extra_per_worker\": 6,\n    \"extra_unit_cost\": 5,\n    \"inventory_unit_cost\": 10,\n    \"workforce_change_max\": 5,\n    \"hiring_cost\": 500,\n    \"layoff_cost\": 700,\n    \"initial_inventory\": 0,\n    \"final_inventory\": 0,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data if data is not None else DATA\n\n    months = d[\"months\"]\n    T = len(months)\n\n    model = pyo.ConcreteModel()\n\n    # ---------------- Sets ----------------\n    model.T = pyo.Set(initialize=months, ordered=True)\n\n    # ---------------- Variables ----------------\n    model.W = pyo.Var(model.T, within=pyo.NonNegativeIntegers)\n    model.H = pyo.Var(model.T, within=pyo.NonNegativeIntegers)\n    model.L = pyo.Var(model.T, within=pyo.NonNegativeIntegers)\n    model.E = pyo.Var(model.T, within=pyo.NonNegativeReals)\n    model.I = pyo.Var(model.T, within=pyo.NonNegativeReals)\n\n    # ---------------- Objective ----------------\n    def obj_rule(m):\n        return (\n            sum(d[\"extra_unit_cost\"] * m.E[t] for t in m.T)\n            + sum(d[\"inventory_unit_cost\"] * m.I[t] for t in m.T)\n            + sum(d[\"hiring_cost\"] * m.H[t] for t in m.T)\n            + sum(d[\"layoff_cost\"] * m.L[t] for t in m.T)\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---------------- Constraints ----------------\n\n    # (1) Workforce balance\n    def workforce_balance_rule(m, t):\n        if t == months[0]:\n            return m.W[t] == d[\"initial_workers\"] + m.H[t] - m.L[t]\n        prev = months[months.index(t) - 1]\n        return m.W[t] == m.W[prev] + m.H[t] - m.L[t]\n\n    model.workforce_balance = pyo.Constraint(model.T, rule=workforce_balance_rule)\n\n    # (2) Hiring / layoff limit\n    def change_limit_rule(m, t):\n        return m.H[t] + m.L[t] <= d[\"workforce_change_max\"]\n\n    model.change_limit = pyo.Constraint(model.T, rule=change_limit_rule)\n\n    # (3) Inventory balance\n    def inventory_balance_rule(m, t):\n        if t == months[0]:\n            return (\n                m.I[t]\n                == d[\"initial_inventory\"]\n                + d[\"units_per_worker\"] * m.W[t]\n                + m.E[t]\n                - d[\"demand\"][t]\n            )\n        prev = months[months.index(t) - 1]\n        return (\n            m.I[t]\n            == m.I[prev]\n            + d[\"units_per_worker\"] * m.W[t]\n            + m.E[t]\n            - d[\"demand\"][t]\n        )\n\n    model.inventory_balance = pyo.Constraint(model.T, rule=inventory_balance_rule)\n\n    # (4) Extra-hour capacity\n    def extra_capacity_rule(m, t):\n        return m.E[t] <= d[\"max_extra_per_worker\"] * m.W[t]\n\n    model.extra_capacity = pyo.Constraint(model.T, rule=extra_capacity_rule)\n\n    # (6) Final inventory empty\n    def final_inventory_rule(m):\n        return m.I[months[-1]] == d[\"final_inventory\"]\n\n    model.final_inventory = pyo.Constraint(rule=final_inventory_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1240,
+      "completion_tokens": 5999
+     },
+     "finish_reason": "length"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3975,
+      "completion_tokens": 1264
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 49.82270312309265,
+   "position": 0,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"months\":        [1, 2, 3, 4, 5, 6],\n    \"demand\":        {1: 700, 2: 600, 3: 500, 4: 800, 5: 900, 6: 800},\n    \"init_workers\":  40,\n    \"units_per_worker\": 20,      # regular units per worker per month\n    \"max_extra_per_worker\": 6,   # overtime units per worker per month\n    \"overtime_cost\": 5,          # euros per overtime unit\n    \"holding_cost\":  10,         # euros per unit per month\n    \"hire_cost\":     500,        # euros per person hired\n    \"layoff_cost\":   700,        # euros per person laid off\n    \"max_change\":    5,          # max +/- workers per month\n    \"init_inventory\": 0,\n    \"final_inventory\": 0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    months = d[\"months\"]\n    T = len(months)\n\n    model = pyo.ConcreteModel()\n    model.T = pyo.RangeSet(1, T)\n\n    # ---- Variables -------------------------------------------------------\n    model.W = pyo.Var(model.T, within=pyo.NonNegativeIntegers)   # workers\n    model.H = pyo.Var(model.T, within=pyo.NonNegativeIntegers)   # hires\n    model.L = pyo.Var(model.T, within=pyo.NonNegativeIntegers)   # layoffs\n    model.P = pyo.Var(model.T, within=pyo.NonNegativeIntegers)   # regular production\n    model.O = pyo.Var(model.T, within=pyo.NonNegativeIntegers)   # overtime production\n    model.I = pyo.Var(model.T, within=pyo.NonNegativeIntegers)   # end-of-month inventory\n\n    # ---- Objective: minimize total cost ----------------------------------\n    def obj_rule(m):\n        return (\n            d[\"overtime_cost\"] * sum(m.O[t] for t in m.T)\n            + d[\"holding_cost\"] * sum(m.I[t] for t in m.T)\n            + d[\"hire_cost\"] * sum(m.H[t] for t in m.T)\n            + d[\"layoff_cost\"] * sum(m.L[t] for t in m.T)\n        )\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---- Constraints -----------------------------------------------------\n\n    # Worker balance: W[t] = W[t-1] + H[t] - L[t]  (uses init_workers at t=1)\n    def worker_balance_rule(m, t):\n        prev = d[\"init_workers\"] if t == 1 else m.W[t - 1]\n        return m.W[t] == prev + m.H[t] - m.L[t]\n    model.worker_balance = pyo.Constraint(model.T, rule=worker_balance_rule)\n\n    # Max hires / layoffs per month  (<= max_change)\n    def max_hire_rule(m, t):\n        return m.H[t] <= d[\"max_change\"]\n    model.max_hire = pyo.Constraint(model.T, rule=max_hire_rule)\n\n    def max_layoff_rule(m, t):\n        return m.L[t] <= d[\"max_change\"]\n    model.max_layoff = pyo.Constraint(model.T, rule=max_layoff_rule)\n\n    # Regular capacity: P[t] <= units_per_worker * W[t]\n    def reg_capacity_rule(m, t):\n        return m.P[t] <= d[\"units_per_worker\"] * m.W[t]\n    model.reg_capacity = pyo.Constraint(model.T, rule=reg_capacity_rule)\n\n    # Overtime cap: O[t] <= max_extra_per_worker * W[t]\n    def overtime_cap_rule(m, t):\n        return m.O[t] <= d[\"max_extra_per_worker\"] * m.W[t]\n    model.overtime_cap = pyo.Constraint(model.T, rule=overtime_cap_rule)\n\n    # Inventory balance: I[t] = I[t-1] + P[t] + O[t] - demand[t]\n    def inventory_balance_rule(m, t):\n        prev = d[\"init_inventory\"] if t == 1 else m.I[t - 1]\n        return m.I[t] == prev + m.P[t] + m.O[t] - d[\"demand\"][t]\n    model.inventory_balance = pyo.Constraint(model.T, rule=inventory_balance_rule)\n\n    # Final inventory must be empty\n    def final_inventory_rule(m):\n        return m.I[T] == d[\"final_inventory\"]\n    model.final_inventory = pyo.Constraint(rule=final_inventory_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1236,
+      "completion_tokens": 1646
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.828198432922363,
+   "position": 1,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Structured formulation\n# ---------------------------------------------------------------------------\n# Sets / indices\n#   T = {1,...,6}  months of the semester\n#\n# Decision variables\n#   W[t]  : number of workers available in month t          (NonNegativeIntegers)\n#   H[t]  : workers hired at the start of month t           (NonNegativeIntegers)\n#   L[t]  : workers laid off at the start of month t        (NonNegativeIntegers)\n#   P[t]  : regular production in month t (units)           (NonNegativeIntegers)\n#   O[t]  : extra (overtime) production in month t (units)  (NonNegativeIntegers)\n#   I[t]  : inventory (warehouse) at end of month t (units) (NonNegativeIntegers)\n#\n# Objective (maximize profit = revenue - costs)\n#   Revenue is not given explicitly, so we maximize the negative of the\n#   controllable costs: overtime cost + holding cost + hiring cost + layoff cost.\n#   (Equivalently minimize total controllable cost.)\n#\n# Constraints\n#   (1) Workforce balance:  W[t] = W[t-1] + H[t] - L[t]                 (source: \"hire or lay off employees\")\n#   (2) Workforce change limit: H[t] + L[t] <= 5                        (source: \"vary by a maximum of \u00b15 per month\")\n#   (3) Regular production capacity: P[t] <= 20 * W[t]                  (source: \"each worker produces 20 units per month\")\n#   (4) Overtime capacity: O[t] <= 6 * W[t]                             (source: \"each worker can produce a maximum of 6 extra units\")\n#   (5) Inventory balance: I[t] = I[t-1] + P[t] + O[t] - demand[t]      (source: demand table + warehouse)\n#   (6) Initial inventory: I[0] = 0                                     (source: \"initially the warehouse space is empty\")\n#   (7) Final inventory: I[6] = 0                                       (source: \"empty at the end of the semester\")\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"months\": [1, 2, 3, 4, 5, 6],\n    \"demand\": {1: 700, 2: 600, 3: 500, 4: 800, 5: 900, 6: 800},\n    \"initial_workers\": 40,\n    \"units_per_worker\": 20,\n    \"max_extra_per_worker\": 6,\n    \"extra_unit_cost\": 5,\n    \"holding_cost\": 10,\n    \"max_worker_change\": 5,\n    \"hiring_cost\": 500,\n    \"layoff_cost\": 700,\n    \"big_m_workers\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    months = d[\"months\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.T = pyo.Set(initialize=months, ordered=True)\n\n    # Decision variables\n    model.W = pyo.Var(model.T, within=pyo.NonNegativeIntegers)\n    model.H = pyo.Var(model.T, within=pyo.NonNegativeIntegers)\n    model.L = pyo.Var(model.T, within=pyo.NonNegativeIntegers)\n    model.P = pyo.Var(model.T, within=pyo.NonNegativeIntegers)\n    model.O = pyo.Var(model.T, within=pyo.NonNegativeIntegers)\n    model.I = pyo.Var(model.T, within=pyo.NonNegativeIntegers)\n\n    # (1) Workforce balance\n    def workforce_balance_rule(m, t):\n        if t == months[0]:\n            return m.W[t] == d[\"initial_workers\"] + m.H[t] - m.L[t]\n        return m.W[t] == m.W[t - 1] + m.H[t] - m.L[t]\n\n    model.workforce_balance = pyo.Constraint(model.T, rule=workforce_balance_rule)\n\n    # (2) Workforce change limit\n    def workforce_change_rule(m, t):\n        return m.H[t] + m.L[t] <= d[\"max_worker_change\"]\n\n    model.workforce_change = pyo.Constraint(model.T, rule=workforce_change_rule)\n\n    # (3) Regular production capacity\n    def regular_capacity_rule(m, t):\n        return m.P[t] <= d[\"units_per_worker\"] * m.W[t]\n\n    model.regular_capacity = pyo.Constraint(model.T, rule=regular_capacity_rule)\n\n    # (4) Overtime capacity\n    def overtime_capacity_rule(m, t):\n        return m.O[t] <= d[\"max_extra_per_worker\"] * m.W[t]\n\n    model.overtime_capacity = pyo.Constraint(model.T, rule=overtime_capacity_rule)\n\n    # (5) Inventory balance\n    def inventory_balance_rule(m, t):\n        if t == months[0]:\n            return m.I[t] == m.P[t] + m.O[t] - d[\"demand\"][t]\n        return m.I[t] == m.I[t - 1] + m.P[t] + m.O[t] - d[\"demand\"][t]\n\n    model.inventory_balance = pyo.Constraint(model.T, rule=inventory_balance_rule)\n\n    # (7) Final inventory must be zero\n    def final_inventory_rule(m):\n        return m.I[months[-1]] == 0\n\n    model.final_inventory = pyo.Constraint(rule=final_inventory_rule)\n\n    # Objective: minimize total controllable cost\n    def obj_rule(m):\n        overtime_cost = sum(d[\"extra_unit_cost\"] * m.O[t] for t in m.T)\n        holding_cost = sum(d[\"holding_cost\"] * m.I[t] for t in m.T)\n        hiring_cost = sum(d[\"hiring_cost\"] * m.H[t] for t in m.T)\n        layoff_cost = sum(d[\"layoff_cost\"] * m.L[t] for t in m.T)\n        return overtime_cost + holding_cost + hiring_cost + layoff_cost\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1240,
+      "completion_tokens": 2160
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3321,
+      "completion_tokens": 1425
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 23.224440813064575,
+   "position": 2,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_months\": 6,\n    \"months\": [1, 2, 3, 4, 5, 6],\n    \"demand\": {1: 700, 2: 600, 3: 500, 4: 800, 5: 900, 6: 800},\n    \"initial_workers\": 40,\n    \"units_per_worker\": 20,       # regular output per worker per month\n    \"extra_cap_per_worker\": 6,    # max extra units per worker per month\n    \"extra_cost\": 5,              # euros per extra unit\n    \"holding_cost\": 10,           # euros per unit held per month\n    \"hiring_cost\": 500,           # euros per worker hired\n    \"layoff_cost\": 700,           # euros per worker laid off\n    \"max_workers_change\": 5,      # +/- workers per month\n    \"price\": 10,                  # euros revenue per unit sold\n    \"initial_inventory\": 0,\n    \"final_inventory\": 0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    months = d[\"months\"]\n\n    model = pyo.ConcreteModel()\n\n    model.M = pyo.Set(initialize=months, ordered=True)\n\n    # ---- decision variables ----\n    model.x = pyo.Var(model.M, within=pyo.NonNegativeReals)\n    model.extra = pyo.Var(model.M, within=pyo.NonNegativeReals)\n    model.inv = pyo.Var(model.M, within=pyo.NonNegativeReals)\n    model.W = pyo.Var(model.M, within=pyo.NonNegativeReals)\n    model.hire = pyo.Var(model.M, within=pyo.NonNegativeReals)\n    model.lay = pyo.Var(model.M, within=pyo.NonNegativeReals)\n\n    # ---- workforce transition: W[t] = W[t-1] + hire[t] - lay[t] ----\n    def workforce_balance_rule(m, t):\n        idx = months.index(t)\n        prev_w = d[\"initial_workers\"] if idx == 0 else m.W[months[idx - 1]]\n        return m.W[t] == prev_w + m.hire[t] - m.lay[t]\n\n    model.workforce_balance = pyo.Constraint(\n        model.M, rule=workforce_balance_rule\n    )\n\n    # ---- production / inventory balance ----\n    def inventory_balance_rule(m, t):\n        idx = months.index(t)\n        prev_inv = d[\"initial_inventory\"] if idx == 0 else m.inv[months[idx - 1]]\n        return m.x[t] + m.extra[t] + prev_inv - m.inv[t] == d[\"demand\"][t]\n\n    model.inventory_balance = pyo.Constraint(\n        model.M, rule=inventory_balance_rule\n    )\n\n    # ---- regular capacity: x[t] <= units_per_worker * W[t] ----\n    def regular_capacity_rule(m, t):\n        return m.x[t] <= d[\"units_per_worker\"] * m.W[t]\n\n    model.regular_capacity = pyo.Constraint(\n        model.M, rule=regular_capacity_rule\n    )\n\n    # ---- extra capacity: extra[t] <= extra_cap * W[t] ----\n    def extra_capacity_rule(m, t):\n        return m.extra[t] <= d[\"extra_cap_per_worker\"] * m.W[t]\n\n    model.extra_capacity = pyo.Constraint(\n        model.M, rule=extra_capacity_rule\n    )\n\n    # ---- +/- max_workers_change limits ----\n    def hire_limit_rule(m, t):\n        return m.hire[t] <= d[\"max_workers_change\"]\n\n    model.hire_limit = pyo.Constraint(model.M, rule=hire_limit_rule)\n\n    def layoff_limit_rule(m, t):\n        return m.lay[t] <= d[\"max_workers_change\"]\n\n    model.layoff_limit = pyo.Constraint(model.M, rule=layoff_limit_rule)\n\n    # ---- final warehouse must be empty ----\n    model.final_inv_empty = pyo.Constraint(\n        expr=model.inv[months[-1]] == d[\"final_inventory\"]\n    )\n\n    # ---- revenue constant (demand must be exactly satisfied each month) ----\n    revenue = d[\"price\"] * sum(d[\"demand\"][t] for t in months)\n\n    # ---- objective: maximize profit ----\n    def obj_rule(m):\n        extra_cost = sum(d[\"extra_cost\"] * m.extra[t] for t in m.M)\n        hold_cost = sum(d[\"holding_cost\"] * m.inv[t] for t in m.M)\n        hire_cost = sum(d[\"hiring_cost\"] * m.hire[t] for t in m.M)\n        lay_cost = sum(d[\"layoff_cost\"] * m.lay[t] for t in m.M)\n        return revenue - extra_cost - hold_cost - hire_cost - lay_cost\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1226,
+      "completion_tokens": 2111
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2658,
+      "completion_tokens": 1160
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 13.515038967132568,
+   "position": 3,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# All numeric constants from the problem statement.\n# ---------------------------------------------------------------------------\nDATA = {\n    # \"A company ... has 40 workers.\"\n    \"initial_workers\": 40,\n    # \"Each worker produces 20 units per month.\"\n    \"regular_units_per_worker\": 20,\n    # Demand table (units), months 1..6.\n    \"demand\": {1: 700, 2: 600, 3: 500, 4: 800, 5: 900, 6: 800},\n    # \"each worker can produce a maximum of 6 extra units per month\"\n    \"max_extra_per_worker\": 6,\n    # \"with a unit cost of 5 euros\"\n    \"overtime_unit_cost\": 5,\n    # \"use warehouse space (10 euros per unit per month)\"\n    \"holding_cost\": 10,\n    # \"the number of employees can vary by a maximum of +/- 5 per month\"\n    \"max_worker_change\": 5,\n    # \"with a hiring cost of 500 euros per person\"\n    \"hiring_cost\": 500,\n    # \"and a layoff cost of 700 euros per person\"\n    \"layoff_cost\": 700,\n    # \"Initially, the warehouse space is empty, and we require it to be empty\n    #  at the end of the semester as well.\"\n    \"initial_inventory\": 0,\n    \"final_inventory\": 0,\n    # Months of the semester.\n    \"months\": [1, 2, 3, 4, 5, 6],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    months = d[\"months\"]\n    # Month 0 represents the state just before month 1.\n    all_periods = [0] + months\n\n    model = pyo.ConcreteModel()\n\n    model.M = pyo.Set(initialize=months, ordered=True)\n    model.M0 = pyo.Set(initialize=all_periods, ordered=True)\n\n    # --- Decision variables -------------------------------------------------\n    # Production (units) in each month.\n    model.prod = pyo.Var(model.M, domain=pyo.NonNegativeReals)\n    # Extra (overtime) units in each month.\n    model.extra = pyo.Var(model.M, domain=pyo.NonNegativeReals)\n    # End-of-month warehouse inventory (index 0 = initial state).\n    model.inv = pyo.Var(model.M0, domain=pyo.NonNegativeReals)\n    # Workers hired at the start of each month.\n    model.hire = pyo.Var(model.M, domain=pyo.NonNegativeReals)\n    # Workers laid off at the start of each month.\n    model.layoff = pyo.Var(model.M, domain=pyo.NonNegativeReals)\n    # Workforce size during each month (index 0 = initial state).\n    model.workers = pyo.Var(model.M0, domain=pyo.NonNegativeReals)\n\n    # Initial conditions -----------------------------------------------------\n    model.inv[0].fix(d[\"initial_inventory\"])\n    model.workers[0].fix(d[\"initial_workers\"])\n\n    # --- Objective: minimise total cost -------------------------------------\n    # Demand is fixed, so maximising revenue is equivalent to minimising cost.\n    def obj_rule(m):\n        return (\n            sum(d[\"overtime_unit_cost\"] * m.extra[t] for t in m.M)\n            + sum(d[\"holding_cost\"] * m.inv[t] for t in m.M)\n            + sum(d[\"hiring_cost\"] * m.hire[t] for t in m.M)\n            + sum(d[\"layoff_cost\"] * m.layoff[t] for t in m.M)\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --- Constraints --------------------------------------------------------\n\n    # Inventory balance: inv[t] = inv[t-1] + prod[t] - demand[t]\n    def inv_balance_rule(m, t):\n        return m.inv[t] == m.inv[t - 1] + m.prod[t] - d[\"demand\"][t]\n\n    model.inv_balance = pyo.Constraint(model.M, rule=inv_balance_rule)\n\n    # Warehouse must be empty at the end of the semester.\n    def final_inv_rule(m):\n        return m.inv[max(months)] == d[\"final_inventory\"]\n\n    model.final_inventory = pyo.Constraint(rule=final_inv_rule)\n\n    # Workforce balance: workers[t] = workers[t-1] + hire[t] - layoff[t]\n    def workforce_balance_rule(m, t):\n        return m.workers[t] == m.workers[t - 1] + m.hire[t] - m.layoff[t]\n\n    model.workforce_balance = pyo.Constraint(model.M, rule=workforce_balance_rule)\n\n    # Workforce change limit: -5 <= workers[t] - workers[t-1] <= 5\n    def worker_change_up_rule(m, t):\n        return m.workers[t] - m.workers[t - 1] <= d[\"max_worker_change\"]\n\n    def worker_change_dn_rule(m, t):\n        return m.workers[t] - m.workers[t - 1] >= -d[\"max_worker_change\"]\n\n    model.worker_change_up = pyo.Constraint(model.M, rule=worker_change_up_rule)\n    model.worker_change_dn = pyo.Constraint(model.M, rule=worker_change_dn_rule)\n\n    # Regular production capacity: prod[t] - extra[t] <= 20 * workers[t]\n    def regular_capacity_rule(m, t):\n        return m.prod[t] - m.extra[t] <= d[\"regular_units_per_worker\"] * m.workers[t]\n\n    model.regular_capacity = pyo.Constraint(model.M, rule=regular_capacity_rule)\n\n    # Overtime capacity: extra[t] <= 6 * workers[t]\n    def overtime_capacity_rule(m, t):\n        return m.extra[t] <= d[\"max_extra_per_worker\"] * m.workers[t]\n\n    model.overtime_capacity = pyo.Constraint(model.M, rule=overtime_capacity_rule)\n\n    return model\n\n\n# ---------------------------------------------------------------------------\n# The model above is a pure LP (all variables continuous), so it already\n# corresponds to the \"all variables relaxed to continuous\" question: the\n# objective value obtained is the LP relaxation.  With integer workforce\n# variables the MILP would restrict hire/layoff/workers to integers.\n# ---------------------------------------------------------------------------\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1224,
+      "completion_tokens": 1983
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2815,
+      "completion_tokens": 1468
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 13.469366073608398,
+   "position": 4,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"initial_workers\": 40,\n    \"units_per_worker\": 20,\n    \"max_extra_per_worker\": 6,\n    \"extra_cost\": 5,\n    \"holding_cost\": 10,\n    \"hire_cost\": 500,\n    \"fire_cost\": 700,\n    \"max_change_workers\": 5,\n    \"months\": [1, 2, 3, 4, 5, 6],\n    \"demand\": {1: 700, 2: 600, 3: 500, 4: 800, 5: 900, 6: 800},\n    \"initial_inventory\": 0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n    months = list(d[\"months\"])\n    model.M = pyo.Set(initialize=months)\n\n    model.W = pyo.Var(model.M, domain=pyo.NonNegativeIntegers)\n    model.H = pyo.Var(model.M, domain=pyo.NonNegativeIntegers)\n    model.L = pyo.Var(model.M, domain=pyo.NonNegativeIntegers)\n    model.O = pyo.Var(model.M, domain=pyo.NonNegativeReals)\n    model.I = pyo.Var(model.M, domain=pyo.NonNegativeReals)\n    model.Y = pyo.Var(model.M, domain=pyo.Binary)\n\n    model.obj = pyo.Objective(\n        expr=- d[\"extra_cost\"] * sum(model.O[mm] for mm in months)\n        - d[\"holding_cost\"] * sum(model.I[mm] for mm in months)\n        - d[\"hire_cost\"] * sum(model.H[mm] for mm in months)\n        - d[\"fire_cost\"] * sum(model.L[mm] for mm in months),\n        sense=pyo.maximize,\n    )\n\n    def first_or_prev_workers(m, mm):\n        i = months.index(mm)\n        if i == 0:\n            return d[\"initial_workers\"]\n        return m.W[months[i - 1]]\n\n    def worker_balance_rule(m, mm):\n        return m.W[mm] == first_or_prev_workers(m, mm) + m.H[mm] - m.L[mm]\n\n    model.worker_balance = pyo.Constraint(model.M, rule=worker_balance_rule)\n\n    def hire_limit_rule(m, mm):\n        return m.H[mm] <= d[\"max_change_workers\"] * m.Y[mm]\n\n    model.hire_limit = pyo.Constraint(model.M, rule=hire_limit_rule)\n\n    def fire_limit_rule(m, mm):\n        return m.L[mm] <= d[\"max_change_workers\"] * (1 - m.Y[mm])\n\n    model.fire_limit = pyo.Constraint(model.M, rule=fire_limit_rule)\n\n    def overtime_cap_rule(m, mm):\n        return m.O[mm] <= d[\"max_extra_per_worker\"] * m.W[mm]\n\n    model.overtime_cap = pyo.Constraint(model.M, rule=overtime_cap_rule)\n\n    def inventory_balance_rule(m, mm):\n        i = months.index(mm)\n        if i == 0:\n            prev_inv = d[\"initial_inventory\"]\n        else:\n            prev_inv = m.I[months[i - 1]]\n        regular = d[\"units_per_worker\"] * m.W[mm]\n        return m.I[mm] == prev_inv + regular + m.O[mm] - d[\"demand\"][mm]\n\n    model.inventory_balance = pyo.Constraint(model.M, rule=inventory_balance_rule)\n\n    last = max(months)\n    model.final_inventory_zero = pyo.Constraint(expr=model.I[last] == 0)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1226,
+      "completion_tokens": 4072
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 17.03642773628235,
+   "position": 5,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"months\": [1, 2, 3, 4, 5, 6],\n    \"demand\": {1: 700, 2: 600, 3: 500, 4: 800, 5: 900, 6: 800},\n    \"initial_workers\": 40,\n    \"units_per_worker\": 20,\n    \"max_overtime_per_worker\": 6,\n    \"overtime_unit_cost\": 5,\n    \"holding_cost_per_unit\": 10,\n    \"max_worker_change\": 5,\n    \"hiring_cost\": 500,\n    \"layoff_cost\": 700,\n    \"revenue_per_unit\": 50,   # assumed selling price; only affects constant term\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    months = d[\"months\"]\n    # month 0 = initial state, months 1..6 = planning periods\n    all_periods = [0] + months\n\n    model = pyo.ConcreteModel()\n\n    model.M = pyo.Set(initialize=months, ordered=True)\n    model.M0 = pyo.Set(initialize=all_periods, ordered=True)\n\n    # ---- Variables ----\n    model.production = pyo.Var(model.M, within=pyo.NonNegativeReals)\n    model.regular = pyo.Var(model.M, within=pyo.NonNegativeReals)\n    model.overtime = pyo.Var(model.M, within=pyo.NonNegativeReals)\n    model.inventory = pyo.Var(model.M0, within=pyo.NonNegativeReals)\n    model.workers = pyo.Var(model.M0, within=pyo.NonNegativeIntegers)\n    model.hires = pyo.Var(model.M, within=pyo.NonNegativeIntegers)\n    model.layoffs = pyo.Var(model.M, within=pyo.NonNegativeIntegers)\n\n    # ---- Objective: maximize revenue minus total cost ----\n    def obj_rule(m):\n        revenue = sum(d[\"revenue_per_unit\"] * m.production[t] for t in m.M)\n        overtime_cost = sum(d[\"overtime_unit_cost\"] * m.overtime[t] for t in m.M)\n        holding_cost = sum(d[\"holding_cost_per_unit\"] * m.inventory[t] for t in m.M)\n        hiring_cost = sum(d[\"hiring_cost\"] * m.hires[t] for t in m.M)\n        layoff_cost = sum(d[\"layoff_cost\"] * m.layoffs[t] for t in m.M)\n        return revenue - (overtime_cost + holding_cost + hiring_cost + layoff_cost)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # ---- Initial conditions ----\n    model.init_inventory = pyo.Constraint(\n        expr=model.inventory[0] == 0)\n    model.init_workers = pyo.Constraint(\n        expr=model.workers[0] == d[\"initial_workers\"])\n\n    # ---- Regular production = workers * units_per_worker ----\n    def regular_rule(m, t):\n        return m.regular[t] == d[\"units_per_worker\"] * m.workers[t]\n    model.regular_production = pyo.Constraint(model.M, rule=regular_rule)\n\n    # ---- Overtime limited by workers * max overtime per worker ----\n    def overtime_cap_rule(m, t):\n        return m.overtime[t] <= d[\"max_overtime_per_worker\"] * m.workers[t]\n    model.overtime_cap = pyo.Constraint(model.M, rule=overtime_cap_rule)\n\n    # ---- Total production = regular + overtime ----\n    def production_rule(m, t):\n        return m.production[t] == m.regular[t] + m.overtime[t]\n    model.production_balance = pyo.Constraint(model.M, rule=production_rule)\n\n    # ---- Inventory balance ----\n    def inventory_rule(m, t):\n        return m.inventory[t] == m.inventory[t - 1] + m.production[t] - d[\"demand\"][t]\n    model.inventory_balance = pyo.Constraint(model.M, rule=inventory_rule)\n\n    # ---- End inventory empty ----\n    model.final_inventory = pyo.Constraint(\n        expr=model.inventory[months[-1]] == 0)\n\n    # ---- Workforce balance ----\n    def workforce_rule(m, t):\n        return m.workers[t] == m.workers[t - 1] + m.hires[t] - m.layoffs[t]\n    model.workforce_balance = pyo.Constraint(model.M, rule=workforce_rule)\n\n    # ---- Monthly workforce change limited to +/- max_worker_change ----\n    def change_rule(m, t):\n        return m.hires[t] + m.layoffs[t] <= d[\"max_worker_change\"]\n    model.workforce_change = pyo.Constraint(model.M, rule=change_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1220,
+      "completion_tokens": 1809
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.558207988739014,
+   "position": 6,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"months\": [1, 2, 3, 4, 5, 6],\n    \"demand\": {1: 700, 2: 600, 3: 500, 4: 800, 5: 900, 6: 800},\n    \"initial_workers\": 40,\n    \"units_per_worker\": 20,          # regular units per worker per month\n    \"max_extra_per_worker\": 6,       # extra units per worker per month\n    \"extra_unit_cost\": 5,            # euros per extra unit\n    \"holding_cost\": 10,              # euros per unit per month\n    \"hiring_cost\": 500,              # euros per worker hired\n    \"layoff_cost\": 700,              # euros per worker laid off\n    \"max_worker_change\": 5,          # max +/- workers per month\n    \"initial_inventory\": 0,\n    \"final_inventory\": 0,\n    \"revenue_per_unit\": 0,           # revenue is fixed (all demand met); placeholder\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    months = d[\"months\"]\n    first = months[0]\n    last = months[-1]\n\n    model = pyo.ConcreteModel()\n\n    model.T = pyo.Set(initialize=months, ordered=True)\n\n    # Decision variables\n    model.regular = pyo.Var(model.T, within=pyo.NonNegativeReals)\n    model.extra = pyo.Var(model.T, within=pyo.NonNegativeReals)\n    model.workers = pyo.Var(model.T, within=pyo.NonNegativeReals)\n    model.hire = pyo.Var(model.T, within=pyo.NonNegativeReals)\n    model.layoff = pyo.Var(model.T, within=pyo.NonNegativeReals)\n    model.inventory = pyo.Var(model.T, within=pyo.NonNegativeReals)\n\n    # Regular production = units_per_worker * workers[t]\n    def regular_prod_rule(m, t):\n        return m.regular[t] == d[\"units_per_worker\"] * m.workers[t]\n    model.regular_prod = pyo.Constraint(model.T, rule=regular_prod_rule)\n\n    # Extra production limited by max_extra_per_worker * workers[t]\n    def extra_cap_rule(m, t):\n        return m.extra[t] <= d[\"max_extra_per_worker\"] * m.workers[t]\n    model.extra_cap = pyo.Constraint(model.T, rule=extra_cap_rule)\n\n    # Workforce balance (with initial workers for month 1)\n    def worker_balance_first_rule(m):\n        return m.workers[first] == d[\"initial_workers\"] + m.hire[first] - m.layoff[first]\n    model.worker_balance_first = pyo.Constraint(rule=worker_balance_first_rule)\n\n    def worker_balance_rule(m, t):\n        prev = months[months.index(t) - 1]\n        return m.workers[t] == m.workers[prev] + m.hire[t] - m.layoff[t]\n    model.worker_balance = pyo.Constraint(model.T, rule=worker_balance_rule)\n\n    # Max +/- change in workforce per month (linearised absolute value)\n    def change_up_first_rule(m):\n        return m.workers[first] - d[\"initial_workers\"] <= d[\"max_worker_change\"]\n    model.change_up_first = pyo.Constraint(rule=change_up_first_rule)\n\n    def change_down_first_rule(m):\n        return d[\"initial_workers\"] - m.workers[first] <= d[\"max_worker_change\"]\n    model.change_down_first = pyo.Constraint(rule=change_down_first_rule)\n\n    def change_up_rule(m, t):\n        prev = months[months.index(t) - 1]\n        return m.workers[t] - m.workers[prev] <= d[\"max_worker_change\"]\n    model.change_up = pyo.Constraint(model.T, rule=change_up_rule)\n\n    def change_down_rule(m, t):\n        prev = months[months.index(t) - 1]\n        return m.workers[prev] - m.workers[t] <= d[\"max_worker_change\"]\n    model.change_down = pyo.Constraint(model.T, rule=change_down_rule)\n\n    # Inventory balance (with initial inventory for month 1)\n    def inv_balance_first_rule(m):\n        return (m.inventory[first] == d[\"initial_inventory\"]\n                + m.regular[first] + m.extra[first] - d[\"demand\"][first])\n    model.inv_balance_first = pyo.Constraint(rule=inv_balance_first_rule)\n\n    def inv_balance_rule(m, t):\n        prev = months[months.index(t) - 1]\n        return (m.inventory[t] == m.inventory[prev]\n                + m.regular[t] + m.extra[t] - d[\"demand\"][t])\n    model.inv_balance = pyo.Constraint(model.T, rule=inv_balance_rule)\n\n    # Final inventory must be empty\n    def final_inv_rule(m):\n        return m.inventory[last] == d[\"final_inventory\"]\n    model.final_inv = pyo.Constraint(rule=final_inv_rule)\n\n    # Objective: minimise total cost (revenue is fixed since all demand is met)\n    def obj_rule(m):\n        return (\n            d[\"extra_unit_cost\"] * sum(m.extra[t] for t in m.T)\n            + d[\"holding_cost\"] * sum(m.inventory[t] for t in m.T)\n            + d[\"hiring_cost\"] * sum(m.hire[t] for t in m.T)\n            + d[\"layoff_cost\"] * sum(m.layoff[t] for t in m.T)\n        )\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1220,
+      "completion_tokens": 1939
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "disallowed_lambda_rule"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2622,
+      "completion_tokens": 1347
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 12.432037353515625,
+   "position": 7,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"months\": [1, 2, 3, 4, 5, 6],\n    \"initial_workers\": 40,\n    \"units_per_worker\": 20,\n    \"max_overtime_per_worker\": 6,\n    \"overtime_cost\": 5,\n    \"holding_cost\": 10,\n    \"hiring_cost\": 500,\n    \"layoff_cost\": 700,\n    \"max_worker_change\": 5,\n    \"initial_inventory\": 0,\n    \"final_inventory\": 0,\n    \"demand\": {1: 700, 2: 600, 3: 500, 4: 800, 5: 900, 6: 800},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    months = d[\"months\"]\n\n    model = pyo.ConcreteModel()\n    model.T = pyo.Set(initialize=months, ordered=True)\n\n    # --- Variables ---\n    model.w = pyo.Var(\n        model.T, domain=pyo.NonNegativeIntegers, bounds=(0, None)\n    )  # workers employed in month t\n    model.h = pyo.Var(\n        model.T, domain=pyo.NonNegativeIntegers, bounds=(0, None)\n    )  # workers hired at start of month t\n    model.l = pyo.Var(\n        model.T, domain=pyo.NonNegativeIntegers, bounds=(0, None)\n    )  # workers laid off at start of month t\n    model.x = pyo.Var(\n        model.T, domain=pyo.NonNegativeIntegers, bounds=(0, None)\n    )  # regular production (units) in month t\n    model.o = pyo.Var(\n        model.T, domain=pyo.NonNegativeIntegers, bounds=(0, None)\n    )  # overtime units in month t\n    model.s = pyo.Var(\n        model.T, domain=pyo.NonNegativeReals, bounds=(0, None)\n    )  # inventory (warehouse units) at end of month t\n\n    # --- Objective: minimize total cost (revenue is not specified, cost-only) ---\n    def obj_rule(m):\n        return sum(\n            d[\"hiring_cost\"] * m.h[t]\n            + d[\"layoff_cost\"] * m.l[t]\n            + d[\"overtime_cost\"] * m.o[t]\n            + d[\"holding_cost\"] * m.s[t]\n            for t in m.T\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --- Regular production = workers * units_per_worker ---\n    def reg_prod_rule(m, t):\n        return m.x[t] == d[\"units_per_worker\"] * m.w[t]\n\n    model.reg_prod = pyo.Constraint(model.T, rule=reg_prod_rule)\n\n    # --- Overtime capacity: at most max_overtime_per_worker per worker (<=) ---\n    def overtime_rule(m, t):\n        return m.o[t] <= d[\"max_overtime_per_worker\"] * m.w[t]\n\n    model.overtime_cap = pyo.Constraint(model.T, rule=overtime_rule)\n\n    # --- Demand balance with inventory (equality) ---\n    # s[t] = s[t-1] + x[t] + o[t] - demand[t]\n    def balance_rule(m, t):\n        prev_s = d[\"initial_inventory\"] if t == m.T.first() else m.s[m.T.prev(t)]\n        return m.s[t] == prev_s + m.x[t] + m.o[t] - d[\"demand\"][t]\n\n    model.balance = pyo.Constraint(model.T, rule=balance_rule)\n\n    # --- Final inventory must be empty (equality) ---\n    def final_inv_rule(m):\n        return m.s[m.T.last()] == d[\"final_inventory\"]\n\n    model.final_inv = pyo.Constraint(rule=final_inv_rule)\n\n    # --- Workforce balance: w[t] = w[t-1] + h[t] - l[t] (equality) ---\n    def workforce_rule(m, t):\n        prev_w = d[\"initial_workers\"] if t == m.T.first() else m.w[m.T.prev(t)]\n        return m.w[t] == prev_w + m.h[t] - m.l[t]\n\n    model.workforce_balance = pyo.Constraint(model.T, rule=workforce_rule)\n\n    # --- Max +/- change in workforce per month (two linear inequalities) ---\n    def max_increase_rule(m, t):\n        prev_w = d[\"initial_workers\"] if t == m.T.first() else m.w[m.T.prev(t)]\n        return m.w[t] - prev_w <= d[\"max_worker_change\"]\n\n    def max_decrease_rule(m, t):\n        prev_w = d[\"initial_workers\"] if t == m.T.first() else m.w[m.T.prev(t)]\n        return prev_w - m.w[t] <= d[\"max_worker_change\"]\n\n    model.max_increase = pyo.Constraint(model.T, rule=max_increase_rule)\n    model.max_decrease = pyo.Constraint(model.T, rule=max_decrease_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1236,
+      "completion_tokens": 1662
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.897007465362549,
+   "position": 8,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"has 40 workers\"\n    \"initial_workers\": 40,\n    # \"Each worker produces 20 units per month\"\n    \"units_per_worker\": 20,\n    # \"each worker can produce a maximum of 6 extra units per month\"\n    \"max_extra_per_worker\": 6,\n    # \"unit cost of 5 euros\" (extra units via additional hours)\n    \"overtime_unit_cost\": 5,\n    # \"10 euros per unit per month\" (warehouse)\n    \"holding_cost\": 10,\n    # \"hiring cost of 500 euros per person\"\n    \"hiring_cost\": 500,\n    # \"layoff cost of 700 euros per person\"\n    \"layoff_cost\": 700,\n    # \"number of employees can vary by a maximum of +/- 5 per month\"\n    \"max_worker_change\": 5,\n    # Demand table: 700,600,500,800,900,800\n    \"demand\": {1: 700, 2: 600, 3: 500, 4: 800, 5: 900, 6: 800},\n    # Selling price per unit (revenue driver; not specified -> parameter P)\n    \"price_per_unit\": 100,\n    # \"Initially, the warehouse space is empty, and we require it to be\n    #  empty at the end of the semester as well.\"\n    \"initial_inventory\": 0,\n    \"final_inventory\": 0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    T = list(d[\"demand\"].keys())\n    months = sorted(T)\n\n    m = pyo.ConcreteModel()\n\n    m.T = pyo.Set(initialize=months, ordered=True)\n    # Extended set including period 0 for initial conditions\n    m.T0 = pyo.Set(initialize=[0] + months, ordered=True)\n\n    # Production (units) -- continuous (relaxed)\n    m.x = pyo.Var(m.T, domain=pyo.NonNegativeReals)\n    # Workforce (persons) -- continuous (relaxed)\n    m.W = pyo.Var(m.T0, domain=pyo.NonNegativeReals)\n    # Hires -- continuous (relaxed)\n    m.H = pyo.Var(m.T, domain=pyo.NonNegativeReals)\n    # Layoffs -- continuous (relaxed)\n    m.L = pyo.Var(m.T, domain=pyo.NonNegativeReals)\n    # Inventory (units) -- continuous (relaxed)\n    m.I = pyo.Var(m.T0, domain=pyo.NonNegativeReals)\n    # Extra units produced via additional hours -- continuous (relaxed)\n    m.E = pyo.Var(m.T, domain=pyo.NonNegativeReals)\n\n    # Initial conditions\n    m.W[0].fix(d[\"initial_workers\"])\n    m.I[0].fix(d[\"initial_inventory\"])\n\n    # Production = regular output + extra output\n    def reg_prod_rule(m, t):\n        return m.x[t] == d[\"units_per_worker\"] * m.W[t] + m.E[t]\n    m.regular_production = pyo.Constraint(m.T, rule=reg_prod_rule)\n\n    # Overtime limit: extra units <= 6 per worker\n    def extra_limit_rule(m, t):\n        return m.E[t] <= d[\"max_extra_per_worker\"] * m.W[t]\n    m.extra_limit = pyo.Constraint(m.T, rule=extra_limit_rule)\n\n    # Inventory balance\n    def inv_balance_rule(m, t):\n        prev = t - 1\n        return m.I[t] == m.I[prev] + m.x[t] - d[\"demand\"][t]\n    m.inv_balance = pyo.Constraint(m.T, rule=inv_balance_rule)\n\n    # Workforce balance\n    def wf_balance_rule(m, t):\n        prev = t - 1\n        return m.W[t] == m.W[prev] + m.H[t] - m.L[t]\n    m.wf_balance = pyo.Constraint(m.T, rule=wf_balance_rule)\n\n    # Max change per month: hires <= 5, layoffs <= 5\n    def hire_limit_rule(m, t):\n        return m.H[t] <= d[\"max_worker_change\"]\n    m.hire_limit = pyo.Constraint(m.T, rule=hire_limit_rule)\n\n    def layoff_limit_rule(m, t):\n        return m.L[t] <= d[\"max_worker_change\"]\n    m.layoff_limit = pyo.Constraint(m.T, rule=layoff_limit_rule)\n\n    # Final inventory must be empty\n    def final_inv_rule(m):\n        return m.I[months[-1]] == d[\"final_inventory\"]\n    m.final_inventory = pyo.Constraint(rule=final_inv_rule)\n\n    # Objective: maximize revenue net of overtime, holding, hiring, layoff costs\n    def obj_rule(m):\n        revenue = sum(d[\"price_per_unit\"] * m.x[t] for t in m.T)\n        overtime = sum(d[\"overtime_unit_cost\"] * m.E[t] for t in m.T)\n        holding = sum(d[\"holding_cost\"] * m.I[t] for t in m.T)\n        hiring = sum(d[\"hiring_cost\"] * m.H[t] for t in m.T)\n        layoff = sum(d[\"layoff_cost\"] * m.L[t] for t in m.T)\n        return revenue - overtime - holding - hiring - layoff\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1224,
+      "completion_tokens": 1804
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.3455116748809814,
+   "position": 9,
+   "recipe_index": 1
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:55:56"
+}

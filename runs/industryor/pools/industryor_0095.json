@@ -1,0 +1,295 @@
+{
+ "pid": "industryor_0095",
+ "question": "A certain restaurant operates 24 hours a day and requires a minimum number of waitstaff as shown in Table 1.1.\n\nTable 1.1\n\n| Time | Minimum Number of Waitstaff |\n| :---: | :---: |\n| 2am-6am | 4 |\n| 6am-10am | 8 |\n| 10am-2pm | 10 |\n| 2pm-6pm | 4 |\n| 6pm-10pm | 8 |\n| 10pm-2am | 4 |\n\nEach waitstaff works continuously for 8 hours a day. The goal is to find the minimum number of waitstaff that satisfies the above conditions and represent this problem as a linear programming model.",
+ "templates": [
+  "Workforce / Shift Scheduling",
+  "Production Planning / Product Mix"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Problem: 24-hour restaurant waitstaff scheduling.\n#\n# Decision variables\n#   x[s] : number of waitstaff whose 8-hour shift STARTS at the beginning of\n#          period s (s in S).  Domain: non-negative integers.\n#\n# Periods (6 periods of 4 hours each, wrapping around the clock):\n#   P0 = 2am-6am   requirement 4\n#   P1 = 6am-10am  requirement 8\n#   P2 = 10am-2pm  requirement 10\n#   P3 = 2pm-6pm   requirement 4\n#   P4 = 6pm-10pm  requirement 8\n#   P5 = 10pm-2am  requirement 4\n#\n# Each shift lasts 8 hours = 2 consecutive periods.  A shift starting at\n# period s covers periods s and s+1 (mod 6).\n#\n# Objective (minimize): total number of waitstaff hired = sum_s x[s].\n#\n# Constraints (one per period, source: Table 1.1 minimum staffing):\n#   (1) 2am-6am   : x[P0] + x[P5] >= 4\n#   (2) 6am-10am  : x[P1] + x[P0] >= 8\n#   (3) 10am-2pm  : x[P2] + x[P1] >= 10\n#   (4) 2pm-6pm   : x[P3] + x[P2] >= 4\n#   (5) 6pm-10pm  : x[P4] + x[P3] >= 8\n#   (6) 10pm-2am  : x[P5] + x[P4] >= 4\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"periods\": [0, 1, 2, 3, 4, 5],\n    \"shift_length\": 2,          # number of periods covered by one shift\n    \"num_periods\": 6,\n    \"requirement\": {0: 4, 1: 8, 2: 10, 3: 4, 4: 8, 5: 4},\n    \"cost\": {0: 1, 1: 1, 2: 1, 3: 1, 4: 1, 5: 1},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    periods = d[\"periods\"]\n    n = d[\"num_periods\"]\n    shift_len = d[\"shift_length\"]\n\n    model = pyo.ConcreteModel()\n\n    model.S = pyo.Set(initialize=periods)\n\n    # x[s] = number of waitstaff starting an 8-hour shift at period s\n    model.x = pyo.Var(model.S, within=pyo.NonNegativeIntegers)\n\n    # Objective: minimize total waitstaff hired\n    def obj_rule(m):\n        return sum(d[\"cost\"][s] * m.x[s] for s in m.S)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Coverage: each period t must be covered by shifts starting at t and at\n    # the (shift_len - 1) preceding periods.\n    def cover_rule(m, t):\n        return sum(\n            m.x[(t - k) % n] for k in range(shift_len)\n        ) >= d[\"requirement\"][t]\n\n    model.cover = pyo.Constraint(model.S, rule=cover_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1133,
+      "completion_tokens": 2637
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1415,
+      "completion_tokens": 832
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 24.119877338409424,
+   "position": 0,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\nimport itertools\n\nDATA = {\n    \"T\": {\n        0: \"2am-6am\",\n        1: \"6am-10am\",\n        2: \"10am-2pm\",\n        3: \"2pm-6pm\",\n        4: \"6pm-10pm\",\n        5: \"10pm-2am\",\n    },\n    # minimum waitstaff requirement, aligned to T:\n    \"REQ\": {0: 4, 1: 8, 2: 10, 3: 4, 4: 8, 5: 4},\n    # coverage: shift starting t covers t and t+1 (mod 6) -> each covers shift 2 slots\n    \"periods_per_shift\": 2,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    T = list(d[\"T\"].keys())\n    n = len(T)\n\n    model = pyo.ConcreteModel()\n\n    model.T = pyo.Set(initialize=T, ordered=True)\n    model.S = pyo.Set(initialize=T, ordered=True)\n\n    model.x = pyo.Var(model.S, within=pyo.NonNegativeIntegers, bounds=(0, None))\n\n    def _periods_covered(s, t):\n        j_s, j_t = T.index(s), T.index(t)\n        p = int(d[\"periods_per_shift\"])\n        return True if 0 <= (j_t - j_s) % n < p else False\n\n    # staffing constraint rule (one per reporting period)\n    def rule_staff(m, t):\n        expr = 0\n        for s in m.S:\n            if _periods_covered(s, t):\n                expr = expr + m.x[s]\n        return expr >= d[\"REQ\"][t]\n\n    model.staffing = pyo.Constraint(model.T, rule=rule_staff)\n\n    model.obj = pyo.Objective(expr=sum(model.x[s] for s in model.S), sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1119,
+      "completion_tokens": 2206
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 10.467360734939575,
+   "position": 1,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: all numeric constants from the problem\n# ---------------------------------------------------------------------------\nDATA = {\n    \"periods\": [0, 1, 2, 3, 4, 5],      # 6 consecutive 4-hour periods\n    \"shifts\": [0, 1, 2, 3, 4, 5],       # a shift starts at the beginning of each period\n    \"shift_length_periods\": 2,          # 8 hours = 2 four-hour periods\n    # Minimum waitstaff required per period (Table 1.1), indexed by period\n    \"requirement\": {\n        0: 4,    # 2am-6am\n        1: 8,    # 6am-10am\n        2: 10,   # 10am-2pm\n        3: 4,    # 2pm-6pm\n        4: 8,    # 6pm-10pm\n        5: 4,    # 10pm-2am\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # Sets ---------------------------------------------------------------\n    model.T = pyo.Set(initialize=d[\"periods\"], ordered=True)   # time periods\n    model.S = pyo.Set(initialize=d[\"shifts\"], ordered=True)    # shift start periods\n\n    n_p = len(d[\"periods\"])\n    span = d[\"shift_length_periods\"]\n\n    # Coverage matrix: a[t][s] = 1 if a shift starting at s covers period t\n    def covers(t, s):\n        # a shift starting at s covers periods s, s+1, ..., s+span-1 (mod n_p)\n        return 1 if (t - s) % n_p < span else 0\n\n    # Variables ----------------------------------------------------------\n    # x[s] = number of waitstaff whose 8-hour shift begins at period s\n    model.x = pyo.Var(model.S, within=pyo.NonNegativeIntegers)\n\n    # Objective ----------------------------------------------------------\n    # Minimize total number of waitstaff employed\n    model.obj = pyo.Objective(\n        expr=sum(model.x[s] for s in model.S),\n        sense=pyo.minimize,\n    )\n\n    # Constraints --------------------------------------------------------\n    # For each period t, total staff on duty must be >= requirement[t]\n    def staffing_rule(m, t):\n        return sum(covers(t, s) * m.x[s] for s in m.S) >= d[\"requirement\"][t]\n\n    model.demand = pyo.Constraint(model.T, rule=staffing_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1129,
+      "completion_tokens": 923
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.134790658950806,
+   "position": 2,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Six 4-hour periods, in order starting at 2am.\n    \"periods\": [\"2am-6am\", \"6am-10am\", \"10am-2pm\",\n                \"2pm-6pm\", \"6pm-10pm\", \"10pm-2am\"],\n    # Minimum waitstaff required in each period.\n    \"requirement\": {\n        \"2am-6am\": 4,\n        \"6am-10am\": 8,\n        \"10am-2pm\": 10,\n        \"2pm-6pm\": 4,\n        \"6pm-10pm\": 8,\n        \"10pm-2am\": 4,\n    },\n    # Each shift is 8 hours = 2 consecutive 4-hour periods.\n    \"shift_length_periods\": 2,\n    \"num_periods\": 6,\n    # Coverage: shift s covers periods s and s+1 (mod 6).\n    \"coverage\": {\n        \"2am-6am\": [\"2am-6am\", \"6am-10am\"],\n        \"6am-10am\": [\"6am-10am\", \"10am-2pm\"],\n        \"10am-2pm\": [\"10am-2pm\", \"2pm-6pm\"],\n        \"2pm-6pm\": [\"2pm-6pm\", \"6pm-10pm\"],\n        \"6pm-10pm\": [\"6pm-10pm\", \"10pm-2am\"],\n        \"10pm-2am\": [\"10pm-2am\", \"2am-6am\"],\n    },\n    # Cost per worker (all equal -> minimize total headcount).\n    \"cost\": {\n        \"2am-6am\": 1,\n        \"6am-10am\": 1,\n        \"10am-2pm\": 1,\n        \"2pm-6pm\": 1,\n        \"6pm-10pm\": 1,\n        \"10pm-2am\": 1,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    periods = d[\"periods\"]\n\n    model = pyo.ConcreteModel()\n\n    model.S = pyo.Set(initialize=periods, ordered=True)\n    model.T = pyo.Set(initialize=periods, ordered=True)\n\n    # x[s] = number of waitstaff starting their 8-hour shift at period s.\n    model.x = pyo.Var(model.S, within=pyo.NonNegativeIntegers)\n\n    # Coverage parameter a[t, s] = 1 if shift s covers period t.\n    def coverage_init(m, t, s):\n        return 1 if t in d[\"coverage\"][s] else 0\n\n    model.a = pyo.Param(model.T, model.S, initialize=coverage_init, within=pyo.Binary)\n\n    # Objective: minimize total number of waitstaff hired.\n    def obj_rule(m):\n        return sum(d[\"cost\"][s] * m.x[s] for s in m.S)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each period must have at least its minimum requirement covered.\n    def req_rule(m, t):\n        return sum(m.a[t, s] * m.x[s] for s in m.S) >= d[\"requirement\"][t]\n\n    model.req = pyo.Constraint(model.T, rule=req_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1119,
+      "completion_tokens": 87
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1128,
+      "completion_tokens": 769
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1829,
+      "completion_tokens": 769
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "possible_nonlinearity"
+   ],
+   "seconds": 8.93451976776123,
+   "position": 3,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_periods\": 6,\n    \"hours_per_period\": 4,\n    \"shift_length\": 8,\n    # Minimum waitstaff per period, index 0..5 corresponds to:\n    # 0: 2am-6am, 1: 6am-10am, 2: 10am-2pm, 3: 2pm-6pm, 4: 6pm-10pm, 5: 10pm-2am\n    \"minimum\": [4, 8, 10, 4, 8, 4],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    p = d[\"num_periods\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets: periods and shift start times (one shift starts each period boundary)\n    model.T = pyo.RangeSet(0, p - 1)\n    model.S = pyo.RangeSet(0, p - 1)\n\n    # Decision variable: number of staff starting their 8-hour shift at period s\n    model.x = pyo.Var(model.S, within=pyo.NonNegativeIntegers)\n\n    # Objective: minimise total number of waitstaff hired\n    def obj_rule(m):\n        return sum(m.x[s] for s in m.S)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint: for each period t, staff on duty (started in t or in t-1) >= minimum\n    # Shift starting at t covers t and t+1; so period t is covered by x[t] and x[t-1].\n    def min_staff_rule(m, t):\n        prev = (t - 1) % p\n        return m.x[t] + m.x[prev] >= d[\"minimum\"][t]\n    model.min_staff = pyo.Constraint(model.T, rule=min_staff_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1129,
+      "completion_tokens": 809
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.533573627471924,
+   "position": 4,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem statement, with its source.\n# ---------------------------------------------------------------------------\nDATA = {\n    # Number of 4-hour periods in the 24-hour day (6 periods x 4h = 24h).\n    \"num_periods\": 6,\n    # Length of each shift in hours: \"Each waitstaff works continuously for\n    # 8 hours a day.\"  (8h = 2 consecutive 4-hour periods.)\n    \"shift_hours\": 8,\n    # Length of each period in hours (each table row spans 4 hours).\n    \"period_hours\": 4,\n    # Minimum Number of Waitstaff per period, in period order:\n    # 2am-6am, 6am-10am, 10am-2pm, 2pm-6pm, 6pm-10pm, 10pm-2am  (Table 1.1).\n    \"requirements\": {\n        \"2am-6am\": 4,\n        \"6am-10am\": 8,\n        \"10am-2pm\": 10,\n        \"2pm-6pm\": 4,\n        \"6pm-10pm\": 8,\n        \"10pm-2am\": 4,\n    },\n    # Objective coefficient: cost (number of waitstaff) per shift worker = 1.\n    \"cost_per_worker\": 1,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    n = d[\"num_periods\"]\n    periods_per_shift = d[\"shift_hours\"] // d[\"period_hours\"]  # 8 // 4 = 2\n\n    # --- Sets -------------------------------------------------------------\n    # Periods indexed 0..n-1 in chronological order starting at 2am.\n    model.PERIODS = pyo.RangeSet(0, n - 1)\n    # Shifts indexed by the period in which the shift starts.\n    model.SHIFTS = pyo.RangeSet(0, n - 1)\n\n    req_list = list(d[\"requirements\"].values())\n\n    # --- Variables --------------------------------------------------------\n    # x[s] = number of waitstaff starting their 8-hour shift at period s.\n    model.x = pyo.Var(\n        model.SHIFTS,\n        within=pyo.NonNegativeIntegers,\n        bounds=(0, None),\n    )\n\n    # --- Objective --------------------------------------------------------\n    # Minimise total number of waitstaff employed.\n    model.obj = pyo.Objective(\n        expr=sum(d[\"cost_per_worker\"] * model.x[s] for s in model.SHIFTS),\n        sense=pyo.minimize,\n    )\n\n    # --- Constraints ------------------------------------------------------\n    # Period t is covered by the shift starting at t and the shift starting at\n    # t-1 (mod n), since each shift lasts periods_per_shift consecutive periods.\n    def coverage_rule(m, t):\n        covering = [\n            m.x[(t - k) % n] for k in range(periods_per_shift)\n        ]\n        return sum(covering) >= req_list[t]\n\n    model.coverage = pyo.Constraint(model.PERIODS, rule=coverage_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1117,
+      "completion_tokens": 1069
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.250833988189697,
+   "position": 5,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Workforce / Shift Scheduling model\n# ---------------------------------------------------------------------------\n# Decision variables\n#   x[s] : number of waitstaff whose 8-hour shift STARTS at the beginning of\n#          shift-start slot s.  Index set S = shift start times.\n#          Domain: non-negative integers (people are indivisible).\n#\n# Objective (minimize)\n#   Minimize the total number of waitstaff hired, i.e. sum_s x[s].\n#\n# Constraints (one per 2-hour period t, indexed by T)\n#   (1) For each period t, the number of waitstaff on duty must be at least\n#       the minimum requirement r[t].  A shift starting at slot s covers the\n#       four consecutive 2-hour periods beginning at s (8 hours = 4 periods).\n#       sum_{s covering t} x[s] >= r[t]   for all t in T.\n#       Source: \"requires a minimum number of waitstaff as shown in Table 1.1\"\n#               and \"Each waitstaff works continuously for 8 hours a day.\"\n# ---------------------------------------------------------------------------\n\nDATA = {\n    # Six 2-hour periods covering the 24-hour day, in chronological order.\n    \"periods\": [\"2am-6am\", \"6am-10am\", \"10am-2pm\",\n                \"2pm-6pm\", \"6pm-10pm\", \"10pm-2am\"],\n    # Shift start times: a shift may begin at the start of any period.\n    \"shift_starts\": [\"2am\", \"6am\", \"10am\", \"2pm\", \"6pm\", \"10pm\"],\n    # Minimum waitstaff required in each period (Table 1.1).\n    \"requirements\": [4, 8, 10, 4, 8, 4],\n    # Number of 2-hour periods covered by one 8-hour shift.\n    \"shift_length_periods\": 4,\n    # Number of periods in the day (used for wrap-around coverage).\n    \"num_periods\": 6,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    periods = d[\"periods\"]\n    shift_starts = d[\"shift_starts\"]\n    requirements = d[\"requirements\"]\n    shift_len = d[\"shift_length_periods\"]\n    n_periods = d[\"num_periods\"]\n\n    # Coverage matrix: cover[s][t] = 1 if a shift starting at slot s is on\n    # duty during period t, else 0.  Built with wrap-around over the day.\n    cover = {}\n    for si in range(len(shift_starts)):\n        row = [0] * n_periods\n        for k in range(shift_len):\n            row[(si + k) % n_periods] = 1\n        cover[si] = row\n\n    model = pyo.ConcreteModel()\n\n    # Index sets\n    model.S = pyo.RangeSet(0, len(shift_starts) - 1)   # shift start slots\n    model.T = pyo.RangeSet(0, n_periods - 1)           # 2-hour periods\n\n    # Decision variables: waitstaff starting in each shift slot (integer >= 0)\n    model.x = pyo.Var(model.S, within=pyo.NonNegativeIntegers)\n\n    # Objective: minimize total waitstaff hired\n    def obj_rule(m):\n        return sum(m.x[s] for s in m.S)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint (1): coverage requirement for each period\n    def coverage_rule(m, t):\n        return sum(cover[s][t] * m.x[s] for s in m.S) >= requirements[t]\n\n    model.coverage = pyo.Constraint(model.T, rule=coverage_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1133,
+      "completion_tokens": 491
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "missing_constraints",
+      "missing_objective",
+      "missing_variables",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1277,
+      "completion_tokens": 860
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.300910711288452,
+   "position": 6,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Minimum waitstaff required in each 4-hour period, in chronological order:\n    # [2am-6am, 6am-10am, 10am-2pm, 2pm-6pm, 6pm-10pm, 10pm-2am]\n    \"requirements\": [4, 8, 10, 4, 8, 4],\n    \"num_periods\": 6,\n    # Each waitstaff works continuously for 8 hours = 2 consecutive 4-hour periods\n    \"shift_length_periods\": 2,\n    # Cost per worker (goal is to minimise total headcount)\n    \"cost_per_worker\": 1,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"num_periods\"]\n    L = d[\"shift_length_periods\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets: periods (also shift start times, since a shift can start in any period)\n    model.periods = pyo.RangeSet(0, n - 1)\n\n    # Decision variable: number of waitstaff whose shift STARTS at the beginning\n    # of the given period. Integer, nonnegative.\n    model.staff = pyo.Var(\n        model.periods,\n        within=pyo.NonNegativeIntegers,\n    )\n\n    # Objective: minimise total number of waitstaff hired.\n    def obj_rule(m):\n        return d[\"cost_per_worker\"] * sum(m.staff[s] for s in m.periods)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint: each period t must be covered by workers who started in any of\n    # the L periods ending at t (shift covers L consecutive periods, wrapping).\n    def coverage_rule(m, t):\n        return sum(\n            m.staff[(t - k) % n] for k in range(L)\n        ) >= d[\"requirements\"][t]\n\n    model.coverage = pyo.Constraint(model.periods, rule=coverage_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1113,
+      "completion_tokens": 814
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.943110227584839,
+   "position": 7,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem, with source comments.\n# ---------------------------------------------------------------------------\nDATA = {\n    # Number of 4-hour periods in a day (Table 1.1 has 6 rows).\n    \"num_periods\": 6,\n    # Length of one period in hours (each table row spans 4 hours).\n    \"period_hours\": 4,\n    # Length of a shift in hours (\"Each waitstaff works continuously for 8 hours\").\n    \"shift_hours\": 8,\n    # Minimum number of waitstaff required per period, in order of periods\n    # starting at 2am (Table 1.1 \"Minimum Number of Waitstaff\" column).\n    \"requirements\": {\n        0: 4,   # 2am-6am\n        1: 8,   # 6am-10am\n        2: 10,  # 10am-2pm\n        3: 4,   # 2pm-6pm\n        4: 8,   # 6pm-10pm\n        5: 4,   # 10pm-2am\n    },\n    # Objective coefficient: cost (in waitstaff) of starting one worker on a shift.\n    \"shift_cost\": 1,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # --- Sets ---------------------------------------------------------------\n    # Periods indexed 0..5 (0 -> 2am-6am, ..., 5 -> 10pm-2am).\n    m.T = pyo.RangeSet(0, d[\"num_periods\"] - 1)\n    # Shifts indexed by the period in which they start (same size as periods).\n    m.S = pyo.RangeSet(0, d[\"num_periods\"] - 1)\n\n    # Number of periods a shift spans (8h shift / 4h period = 2 periods).\n    periods_per_shift = d[\"shift_hours\"] // d[\"period_hours\"]\n\n    # --- Variables ----------------------------------------------------------\n    # x[s]: number of waitstaff whose 8-hour shift starts at period s.\n    m.x = pyo.Var(m.S, within=pyo.NonNegativeIntegers)\n\n    # --- Objective ----------------------------------------------------------\n    # Minimize the total number of waitstaff hired.\n    def obj_rule(m):\n        return sum(d[\"shift_cost\"] * m.x[s] for s in m.S)\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --- Constraints --------------------------------------------------------\n    # For each period t, total staff on duty must meet the minimum requirement.\n    # A shift starting at period s covers periods s, s+1, ..., s+periods_per_shift-1\n    # (modulo num_periods for wrap-around).\n    def coverage_rule(m, t):\n        total = 0\n        for k in range(periods_per_shift):\n            s = (t - k) % d[\"num_periods\"]\n            total += m.x[s]\n        return total >= d[\"requirements\"][t]\n\n    m.coverage = pyo.Constraint(m.T, rule=coverage_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1117,
+      "completion_tokens": 1033
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.243093729019165,
+   "position": 8,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_periods\": 6,\n    \"shift_length_periods\": 2,          # 8-hour shift = 2 four-hour periods\n    \"coverage_offset\": 1,               # shift starting at s covers s and s+1\n    \"requirement\": [4, 8, 10, 4, 8, 4], # minimum staff per period (2am-6am ... 10pm-2am)\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"num_periods\"]\n    offset = d[\"coverage_offset\"]\n    req = d[\"requirement\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.periods = pyo.RangeSet(0, n - 1)\n    model.shifts = pyo.RangeSet(0, n - 1)\n\n    # Variables: number of waitstaff starting an 8-hour shift at each period start\n    model.waitstaff = pyo.Var(\n        model.shifts,\n        within=pyo.NonNegativeIntegers,\n    )\n\n    # Objective: minimise total number of waitstaff hired\n    def obj_rule(m):\n        return sum(m.waitstaff[s] for s in m.shifts)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraints: each period must be covered by enough on-duty staff\n    # Period t is covered by shifts starting at t and at t-1 (mod n).\n    def coverage_rule(m, t):\n        start_same = m.waitstaff[t]\n        start_prev = m.waitstaff[(t - offset) % n]\n        return start_same + start_prev >= req[t]\n\n    model.coverage = pyo.Constraint(model.periods, rule=coverage_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1113,
+      "completion_tokens": 760
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.432326316833496,
+   "position": 9,
+   "recipe_index": 5
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T10:40:02"
+}

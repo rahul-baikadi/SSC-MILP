@@ -1,0 +1,267 @@
+{
+ "pid": "industryor_0028",
+ "question": "A new company is opening in a small town and needs to decide how to deliver its products to customers in surrounding cities. The company can choose from three modes of transportation: cars, trucks, and buses. Each car trip generates 100 units of pollution, each truck trip generates 80 units of pollution, and each bus trip generates 110 units of pollution. The company needs to minimize the total amount of pollution.\n\nThe company can only choose a maximum of two out of the three modes of transportation.\n\nDue to restrictions on road transportation, the number of truck trips cannot exceed 10.\n\nEach car trip can transport 25 units of products, each truck trip can transport 30 units of products, and each bus trip can transport 40 units of products. The company needs to transport at least 500 units of products.\n\nThe number of bus trips should not exceed one-fifth of the total number of trips.\n\nThe total number of trips must be less than or equal to 15.",
+ "templates": [
+  "Production Planning / Product Mix",
+  "Transportation",
+  "Vehicle Routing / TSP"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"modes\": [\"car\", \"truck\", \"bus\"],\n    \"pollution\": {\"car\": 100, \"truck\": 80, \"bus\": 110},\n    \"capacity\": {\"car\": 25, \"truck\": 30, \"bus\": 40},\n    \"min_products\": 500,\n    \"max_modes\": 2,\n    \"truck_max_trips\": 10,\n    \"bus_fraction_denom\": 5,      # bus trips <= (1/5) * total trips\n    \"total_trips_max\": 15,\n    \"big_m\": 15,                  # upper bound on trips of any single mode\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    modes = d[\"modes\"]\n\n    model = pyo.ConcreteModel()\n    model.M = pyo.Set(initialize=modes)\n\n    # Decision variables\n    model.trips = pyo.Var(\n        model.M,\n        domain=pyo.NonNegativeIntegers,\n        bounds=(0, d[\"total_trips_max\"]),\n    )\n    model.use = pyo.Var(model.M, domain=pyo.Binary)\n\n    # Objective: minimise total pollution\n    def obj_rule(m):\n        return sum(d[\"pollution\"][i] * m.trips[i] for i in m.M)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Product demand: total transported >= min_products\n    def demand_rule(m):\n        return sum(d[\"capacity\"][i] * m.trips[i] for i in m.M) >= d[\"min_products\"]\n\n    model.demand = pyo.Constraint(rule=demand_rule)\n\n    # At most max_modes modes selected\n    def max_modes_rule(m):\n        return sum(m.use[i] for i in m.M) <= d[\"max_modes\"]\n\n    model.max_modes = pyo.Constraint(rule=max_modes_rule)\n\n    # Link trips to mode selection (big-M)\n    def link_rule(m, i):\n        return m.trips[i] <= d[\"big_m\"] * m.use[i]\n\n    model.link = pyo.Constraint(model.M, rule=link_rule)\n\n    # Truck trips cannot exceed truck_max_trips\n    def truck_rule(m):\n        return m.trips[\"truck\"] <= d[\"truck_max_trips\"]\n\n    model.truck_limit = pyo.Constraint(rule=truck_rule)\n\n    # Bus trips <= (1/bus_fraction_denom) * total trips  ->  linearised\n    def bus_rule(m):\n        return (\n            d[\"bus_fraction_denom\"] * m.trips[\"bus\"]\n            <= sum(m.trips[i] for i in m.M)\n        )\n\n    model.bus_limit = pyo.Constraint(rule=bus_rule)\n\n    # Total trips <= total_trips_max\n    def total_trips_rule(m):\n        return sum(m.trips[i] for i in m.M) <= d[\"total_trips_max\"]\n\n    model.total_trips = pyo.Constraint(rule=total_trips_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1377,
+      "completion_tokens": 1085
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.9879090785980225,
+   "position": 0,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   x[m] : number of trips using mode m, m in MODES = {car, truck, bus}\n#          domain: non-negative integers\n#   y[m] : binary indicator, 1 if mode m is used (x[m] > 0), 0 otherwise\n#\n# Objective (minimize total pollution):\n#   sum_m pollution[m] * x[m]\n#\n# Constraints (numbered by source sentence):\n#   (1) At most two of the three modes may be used:\n#         sum_m y[m] <= 2\n#   (2) Truck trips cannot exceed 10:\n#         x[truck] <= 10\n#   (3) Must transport at least 500 units of products:\n#         sum_m capacity[m] * x[m] >= 500\n#   (4) Bus trips <= one-fifth of total trips:\n#         x[bus] <= (1/5) * sum_m x[m]\n#   (5) Total number of trips <= 15:\n#         sum_m x[m] <= 15\n#   (6) Linking y[m] to x[m] (big-M):\n#         x[m] <= M * y[m]   for all m\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"MODES\": [\"car\", \"truck\", \"bus\"],\n    \"pollution\": {\"car\": 100, \"truck\": 80, \"bus\": 110},\n    \"capacity\": {\"car\": 25, \"truck\": 30, \"bus\": 40},\n    \"max_modes\": 2,\n    \"truck_max\": 10,\n    \"min_products\": 500,\n    \"bus_fraction\": 1.0 / 5.0,\n    \"max_trips\": 15,\n    \"big_M\": 15,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.MODES = pyo.Set(initialize=d[\"MODES\"])\n\n    model.x = pyo.Var(model.MODES, within=pyo.NonNegativeIntegers)\n    model.y = pyo.Var(model.MODES, within=pyo.Binary)\n\n    def obj_rule(m):\n        return sum(d[\"pollution\"][k] * m.x[k] for k in m.MODES)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    def max_modes_rule(m):\n        return sum(m.y[k] for k in m.MODES) <= d[\"max_modes\"]\n\n    model.max_modes = pyo.Constraint(rule=max_modes_rule)\n\n    def truck_limit_rule(m):\n        return m.x[\"truck\"] <= d[\"truck_max\"]\n\n    model.truck_limit = pyo.Constraint(rule=truck_limit_rule)\n\n    def demand_rule(m):\n        return sum(d[\"capacity\"][k] * m.x[k] for k in m.MODES) >= d[\"min_products\"]\n\n    model.demand = pyo.Constraint(rule=demand_rule)\n\n    def bus_share_rule(m):\n        return m.x[\"bus\"] <= d[\"bus_fraction\"] * sum(m.x[k] for k in m.MODES)\n\n    model.bus_share = pyo.Constraint(rule=bus_share_rule)\n\n    def total_trips_rule(m):\n        return sum(m.x[k] for k in m.MODES) <= d[\"max_trips\"]\n\n    model.total_trips = pyo.Constraint(rule=total_trips_rule)\n\n    def link_rule(m, k):\n        return m.x[k] <= d[\"big_M\"] * m.y[k]\n\n    model.link = pyo.Constraint(model.MODES, rule=link_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1397,
+      "completion_tokens": 2725
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2011,
+      "completion_tokens": 852
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 27.09013295173645,
+   "position": 1,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"Each car trip generates 100 units of pollution...\"\n    \"pollution\": {\"car\": 100, \"truck\": 80, \"bus\": 110},\n    # \"Each car trip can transport 25 units ... truck 30 ... bus 40\"\n    \"capacity\": {\"car\": 25, \"truck\": 30, \"bus\": 40},\n    # \"needs to transport at least 500 units of products\"\n    \"min_products\": 500,\n    # \"the number of truck trips cannot exceed 10\"\n    \"max_truck_trips\": 10,\n    # \"number of bus trips should not exceed one-fifth of the total number of trips\"\n    \"bus_share_denom\": 5,          # bus <= (1/5) * total  ->  5*bus <= total\n    # \"total number of trips must be less than or equal to 15\"\n    \"max_total_trips\": 15,\n    # \"maximum of two out of the three modes of transportation\"\n    \"max_modes\": 2,\n    # big-M upper bound on trips of any single mode (total trips cap)\n    \"big_m\": 15,\n}\n\nMODES = [\"car\", \"truck\", \"bus\"]\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.MODES = pyo.Set(initialize=MODES)\n\n    # x[m]: number of trips of mode m (integer, non-negative)\n    m.x = pyo.Var(m.MODES, within=pyo.NonNegativeIntegers)\n\n    # y[m]: 1 if mode m is used at all\n    m.y = pyo.Var(m.MODES, within=pyo.Binary)\n\n    # Objective: minimise total pollution\n    def obj_rule(m):\n        return sum(d[\"pollution\"][k] * m.x[k] for k in m.MODES)\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Product requirement: sum capacity * trips >= 500\n    def product_rule(m):\n        return sum(d[\"capacity\"][k] * m.x[k] for k in m.MODES) >= d[\"min_products\"]\n    m.product_req = pyo.Constraint(rule=product_rule)\n\n    # Truck trips <= 10\n    def truck_rule(m):\n        return m.x[\"truck\"] <= d[\"max_truck_trips\"]\n    m.truck_limit = pyo.Constraint(rule=truck_rule)\n\n    # Bus trips <= (1/5) * total trips  ->  5*bus <= total\n    def bus_share_rule(m):\n        total = sum(m.x[k] for k in m.MODES)\n        return d[\"bus_share_denom\"] * m.x[\"bus\"] <= total\n    m.bus_share = pyo.Constraint(rule=bus_share_rule)\n\n    # Total trips <= 15\n    def total_rule(m):\n        return sum(m.x[k] for k in m.MODES) <= d[\"max_total_trips\"]\n    m.total_trips = pyo.Constraint(rule=total_rule)\n\n    # At most two modes used\n    def modes_rule(m):\n        return sum(m.y[k] for k in m.MODES) <= d[\"max_modes\"]\n    m.max_modes = pyo.Constraint(rule=modes_rule)\n\n    # Linking: x[m] <= M * y[m]\n    def link_ub_rule(m, k):\n        return m.x[k] <= d[\"big_m\"] * m.y[k]\n    m.link_ub = pyo.Constraint(m.MODES, rule=link_ub_rule)\n\n    # Linking: x[m] >= y[m] (force y = 1 whenever the mode is used)\n    def link_lb_rule(m, k):\n        return m.x[k] >= m.y[k]\n    m.link_lb = pyo.Constraint(m.MODES, rule=link_lb_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1381,
+      "completion_tokens": 1264
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.345594644546509,
+   "position": 2,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"modes\": [\"car\", \"truck\", \"bus\"],\n    \"pollution\": {\"car\": 100, \"truck\": 80, \"bus\": 110},\n    \"capacity\": {\"car\": 25, \"truck\": 30, \"bus\": 40},\n    \"truck_max_trips\": 10,\n    \"product_demand\": 500,\n    \"bus_fraction_denom\": 5,      # bus trips <= (1/5) total trips  ->  5*bus <= total\n    \"max_total_trips\": 15,\n    \"max_modes_used\": 2,\n    \"big_m\": 15,                  # upper bound on any x[i]\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.M = pyo.Set(initialize=d[\"modes\"])\n\n    # Decision variables\n    model.x = pyo.Var(model.M, domain=pyo.NonNegativeIntegers)      # trips per mode\n    model.y = pyo.Var(model.M, domain=pyo.Binary)                    # mode is used?\n\n    # Objective: minimize total pollution (<=)\n    def obj_rule(m):\n        return sum(d[\"pollution\"][i] * m.x[i] for i in m.M)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # (a) x[i] <= big_m * y[i]  (using a mode implies choosing it)\n    def link_rule(m, i):\n        return m.x[i] <= d[\"big_m\"] * m.y[i]\n    model.link = pyo.Constraint(model.M, rule=link_rule)\n\n    # (b) at most max_modes_used modes chosen\n    def mode_count_rule(m):\n        return sum(m.y[i] for i in m.M) <= d[\"max_modes_used\"]\n    model.mode_count = pyo.Constraint(rule=mode_count_rule)\n\n    # (c) truck trips cannot exceed truck_max_trips\n    def truck_rule(m):\n        return m.x[\"truck\"] <= d[\"truck_max_trips\"]\n    model.truck_limit = pyo.Constraint(rule=truck_rule)\n\n    # (d) must transport at least product_demand units\n    def demand_rule(m):\n        return sum(d[\"capacity\"][i] * m.x[i] for i in m.M) >= d[\"product_demand\"]\n    model.demand = pyo.Constraint(rule=demand_rule)\n\n    # (e) bus trips <= (1/bus_fraction_denom) * total trips  ->  denom*bus <= total\n    def bus_rule(m):\n        return d[\"bus_fraction_denom\"] * m.x[\"bus\"] <= sum(m.x[i] for i in m.M)\n    model.bus_limit = pyo.Constraint(rule=bus_rule)\n\n    # (f) total trips <= max_total_trips\n    def total_rule(m):\n        return sum(m.x[i] for i in m.M) <= d[\"max_total_trips\"]\n    model.total_trips = pyo.Constraint(rule=total_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1393,
+      "completion_tokens": 1097
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.201476573944092,
+   "position": 3,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"modes\": [\"car\", \"truck\", \"bus\"],\n    # pollution per trip\n    \"pollution\": {\"car\": 100, \"truck\": 80, \"bus\": 110},\n    # product units carried per trip\n    \"capacity\": {\"car\": 25, \"truck\": 30, \"bus\": 40},\n    # product requirement\n    \"demand\": 500,\n    # max number of modes that may be chosen\n    \"max_modes\": 2,\n    # truck trips upper bound\n    \"truck_max\": 10,\n    # bus trips <= bus_frac_den *? implemented as bus_frac_num/den * total trips\n    \"bus_frac_num\": 1,\n    \"bus_frac_den\": 5,\n    # total trips upper bound\n    \"total_trips_max\": 15,\n    # big-M per mode (>= max possible trips of that mode = total_trips_max)\n    \"bigM\": {\"car\": 15, \"truck\": 10, \"bus\": 15},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    modes = d[\"modes\"]\n\n    m = pyo.ConcreteModel()\n\n    m.MODES = pyo.Set(initialize=modes)\n\n    # ---------------------------------------------------------------\n    # Variables\n    # ---------------------------------------------------------------\n    m.x = pyo.Var(m.MODES, within=pyo.NonNegativeIntegers)\n    m.y = pyo.Var(m.MODES, within=pyo.Binary)\n\n    # ---------------------------------------------------------------\n    # Objective: minimize total pollution\n    # ---------------------------------------------------------------\n    m.obj = pyo.Objective(\n        expr=sum(d[\"pollution\"][i] * m.x[i] for i in m.MODES),\n        sense=pyo.minimize,\n    )\n\n    # ---------------------------------------------------------------\n    # Activity-link constraints: x[i] <= bigM[i] * y[i]\n    # ---------------------------------------------------------------\n    def link_rule(m, i):\n        return m.x[i] <= d[\"bigM\"][i] * m.y[i]\n\n    m.mode_link = pyo.Constraint(m.MODES, rule=link_rule)\n\n    # Max two modes selected among three\n    m.max_two_modes = pyo.Constraint(\n        expr=sum(m.y[i] for i in m.MODES) <= d[\"max_modes\"]\n    )\n\n    # Truck trips cannot exceed 10\n    m.truck_cap = pyo.Constraint(expr=m.x[\"truck\"] <= d[\"truck_max\"])\n\n    # Product requirement: at least 500 units\n    m.product_requirement = pyo.Constraint(\n        expr=sum(d[\"capacity\"][i] * m.x[i] for i in m.MODES) >= d[\"demand\"]\n    )\n\n    # Bus trips <= (1/5) of total trips -> linearised: den*x_bus <= num*sum(x)\n    m.bus_fraction = pyo.Constraint(\n        expr=d[\"bus_frac_den\"] * m.x[\"bus\"]\n        <= d[\"bus_frac_num\"] * sum(m.x[i] for i in m.MODES)\n    )\n\n    # Total trips <= 15\n    m.total_trips = pyo.Constraint(\n        expr=sum(m.x[i] for i in m.MODES) <= d[\"total_trips_max\"]\n    )\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1383,
+      "completion_tokens": 1121
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.100636005401611,
+   "position": 4,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"modes\": [\"car\", \"truck\", \"bus\"],\n    \"pollution\": {\"car\": 100, \"truck\": 80, \"bus\": 110},\n    \"capacity\": {\"car\": 25, \"truck\": 30, \"bus\": 40},\n    \"truck_limit\": 10,\n    \"demand_min\": 500,\n    \"bus_share\": 0.2,          # one-fifth\n    \"total_trips_limit\": 15,\n    \"max_modes\": 2,\n    \"big_m\": 15,               # bound on x[m] (<= total trips)\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # ---- Set ---------------------------------------------------------\n    model.M = pyo.Set(initialize=d[\"modes\"])\n\n    # ---- Variables ---------------------------------------------------\n    model.x = pyo.Var(model.M, within=pyo.NonNegativeIntegers,\n                      bounds=(0, d[\"total_trips_limit\"]))\n    model.y = pyo.Var(model.M, within=pyo.Binary)\n    model.t = pyo.Var(within=pyo.NonNegativeReals,\n                      bounds=(0, d[\"total_trips_limit\"]))\n\n    # ---- Objective: minimise total pollution -------------------------\n    def obj_rule(m):\n        return sum(d[\"pollution\"][i] * m.x[i] for i in m.M)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---- 1. At most two modes chosen ---------------------------------\n    def max_modes_rule(m):\n        return sum(m.y[i] for i in m.M) <= d[\"max_modes\"]\n\n    model.max_modes = pyo.Constraint(rule=max_modes_rule)\n\n    # ---- 2. Truck trips cannot exceed the limit ----------------------\n    def truck_limit_rule(m):\n        return m.x[\"truck\"] <= d[\"truck_limit\"]\n\n    model.truck_limit = pyo.Constraint(rule=truck_limit_rule)\n\n    # ---- 3. Transport at least the required products -----------------\n    def demand_rule(m):\n        return sum(d[\"capacity\"][i] * m.x[i] for i in m.M) >= d[\"demand_min\"]\n\n    model.demand = pyo.Constraint(rule=demand_rule)\n\n    # ---- 4a. Definition of total trips -------------------------------\n    def total_def_rule(m):\n        return m.t == sum(m.x[i] for i in m.M)\n\n    model.total_def = pyo.Constraint(rule=total_def_rule)\n\n    # ---- 4b. Bus trips <= one-fifth of total trips -------------------\n    def bus_share_rule(m):\n        return m.x[\"bus\"] <= d[\"bus_share\"] * m.t\n\n    model.bus_share = pyo.Constraint(rule=bus_share_rule)\n\n    # ---- 5. Total trips <= limit -------------------------------------\n    def total_limit_rule(m):\n        return m.t <= d[\"total_trips_limit\"]\n\n    model.total_limit = pyo.Constraint(rule=total_limit_rule)\n\n    # ---- 6. Link: unused mode carries zero trips ---------------------\n    def link_rule(m, i):\n        return m.x[i] <= d[\"big_m\"] * m.y[i]\n\n    model.link = pyo.Constraint(model.M, rule=link_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1383,
+      "completion_tokens": 1188
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.546088933944702,
+   "position": 5,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Every numeric constant from the problem, with its source sentence quoted.\n# ---------------------------------------------------------------------------\nDATA = {\n    # \"three modes of transportation: cars, trucks, and buses\"\n    \"modes\": [\"car\", \"truck\", \"bus\"],\n\n    # \"Each car trip generates 100 units of pollution\"\n    # \"each truck trip generates 80 units of pollution\"\n    # \"each bus trip generates 110 units of pollution\"\n    \"pollution\": {\"car\": 100, \"truck\": 80, \"bus\": 110},\n\n    # \"Each car trip can transport 25 units of products\"\n    # \"each truck trip can transport 30 units of products\"\n    # \"each bus trip can transport 40 units of products\"\n    \"capacity\": {\"car\": 25, \"truck\": 30, \"bus\": 40},\n\n    # \"The company needs to transport at least 500 units of products.\"\n    \"min_products\": 500,\n\n    # \"the number of truck trips cannot exceed 10.\"\n    \"max_truck_trips\": 10,\n\n    # \"The company can only choose a maximum of two out of the three modes\"\n    \"max_modes\": 2,\n\n    # \"The number of bus trips should not exceed one-fifth of the total number of trips.\"\n    #   x_bus <= (1/5) * total  ->  5 * x_bus <= total  (kept integer/linear)\n    \"bus_trip_fraction_num\": 1,\n    \"bus_trip_fraction_den\": 5,\n\n    # \"The total number of trips must be less than or equal to 15.\"\n    \"max_total_trips\": 15,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    M = d[\"modes\"]\n    max_total = d[\"max_total_trips\"]\n\n    model = pyo.ConcreteModel()\n\n    # ----- Sets -------------------------------------------------------------\n    model.M = pyo.Set(initialize=M, ordered=True)\n\n    # ----- Variables --------------------------------------------------------\n    # x[m]: number of trips made by mode m (indivisible, non-negative)\n    def x_bounds(m, i):\n        if i == \"truck\":\n            return (0, d[\"max_truck_trips\"])\n        return (0, max_total)\n\n    model.x = pyo.Var(\n        model.M, within=pyo.NonNegativeIntegers, bounds=x_bounds\n    )\n\n    # y[m]: 1 if mode m is used at all, else 0\n    model.y = pyo.Var(model.M, within=pyo.Binary)\n\n    # ----- Objective: minimise total pollution ------------------------------\n    def obj_rule(m):\n        return sum(d[\"pollution\"][i] * m.x[i] for i in m.M)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ----- Constraints ------------------------------------------------------\n\n    # \"The company can only choose a maximum of two out of the three modes\"\n    def max_modes_rule(m):\n        return sum(m.y[i] for i in m.M) <= d[\"max_modes\"]\n\n    model.max_modes = pyo.Constraint(rule=max_modes_rule)\n\n    # \"the number of truck trips cannot exceed 10\"\n    def truck_limit_rule(m):\n        return m.x[\"truck\"] <= d[\"max_truck_trips\"]\n\n    model.truck_limit = pyo.Constraint(rule=truck_limit_rule)\n\n    # \"needs to transport at least 500 units of products\"\n    def demand_rule(m):\n        return sum(d[\"capacity\"][i] * m.x[i] for i in m.M) >= d[\"min_products\"]\n\n    model.demand = pyo.Constraint(rule=demand_rule)\n\n    # \"bus trips should not exceed one-fifth of the total number of trips\"\n    #   x_bus <= (num/den) * total   ->   den * x_bus <= num * total\n    def bus_share_rule(m):\n        num = d[\"bus_trip_fraction_num\"]\n        den = d[\"bus_trip_fraction_den\"]\n        total = sum(m.x[i] for i in m.M)\n        return den * m.x[\"bus\"] <= num * total\n\n    model.bus_share = pyo.Constraint(rule=bus_share_rule)\n\n    # \"The total number of trips must be less than or equal to 15.\"\n    def total_trips_rule(m):\n        return sum(m.x[i] for i in m.M) <= max_total\n\n    model.total_trips = pyo.Constraint(rule=total_trips_rule)\n\n    # Linking: if a mode is unused (y=0) it cannot have trips.\n    def link_rule(m, i):\n        return m.x[i] <= max_total * m.y[i]\n\n    model.link = pyo.Constraint(model.M, rule=link_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1381,
+      "completion_tokens": 1498
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.06589674949646,
+   "position": 6,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"modes\": [\"car\", \"truck\", \"bus\"],\n    \"pollution\": {\"car\": 100, \"truck\": 80, \"bus\": 110},\n    \"capacity\": {\"car\": 25, \"truck\": 30, \"bus\": 40},\n    \"truck_max_trips\": 10,\n    \"min_products\": 500,\n    \"bus_fraction\": 1.0 / 5.0,   # bus trips <= one-fifth of total trips\n    \"max_total_trips\": 15,\n    \"max_modes\": 2,\n    \"big_m\": 15,                 # upper bound on any mode's trips (total trips cap)\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    modes = d[\"modes\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.M = pyo.Set(initialize=modes, ordered=True)\n\n    # Variables\n    def trips_bounds(m):\n        if m == \"truck\":\n            return (0, d[\"truck_max_trips\"])\n        return (0, d[\"max_total_trips\"])\n\n    model.trips = pyo.Var(\n        model.M,\n        domain=pyo.NonNegativeIntegers,\n        bounds=trips_bounds,\n    )\n    model.use = pyo.Var(model.M, domain=pyo.Binary)\n\n    # Objective: minimize total pollution\n    def obj_rule(m):\n        return sum(d[\"pollution\"][k] * m.trips[k] for k in m.M)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # (a1) at most two modes chosen\n    def max_modes_rule(m):\n        return sum(m.use[k] for k in m.M) <= d[\"max_modes\"]\n\n    model.max_modes = pyo.Constraint(rule=max_modes_rule)\n\n    # (a2) linking: trips[m] > 0 only if mode m is used\n    def link_rule(m, k):\n        return m.trips[k] <= d[\"big_m\"] * m.use[k]\n\n    model.link_use = pyo.Constraint(model.M, rule=link_rule)\n\n    # (b) truck trips cannot exceed 10\n    def truck_cap_rule(m):\n        return m.trips[\"truck\"] <= d[\"truck_max_trips\"]\n\n    model.truck_cap = pyo.Constraint(rule=truck_cap_rule)\n\n    # (c) transport at least 500 units of products\n    def demand_rule(m):\n        return sum(d[\"capacity\"][k] * m.trips[k] for k in m.M) >= d[\"min_products\"]\n\n    model.demand = pyo.Constraint(rule=demand_rule)\n\n    # (d) bus trips <= one-fifth of total trips  =>  5*bus <= total\n    def bus_share_rule(m):\n        return m.trips[\"bus\"] <= d[\"bus_fraction\"] * sum(m.trips[k] for k in m.M)\n\n    model.bus_share = pyo.Constraint(rule=bus_share_rule)\n\n    # (e) total trips <= 15\n    def total_trips_rule(m):\n        return sum(m.trips[k] for k in m.M) <= d[\"max_total_trips\"]\n\n    model.total_trips = pyo.Constraint(rule=total_trips_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1377,
+      "completion_tokens": 1163
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.264926433563232,
+   "position": 7,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   x[m]  : number of trips of mode m, m in M = {car, truck, bus}\n#           domain: NonNegativeIntegers\n#   z[m]  : binary, 1 if mode m is used (x[m] >= 1), 0 otherwise\n#           domain: Binary\n#\n# Objective (minimize): total pollution\n#   sum_m pollution[m] * x[m]\n#\n# Constraints\n#   (1) Product demand:  sum_m capacity[m] * x[m] >= 500\n#   (2) Truck limit:     x[truck] <= 10\n#   (3) Total trips:     sum_m x[m] <= 15\n#   (4) Bus share:       x[bus] <= (1/5) * sum_m x[m]\n#   (5) Max two modes:   sum_m z[m] <= 2\n#   (6) Link z to x:     x[m] <= bigM * z[m]   for all m\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"modes\": [\"car\", \"truck\", \"bus\"],\n    \"pollution\": {\"car\": 100, \"truck\": 80, \"bus\": 110},\n    \"capacity\": {\"car\": 25, \"truck\": 30, \"bus\": 40},\n    \"demand_min\": 500,\n    \"truck_max\": 10,\n    \"trips_max\": 15,\n    \"bus_share_denom\": 5,      # bus trips <= (1/5) * total trips\n    \"max_modes\": 2,\n    \"bigM\": 15,                # upper bound on any x[m] (total trips <= 15)\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.M = pyo.Set(initialize=d[\"modes\"])\n\n    model.x = pyo.Var(\n        model.M,\n        within=pyo.NonNegativeIntegers,\n        bounds=(0, d[\"trips_max\"]),\n    )\n    model.z = pyo.Var(model.M, within=pyo.Binary)\n\n    # Objective: minimize total pollution\n    def obj_rule(m):\n        return sum(d[\"pollution\"][i] * m.x[i] for i in m.M)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # (1) Product demand\n    def demand_rule(m):\n        return sum(d[\"capacity\"][i] * m.x[i] for i in m.M) >= d[\"demand_min\"]\n\n    model.demand = pyo.Constraint(rule=demand_rule)\n\n    # (2) Truck limit\n    def truck_rule(m):\n        return m.x[\"truck\"] <= d[\"truck_max\"]\n\n    model.truck_limit = pyo.Constraint(rule=truck_rule)\n\n    # (3) Total trips limit\n    def trips_rule(m):\n        return sum(m.x[i] for i in m.M) <= d[\"trips_max\"]\n\n    model.trips_limit = pyo.Constraint(rule=trips_rule)\n\n    # (4) Bus share: x[bus] <= (1/denom) * total trips\n    def bus_rule(m):\n        return d[\"bus_share_denom\"] * m.x[\"bus\"] <= sum(m.x[i] for i in m.M)\n\n    model.bus_share = pyo.Constraint(rule=bus_rule)\n\n    # (5) At most two modes chosen\n    def maxmodes_rule(m):\n        return sum(m.z[i] for i in m.M) <= d[\"max_modes\"]\n\n    model.max_modes = pyo.Constraint(rule=maxmodes_rule)\n\n    # (6) Link z to x: x[m] <= bigM * z[m]\n    def link_rule(m, i):\n        return m.x[i] <= d[\"bigM\"] * m.z[i]\n\n    model.link = pyo.Constraint(model.M, rule=link_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1397,
+      "completion_tokens": 804
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2122,
+      "completion_tokens": 920
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 10.239173412322998,
+   "position": 8,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"modes\": [\"car\", \"truck\", \"bus\"],\n    \"pollution\": {\"car\": 100, \"truck\": 80, \"bus\": 110},\n    \"capacity\": {\"car\": 25, \"truck\": 30, \"bus\": 40},\n    \"max_modes_used\": 2,\n    \"truck_max\": 10,\n    \"demand\": 500,\n    \"bus_fraction\": 5,      # bus <= (1/5)*total  =>  5*bus <= total\n    \"total_trips_max\": 15,\n    \"big_m\": 15,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.M = pyo.Set(initialize=d[\"modes\"])\n\n    # x[m]: number of trips of each mode (whole trips)\n    model.x = pyo.Var(model.M, within=pyo.NonNegativeIntegers)\n\n    # y[m]: whether mode m is used at all\n    model.y = pyo.Var(model.M, within=pyo.Binary)\n\n    # Objective: minimize total pollution\n    def obj_rule(m):\n        return sum(d[\"pollution\"][i] * m.x[i] for i in m.M)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Link: a mode can only have trips if it is selected (x <= BigM * y)\n    def link_rule(m, i):\n        return m.x[i] <= d[\"big_m\"] * m.y[i]\n\n    model.link = pyo.Constraint(model.M, rule=link_rule)\n\n    # At most two of the three modes may be used\n    def modes_rule(m):\n        return sum(m.y[i] for i in m.M) <= d[\"max_modes_used\"]\n\n    model.max_modes = pyo.Constraint(rule=modes_rule)\n\n    # Truck trips cannot exceed 10\n    def truck_rule(m):\n        return m.x[\"truck\"] <= d[\"truck_max\"]\n\n    model.truck_cap = pyo.Constraint(rule=truck_rule)\n\n    # Must transport at least 500 units of products\n    def demand_rule(m):\n        return sum(d[\"capacity\"][i] * m.x[i] for i in m.M) >= d[\"demand\"]\n\n    model.demand = pyo.Constraint(rule=demand_rule)\n\n    # Bus trips <= (1/5) of total trips  =>  5*bus <= total trips\n    def bus_rule(m):\n        return d[\"bus_fraction\"] * m.x[\"bus\"] <= sum(m.x[i] for i in m.M)\n\n    model.bus_frac = pyo.Constraint(rule=bus_rule)\n\n    # Total number of trips <= 15\n    def total_rule(m):\n        return sum(m.x[i] for i in m.M) <= d[\"total_trips_max\"]\n\n    model.total_trips = pyo.Constraint(rule=total_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1393,
+      "completion_tokens": 1048
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.670644521713257,
+   "position": 9,
+   "recipe_index": 2
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:52:46"
+}

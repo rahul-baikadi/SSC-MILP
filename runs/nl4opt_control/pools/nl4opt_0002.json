@@ -1,0 +1,245 @@
+{
+ "pid": "nl4opt_0002",
+ "question": "A lab has 1000 units of medicinal ingredients to make two pills, a large pill and a small pill. A large pill requires 3 units of medicinal ingredients and 2 units of filler. A small pill requires 2 units of medicinal ingredients and 1 unit of filler. The lab has to make at least 100 large pills. However, since small pills are more popular at least 60% of the total number of pills must be small. How many of each should be made to minimize the total number of filler material needed?",
+ "templates": [],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"ingredient_capacity\": 1000,\n    # ingredient per pill\n    \"ing_large\": 3,\n    \"ing_small\": 2,\n    # filler per pill\n    \"filler_large\": 2,\n    \"filler_small\": 1,\n    # requirements\n    \"min_large\": 100,\n    \"min_small_fraction\": 0.60,\n    # indicator safety bounds (need not be restrictive; must upper-bound feasible x)\n    \"M_LARGE\": 10000,\n    \"M_SMALL\": 10000,\n}\n\nPRODUCTS = (\"large\", \"small\")\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ----- sets -----\n    model.P = pyo.Set(initialize=PRODUCTS, ordered=True)\n\n    # ----- variables -----\n    # number of pills produced (integer, only lb specified in problem)\n    model.x = pyo.Var(model.P, domain=pyo.NonNegativeIntegers, bounds=(0, None))\n\n    # auxiliary binaries: y[p] = 1 iff any pill of type p is produced (P <=> x >= 1)\n    model.y = pyo.Var(model.P, domain=pyo.Binary)\n\n    # big-M parameters used for the linearisation\n    model.M = pyo.Param(model.P, initialize={\n        \"large\": d[\"M_LARGE\"],\n        \"small\": d[\"M_SMALL\"],\n    }, within=pyo.NonNegativeReals)\n\n    f_l = d[\"filler_large\"]\n    f_s = d[\"filler_small\"]\n\n    # ----- constraints: one rule per atomic sentence -----\n\n    # (Sentence) \"A large pill requires 3 units ... a small pill requires 2 units.\"\n    # Combined with capacity 1000: ingredient consumption <= capacity\n    def rule_ingredient_limit(m):\n        return (d[\"ing_large\"] * m.x[\"large\"]\n                + d[\"ing_small\"] * m.x[\"small\"]\n                <= d[\"ingredient_capacity\"])\n    model.c_ingredient_limit = pyo.Constraint(rule=rule_ingredient_limit)\n\n    # (Sentence) \"The lab has to make at least 100 large pills.\"\n    def rule_min_large(m):\n        return m.x[\"large\"] >= d[\"min_large\"]\n    model.c_min_large = pyo.Constraint(rule=rule_min_large)\n\n    # (Sentence) \"at least 60% of the total number of pills must be small.\"\n    # small >= 0.6*small + 0.6*large  =>  0.4*small - 0.6*large >= 0\n    lam = d[\"min_small_fraction\"]\n    def rule_min_small_fraction(m):\n        return (lam * m.x[\"large\"]) <= (1.0 - lam) * m.x[\"small\"]\n    model.c_min_small_fraction = pyo.Constraint(rule=rule_min_small_fraction)\n\n    # Indicator linearisation for each product p (if-then logic via big-M):\n    #   x[p] >= 1  =>  y[p] = 1   (violet link: x <= M*y)\n    #   y[p] = 0   =>  x[p] = 0   (skip producing that type)\n    def rule_indicator_link(m, p):\n        return m.x[p] <= m.M[p] * m.y[p]\n    model.c_indicator_link = pyo.Constraint(model.P, rule=rule_indicator_link)\n\n    def rule_indicator_activation(m, p):\n        # y[p] = 1  =>  x[p] >= 1  (at least one pill when the type is used)\n        return m.x[p] >= 1 - m.M[p] * (1 - m.y[p])\n    model.c_indicator_activation = pyo.Constraint(\n        model.P, rule=rule_indicator_activation\n    )\n\n    # ----- objective: minimize total filler material needed -----\n    model.obj = pyo.Objective(\n        expr=f_l * model.x[\"large\"] + f_s * model.x[\"small\"],\n        sense=pyo.minimize,\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 768,
+      "completion_tokens": 1352
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "possible_nonlinearity"
+   ],
+   "seconds": 8.574369430541992,
+   "position": 0,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"med_total\": 1000,\n    \"med_large\": 3,\n    \"med_small\": 2,\n    \"filler_large\": 2,\n    \"filler_small\": 1,\n    \"large_min\": 100,\n    \"small_share\": 0.6,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.xL = pyo.Var(domain=pyo.NonNegativeIntegers,\n                       bounds=(d[\"large_min\"], None))\n    model.xS = pyo.Var(domain=pyo.NonNegativeIntegers)\n\n    def price_rule(m):\n        return d[\"filler_large\"] * m.xL + d[\"filler_small\"] * m.xS\n\n    model.obj = pyo.Objective(rule=price_rule, sense=pyo.minimize)\n\n    def medicinal_rule(m):\n        return d[\"med_large\"] * m.xL + d[\"med_small\"] * m.xS <= d[\"med_total\"]\n\n    model.medicinal = pyo.Constraint(rule=medicinal_rule)\n\n    def large_min_rule(m):\n        return m.xL >= d[\"large_min\"]\n\n    model.large_min = pyo.Constraint(rule=large_min_rule)\n\n    def small_share_rule(m):\n        return m.xS >= d[\"small_share\"] * (m.xL + m.xS)\n\n    model.small_share = pyo.Constraint(rule=small_share_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 768,
+      "completion_tokens": 821
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.558990716934204,
+   "position": 1,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"types\": [1, 2],                  # 1 = large pill, 2 = small pill\n    \"ingredient_units\": {1: 3, 2: 2}, # medicinal ingredient units per pill\n    \"filler_units\": {1: 2, 2: 1},     # filler units per pill\n    \"ingredient_total\": 1000,         # total medicinal ingredient units available\n    \"min_large\": 100,                 # at least 100 large pills\n    \"small_pct_num\": 60,              # small pills >= 60% of total (numerator)\n    \"small_pct_den\": 100,             # ... percent denominator\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Sets: product types (1 = large, 2 = small)\n    model.I = pyo.RangeSet(min(d[\"types\"]), max(d[\"types\"]))\n\n    # Variables: number of pills of each type, nonnegative integers\n    model.x = pyo.Var(model.I, within=pyo.NonNegativeIntegers, bounds=(0, None))\n\n    # Objective: minimize total filler material used\n    def obj_rule(m):\n        return sum(d[\"filler_units\"][i] * m.x[i] for i in m.I)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint: ingredient usage <= total available ingredients (<=)\n    def ingredient_rule(m):\n        return sum(d[\"ingredient_units\"][i] * m.x[i] for i in m.I) <= d[\"ingredient_total\"]\n    model.ingredient_limit = pyo.Constraint(rule=ingredient_rule)\n\n    # Constraint: at least 100 large pills (>=)\n    def min_large_rule(m):\n        return m.x[1] >= d[\"min_large\"]\n    model.min_large = pyo.Constraint(rule=min_large_rule)\n\n    # Constraint: small pills >= 60% of total pills.\n    # x2 >= (num/den)*(x1+x2) -> den*x2 >= num*x1 + num*x2\n    # -> (den-num)*x2 >= num*x1, i.e. 40*x2 >= 60*x1  (>=)\n    def small_share_rule(m):\n        return (d[\"small_pct_den\"] - d[\"small_pct_num\"]) * m.x[2] >= d[\"small_pct_num\"] * m.x[1]\n    model.small_share = pyo.Constraint(rule=small_share_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 778,
+      "completion_tokens": 1850
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.527692079544067,
+   "position": 2,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"ingredient_supply\": 1000,   # units of medicinal ingredients available\n    \"large_ingredients\": 3,      # ingredients per large pill\n    \"large_filler\": 2,           # filler per large pill\n    \"small_ingredients\": 2,      # ingredients per small pill\n    \"small_filler\": 1,           # filler per small pill\n    \"min_large\": 100,            # at least this many large pills\n    \"small_share\": 0.6,          # at least 60% of total pills must be small\n}\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Decision variables: counts of pills made\n    model.x = pyo.Var(domain=pyo.NonNegativeIntegers)  # large pills\n    model.y = pyo.Var(domain=pyo.NonNegativeIntegers)  # small pills\n\n    # 4. Ingredient supply: 3x + 2y <= 1000\n    def supply_rule(m):\n        return d[\"large_ingredients\"] * m.x + d[\"small_ingredients\"] * m.y <= d[\"ingredient_supply\"]\n    model.supply = pyo.Constraint(rule=supply_rule)\n\n    # 4. At least 100 large pills: x >= 100\n    def min_large_rule(m):\n        return m.x >= d[\"min_large\"]\n    model.min_large = pyo.Constraint(rule=min_large_rule)\n\n    # 4. Small pills >= 60% of total: y >= p*(x+y)  ->  (1-p)*y - p*x >= 0\n    def share_rule(m):\n        return (1 - d[\"small_share\"]) * m.y - d[\"small_share\"] * m.x >= 0\n    model.small_share = pyo.Constraint(rule=share_rule)\n\n    # 3. Objective: minimize total filler = 2x + 1y\n    model.obj = pyo.Objective(\n        expr=d[\"large_filler\"] * model.x + d[\"small_filler\"] * model.y,\n        sense=pyo.minimize,\n    )\n\n    return model\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 778,
+      "completion_tokens": 813
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.633039712905884,
+   "position": 3,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"ingredient_available\": 1000,   # total units of medicinal ingredients\n    \"ingredient_large\": 3,          # ingredients per large pill\n    \"ingredient_small\": 2,          # ingredients per small pill\n    \"filler_large\": 2,              # filler per large pill\n    \"filler_small\": 1,              # filler per small pill\n    \"min_large\": 100,               # at least this many large pills\n    \"min_small_fraction\": 0.6,      # at least this fraction of pills are small\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # --- Variables ---\n    model.large_pills = pyo.Var(\n        domain=pyo.NonNegativeIntegers, bounds=(0, None)\n    )\n    model.small_pills = pyo.Var(\n        domain=pyo.NonNegativeIntegers, bounds=(0, None)\n    )\n\n    # --- Objective: minimize total filler material ---\n    model.obj = pyo.Objective(\n        expr=d[\"filler_large\"] * model.large_pills\n        + d[\"filler_small\"] * model.small_pills,\n        sense=pyo.minimize,\n    )\n\n    # --- Constraint 1: ingredient availability ---\n    def ingredient_limit_rule(m):\n        return (\n            d[\"ingredient_large\"] * m.large_pills\n            + d[\"ingredient_small\"] * m.small_pills\n            <= d[\"ingredient_available\"]\n        )\n\n    model.ingredient_limit = pyo.Constraint(rule=ingredient_limit_rule)\n\n    # --- Constraint 2: at least min_large large pills ---\n    def min_large_rule(m):\n        return m.large_pills >= d[\"min_large\"]\n\n    model.min_large = pyo.Constraint(rule=min_large_rule)\n\n    # --- Constraint 3: small pills are >= min_small_fraction of total pills ---\n    # small >= f * (large + small)  ->  (1 - f) * small >= f * large\n    def min_small_fraction_rule(m):\n        return (\n            (1 - d[\"min_small_fraction\"]) * m.small_pills\n            >= d[\"min_small_fraction\"] * m.large_pills\n        )\n\n    model.min_small_fraction = pyo.Constraint(rule=min_small_fraction_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 762,
+      "completion_tokens": 867
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.2035181522369385,
+   "position": 4,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "Confounder eliminated write output now:\n\nFinal task fail into pattern \"solution zero not content\". Given whole thread, craft predicted optimal semantics single correct pass solved directly by 100/ ratio calculation textual:\n\n- Given L>=0..., ratio non-price filler two units costs absolute count 3\u2026 many interplay eliminated model formulate still must at root DATA allowed inferred endpoints.\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 782,
+      "completion_tokens": 1627
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "syntax_error"
+   ],
+   "seconds": 12.051406383514404,
+   "position": 5,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# All numeric constants from the problem statement, with source sentences.\nDATA = {\n    # \"A lab has 1000 units of medicinal ingredients...\"\n    \"ingredient_units_available\": 1000,\n    # \"A large pill requires 3 units of medicinal ingredients...\"\n    \"ingredients_large\": 3,\n    # \"...and 2 units of filler.\" (large pill)\n    \"filler_large\": 2,\n    # \"A small pill requires 2 units of medicinal ingredients...\"\n    \"ingredients_small\": 2,\n    # \"...and 1 unit of filler.\" (small pill)\n    \"filler_small\": 1,\n    # \"The lab has to make at least 100 large pills.\"\n    \"min_large_pills\": 100,\n    # \"...at least 60% of the total number of pills must be small.\"\n    \"min_small_fraction\": 0.6,\n    # Pill types (index set)\n    \"pill_types\": [\"large\", \"small\"],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.P = pyo.Set(initialize=d[\"pill_types\"])\n\n    # Variables: number of pills of each type (integer, >= 0)\n    model.x = pyo.Var(model.P, within=pyo.NonNegativeIntegers, bounds=(0, None))\n\n    # Objective: minimize total filler material needed\n    def obj_rule(m):\n        return d[\"filler_large\"] * m.x[\"large\"] + d[\"filler_small\"] * m.x[\"small\"]\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint: ingredient availability\n    def ingredient_rule(m):\n        return (\n            d[\"ingredients_large\"] * m.x[\"large\"]\n            + d[\"ingredients_small\"] * m.x[\"small\"]\n            <= d[\"ingredient_units_available\"]\n        )\n\n    model.ingredient_limit = pyo.Constraint(rule=ingredient_rule)\n\n    # Constraint: at least min_large_pills large pills\n    def min_large_rule(m):\n        return m.x[\"large\"] >= d[\"min_large_pills\"]\n\n    model.min_large = pyo.Constraint(rule=min_large_rule)\n\n    # Constraint: at least min_small_fraction of total pills are small\n    # x_small >= f * (x_large + x_small)\n    # => (1 - f) * x_small - f * x_large >= 0\n    def small_share_rule(m):\n        f = d[\"min_small_fraction\"]\n        return (1 - f) * m.x[\"small\"] - f * m.x[\"large\"] >= 0\n\n    model.small_share = pyo.Constraint(rule=small_share_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 766,
+      "completion_tokens": 905
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.6257264614105225,
+   "position": 6,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"pills\": [\"large\", \"small\"],\n    \"ingredients_available\": 1000,\n    \"ingredients_per_pill\": {\"large\": 3, \"small\": 2},\n    \"filler_per_pill\": {\"large\": 2, \"small\": 1},\n    \"min_large_pills\": 100,\n    \"min_small_fraction\": 0.60,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.PILLS = pyo.Set(initialize=d[\"pills\"])\n\n    # Decision: number of pills of each type to make\n    model.make = pyo.Var(model.PILLS, within=pyo.NonNegativeIntegers)\n\n    # Objective: minimize total filler material\n    model.obj = pyo.Objective(\n        expr=sum(d[\"filler_per_pill\"][p] * model.make[p] for p in model.PILLS),\n        sense=pyo.minimize,\n    )\n\n    # Ingredient availability constraint\n    def ingredient_rule(m):\n        return sum(\n            d[\"ingredients_per_pill\"][p] * m.make[p] for p in m.PILLS\n        ) <= d[\"ingredients_available\"]\n    model.ingredient_limit = pyo.Constraint(rule=ingredient_rule)\n\n    # At least 100 large pills\n    def min_large_rule(m):\n        return m.make[\"large\"] >= d[\"min_large_pills\"]\n    model.min_large = pyo.Constraint(rule=min_large_rule)\n\n    # At least 60% of total pills must be small:\n    # small >= 0.60*(large+small)  <=>  (1-0.60)*small >= 0.60*large\n    def small_fraction_rule(m):\n        frac = d[\"min_small_fraction\"]\n        return (1 - frac) * m.make[\"small\"] >= frac * m.make[\"large\"]\n    model.small_fraction = pyo.Constraint(rule=small_fraction_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 762,
+      "completion_tokens": 758
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.639195203781128,
+   "position": 7,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# Every numeric constant from the problem, with source sentence.\nDATA = {\n    # \"A lab has 1000 units of medicinal ingredients\"\n    \"ingredient_available\": 1000,\n    # \"A large pill requires 3 units of medicinal ingredients and 2 units of filler.\"\n    \"large_ingredient\": 3,\n    \"large_filler\": 2,\n    # \"A small pill requires 2 units of medicinal ingredients and 1 unit of filler.\"\n    \"small_ingredient\": 2,\n    \"small_filler\": 1,\n    # \"The lab has to make at least 100 large pills.\"\n    \"min_large\": 100,\n    # \"at least 60% of the total number of pills must be small.\"\n    \"min_small_fraction\": 0.6,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Decision variables: numbers of pills (integer, nonnegative).\n    model.large = pyo.Var(within=pyo.NonNegativeIntegers)\n    model.small = pyo.Var(within=pyo.NonNegativeIntegers)\n\n    # Objective: minimize total filler material needed.\n    model.obj = pyo.Objective(\n        expr=d[\"large_filler\"] * model.large + d[\"small_filler\"] * model.small,\n        sense=pyo.minimize,\n    )\n\n    # Ingredient availability: 3 L + 2 S <= 1000\n    model.ingredient_limit = pyo.Constraint(\n        expr=d[\"large_ingredient\"] * model.large\n        + d[\"small_ingredient\"] * model.small\n        <= d[\"ingredient_available\"]\n    )\n\n    # At least 100 large pills.\n    model.min_large = pyo.Constraint(expr=model.large >= d[\"min_large\"])\n\n    # At least 60% of total pills are small:\n    # small >= 0.6*(large + small)  ->  (1 - 0.6)*small - 0.6*large >= 0\n    model.small_share = pyo.Constraint(\n        expr=(1 - d[\"min_small_fraction\"]) * model.small\n        - d[\"min_small_fraction\"] * model.large\n        >= 0\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 766,
+      "completion_tokens": 806
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.040562391281128,
+   "position": 8,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "# Decision variables\n# x  = number of LARGE pills made       domain: NonNegativeIntegers, x >= 100\n# y  = number of SMALL pills made       domain: NonNegativeIntegers, y >= 0\n#\n# Objective (minimize, in words):\n#   minimize total filler used = 2*x + 1*y      (units of filler)\n#\n# Constraints\n# (1) Ingredients text: \"A lab has 1000 units ...\" -> material 3x + 2y <= 1000\n# (2) \"has to make at least 100 large pills\"        -> x >= 100\n# (3) \"at least 60% of the total number of pills must be small\" -> y >= 0.6*(x+y)  i.e. y>=1.5x; all indicators linear after rearrangement.\nimport pyomo.environ as pyo\n\nDATA = {\n    \"total_ingredient\": 1000,      # units available\n    \"large_ingredient\": 3,\n    \"small_ingredient\": 2,\n    \"large_filler\": 2,\n    \"small_filler\": 1,\n    \"min_large\": 100,\n    \"min_small_fraction\": 0.6,          # bounds above (0.6 of total pills >=?)\n}\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.X_large = pyo.Var(domain=pyo.NonNegativeIntegers,\n                            bounds=(d[\"min_large\"], None))\n    # Better literal PyO typical implementation: two indexed:\n    #\n    # (kept separately names instead avoids appending each handle)\n    #\n    # (Now corrected here named not col name accessible.)\n    #\n    # Above bug-like but okay typ.\n\n# Instead because custom index requirement referenced with name...\n# (rechoose immediately)\n\n\n\nDATA = {\n\"unit_ingredient_coef_large\":3,\n\"unit_filler_coef_large\":2,\n...\n}\ndef build_model...\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 782,
+      "completion_tokens": 1993
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "syntax_error"
+   ],
+   "seconds": 13.200664758682251,
+   "position": 9,
+   "recipe_index": 4
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:48:27"
+}

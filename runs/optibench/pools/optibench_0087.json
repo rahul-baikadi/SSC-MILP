@@ -1,0 +1,318 @@
+{
+ "pid": "optibench_0087",
+ "question": "A manufacturing company is planning to produce four types of products: ProductA, ProductB, ProductC, and ProductD. They need to decide how many units of each product to produce in the next month to optimize their profit. The profit per unit and the production cost per unit, which increases non-linearly with the number of units produced, are given in the following Table.\n\n| Product | Profit per Unit | Production Cost per Unit |\n|---------|-----------------|--------------------------|\n| ProductA | $50 | $30 + (ProductAUnits^2)/1000 |\n| ProductB | $70 | $40 + (ProductBUnts^2)/1000 |\n| ProductC | $90 | $50 + (ProductCUnits^2)/1000 |\n| ProductD | $110 | $60 + (ProductDUnits^2)/1000 |\n\nThe company has a total production capacity of 1000 units for the month. Due to market demand, the company must produce at least 100 units of ProductA and no more than 200 units. The company has a budget of $50,000 for production costs for the month. The company wants to maximize the total net profit, which is the sum of the profits from each product minus the respective production costs.\n",
+ "templates": [
+  "Production Planning / Product Mix"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"ProductA\", \"ProductB\", \"ProductC\", \"ProductD\"],\n    \"profit\": {\n        \"ProductA\": 50,\n        \"ProductB\": 70,\n        \"ProductC\": 90,\n        \"ProductD\": 110,\n    },\n    # Base (linear) part of production cost per unit\n    \"cost_intercept\": {\n        \"ProductA\": 30,\n        \"ProductB\": 40,\n        \"ProductC\": 50,\n        \"ProductD\": 60,\n    },\n    # Quadratic cost coefficient: cost adds (coeff_quad) * units^2 / 1000.\n    # Linearised below using an equivalent linear per-unit slope over the\n    # bounded domain (kept in DATA so no magic numbers appear in the model).\n    \"quad_coeff\": {\n        \"ProductA\": 1.0,\n        \"ProductB\": 1.0,\n        \"ProductC\": 1.0,\n        \"ProductD\": 1.0,\n    },\n    \"quad_scale\": 1000.0,\n    # Linearisation reference level used to convert the convex quadratic\n    # cost into a linear marginal cost (bounding value of the domain).\n    \"lin_ref_level\": 1000.0,\n    \"total_capacity\": 1000,\n    \"min_A\": 100,\n    \"max_A\": 200,\n    \"budget\": 50000.0,\n    \"zero\": 0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # Sets\n    m.P = pyo.Set(initialize=d[\"products\"])\n\n    # Derived linear marginal cost per unit (intercept + quad coefficient *\n    # ref_level / scale). Convex quadratic cost is approximated linearly so\n    # the overall model remains a MILP/LP with no variable products.\n    marg_cost = {\n        p: d[\"cost_intercept\"][p]\n        + d[\"quad_coeff\"][p] * d[\"lin_ref_level\"] / d[\"quad_scale\"]\n        for p in d[\"products\"]\n    }\n\n    # Variables: integer production quantities, bounded by total capacity.\n    m.x = pyo.Var(\n        m.P,\n        domain=pyo.NonNegativeIntegers,\n        bounds=(d[\"zero\"], d[\"total_capacity\"]),\n    )\n\n    # Enforce ProductA-specific bounds.\n    m.a_lower = pyo.Constraint(expr=m.x[\"ProductA\"] >= d[\"min_A\"])\n    m.a_upper = pyo.Constraint(expr=m.x[\"ProductA\"] <= d[\"max_A\"])\n\n    # Objective: maximize total net profit = sum (profit - cost) * units\n    def obj_rule(mm):\n        return sum(\n            (d[\"profit\"][p] - marg_cost[p]) * mm.x[p] for p in mm.P\n        )\n\n    m.obj = pyo.Objective(expr=obj_rule(m), sense=pyo.maximize)\n\n    # Capacity constraint: sum of units <= total capacity\n    def capacity_rule(mm):\n        return sum(mm.x[p] for p in mm.P) <= d[\"total_capacity\"]\n\n    m.capacity = pyo.Constraint(rule=capacity_rule)\n\n    # Budget constraint: production cost <= budget\n    def budget_rule(mm):\n        return sum(marg_cost[p] * mm.x[p] for p in mm.P) <= d[\"budget\"]\n\n    m.budget = pyo.Constraint(rule=budget_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1098,
+      "completion_tokens": 1291
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.953221321105957,
+   "position": 0,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "\"\"\"\nProduct-mix profit maximisation with rising production cost (nonlinear cost\nper unit), linearised via piecewise-linear cost approximation.\n\"\"\"\nimport pyomo.environ as pyo\n\nDATA = {\n    \"PRODUCTS\":       [\"ProductA\", \"ProductB\", \"ProductC\", \"ProductD\"],\n    \"PROFIT\": {\n        \"ProductA\": 50.0,\n        \"ProductB\": 70.0,\n        \"ProductC\": 90.0,\n        \"ProductD\": 110.0,\n    },\n    \"BASE_COST\": {\n        \"ProductA\": 30.0,\n        \"ProductB\": 40.0,\n        \"ProductC\": 50.0,\n        \"ProductD\": 60.0,\n    },\n    \"QUAD_DENOM\": 1000.0,\n    \"TOTAL_CAPACITY\": 1000,\n    \"BUDGET\":         50000.0,\n    \"A_MIN\": 100,\n    \"A_MAX\": 200,\n    \"SEGMENTS\":       10,\n    \"QUANT_UB\":       1000.0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    profit         = d[\"PROFIT\"]\n    base_cost      = d[\"BASE_COST\"]\n    quad_denom     = d[\"QUAD_DENOM\"]\n    total_capacity = d[\"TOTAL_CAPACITY\"]\n    budget         = d[\"BUDGET\"]\n    a_min          = d[\"A_MIN\"]\n    a_max          = d[\"A_MAX\"]\n    num_seg        = d[\"SEGMENTS\"]\n    quant_ub       = d[\"QUANT_UB\"]\n\n    seg_len = quant_ub / float(num_seg)\n\n    model = pyo.ConcreteModel()\n\n    # ----- Sets -------------------------------------------------------------\n    model.P = pyo.Set(initialize=lambda m: list(d[\"PRODUCTS\"]))\n    model.K = pyo.Set(initialize=[k for k in range(num_seg)])\n\n    # ----- Variables --------------------------------------------------------\n    model.x = pyo.Var(model.P, within=pyo.NonNegativeIntegers,\n                      bounds=lambda m, p: (a_min if p == \"ProductA\" else 0,\n                                           a_max if p == \"ProductA\" else total_capacity))\n\n    model.y   = pyo.Var(model.P, model.K, within=pyo.Binary)\n    model.qty = pyo.Var(model.P, model.K, within=pyo.NonNegativeReals,\n                        bounds=(0.0, seg_len))\n    model.cproc = pyo.Var(model.P, within=pyo.NonNegativeReals, bounds=(0.0, None))\n\n    # Pre-computed costs of moving to each segment's upper breakpoint via the\n    # secant of  b*x + x*x/quad_denom ,  so the chosen segment linearises it.\n    def bk_(k):\n        return k * seg_len                       # breakpoint index k\n    def cost_bp_(p, k):\n        xb = bk_(k)\n        return base_cost[p] * xb + (xb * xb) / quad_denom\n\n    # ----- Objective --------------------------------------------------------\n    def obj_rule(m):\n        revenue = sum(profit[p] * m.x[p] for p in m.P)\n        cost    = sum(m.cproc[p] for p in m.P)\n        return revenue - cost\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # ----- Constraints ------------------------------------------------------\n    # (1) Capacity\n    def cap_rule(m):\n        return sum(m.x[p] for p in m.P) <= total_capacity\n    model.capacity_con = pyo.Constraint(rule=cap_rule)\n\n    # (2) Budget\n    def budget_rule(m):\n        return sum(m.cproc[p] for p in m.P) <= budget\n    model.budget_con = pyo.Constraint(rule=budget_rule)\n\n    # (3) & (4) ProductA demand bounds\n    def amin_rule(m):\n        return m.x[\"ProductA\"] >= a_min\n    model.amin_con = pyo.Constraint(rule=amin_rule)\n\n    def amax_rule(m):\n        return m.x[\"ProductA\"] <= a_max\n    model.amax_con = pyo.Constraint(rule=amax_rule)\n\n    # (5) Select exactly one segment per product\n    def one_seg_rule(m, p):\n        return sum(m.y[p, k] for k in m.K) == 1\n    model.one_seg_con = pyo.Constraint(model.P, rule=one_seg_rule)\n\n    # (6) Link quantities to segment choice and total production:\n    #     sum_k qty[p,k] == x[p]\n    def qty_link_rule(m, p):\n        return sum(m.qty[p, k] for k in m.K) == m.x[p]\n    model.qty_link_con = pyo.Constraint(model.P, rule=qty_link_rule)\n\n    # (7) qty allocated to a segment is bounded by that segment's length\n    #     if the binary is chosen, else zero.  Captured by var bound + binary\n    #     coupling:\n    def qty_ub_rule(m, p, k):\n        return m.qty[p, k] <= seg_len * m.y[p, k]\n    model.qty_ub_con = pyo.Constraint(model.P, model.K, rule=qty_ub_rule)\n\n    # (8) Cost approximation per product via segment arc:\n    #     cproc[p] == base_cost[p]*x[p] + sum_k (slope_k * qty[p,k]) ,\n    #     where slope_k is the segment's secant slope through 0.\n    #     cproc is then the average-based cost value: we sum\n    #         b*x  +  x^2/quad_denom  ~  b*x + secant_sum.\n    # We split into:  cproc[p] == base_cost[p]*x[p] + quad_part[p], plus\n    # a constraint defining quad_part as recovered from the segment slope.\n    model.quad_part = pyo.Var(model.P, within=pyo.NonNegativeReals, bounds=(0.0, None))\n\n    def quad_def_rule(m, p):\n        s = 0.0\n        for k in m.K:\n            lo = bk_(k)\n            hi = bk_(k + 1)\n            slope = ((hi * hi) - (lo * lo)) / (quad_denom * (hi - lo)) if hi > lo else 0.0\n            s = s + slope * m.qty[p, k]\n        return m.quad_part[p] == s\n    model.quad_def_con = pyo.Constraint(model.P, rule=quad_def_rule)\n\n    def cproc_def_rule(m, p):\n        return m.cproc[p] == base_cost[p] * m.x[p] + m.quad_part[p]\n    model.cproc_def_con = pyo.Constraint(model.P, rule=cproc_def_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1088,
+      "completion_tokens": 3764
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 16.88270401954651,
+   "position": 1,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # product labels indexed 1..4 -> A,B,C,D\n    \"products\": [1, 2, 3, 4],\n    # per-unit selling profit\n    \"profit_per_unit\": {1: 50.0, 2: 70.0, 3: 90.0, 4: 110.0},\n    # base (linear) per-unit cost rate\n    \"cost_rate\": {1: 30.0, 2: 40.0, 3: 50.0, 4: 60.0},\n    # quadratic cost coefficient (u^2 / value) on total cost term\n    \"quad_coeff_divisor\": 1000.0,\n    # demand bounds\n    \"x_min\": {1: 100, 2: 0, 3: 0, 4: 0},\n    \"x_max\": {1: 200, 2: 1000, 3: 1000, 4: 1000},\n    # global limits\n    \"total_capacity\": 1000,\n    \"budget\": 50000.0,\n    # piecewise-linearisation of the quadratic (u^2/1000) cost term via\n    # increasing marginal cost over SEG_COUNT equal-width segments per unit axis.\n    \"segment_count\": 8,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = d[\"products\"]\n\n    model = pyo.ConcreteModel()\n    model.P = pyo.Set(initialize=products, ordered=True)\n\n    # ---------------------------------------------------------------\n    # Decision variables\n    # x[p] : units produced (integer)\n    # ---------------------------------------------------------------\n    model.x = pyo.Var(\n        model.P,\n        domain=pyo.NonNegativeIntegers,\n        bounds=lambda m, p: (d[\"x_min\"][p], d[\"x_max\"][p]),\n    )\n\n    # ---------------------------------------------------------------\n    # Piecewise-linear marginal cost for the quadratic cost term:\n    #   total quadratic cost for product p = x[p]^2 / divisor\n    # Marginal cost of unit u (going from u-1 to u) is:\n    #   (u^2 - (u-1)^2)/divisor = (2u - 1)/divisor\n    # We approximate using segment blocks: each segment s covers a\n    # fixed number of units and has a representative marginal cost.\n    # Segments are activated with binary variables, and segment usage\n    # is bounded by segment width. This is a linear (MILP) construct.\n    # ---------------------------------------------------------------\n    nseg = d[\"segment_count\"]\n    model.S = pyo.RangeSet(1, nseg)\n\n    # Precompute segment width (not a decision-dependent value)\n    seg_w = {p: (float(d[\"x_max\"][p]) - float(d[\"x_min\"][p])) / float(nseg)\n             for p in products}\n\n    # marginal cost of segment s for product p (approximate incremental cost\n    # per unit for the quadratic part), using midpoint of segment on the\n    # x-scale so slope stays linear in the model.\n    def marginal_cost(p, s):\n        midpoint = float(d[\"x_min\"][p]) + (s - 0.5) * seg_w[p]\n        return 2.0 * midpoint / d[\"quad_coeff_divisor\"]\n\n    model.seg_cost = pyo.Param(\n        model.P, model.S,\n        initialize={(p, s): marginal_cost(p, s) for p in products for s in model.S},\n        within=pyo.NonNegativeReals,\n    )\n\n    # binary: is segment s active for product p?\n    model.y = pyo.Var(model.P, model.S, domain=pyo.Binary)\n\n    # amount produced within each segment (integer units)\n    model.q = pyo.Var(\n        model.P, model.S,\n        domain=pyo.NonNegativeIntegers,\n        bounds=lambda m, p, s: (0, int(seg_w[p]) if seg_w[p] >= 1 else 0),\n    )\n\n    # ---------------------------------------------------------------\n    # Constraints\n    # ---------------------------------------------------------------\n    # (a) total produced in segments equals x[p] minus the free base (x_min[p])\n    def rule_segment_sum(m, p):\n        return sum(m.q[p, s] for s in m.S) == m.x[p] - int(d[\"x_min\"][p])\n    model.segment_sum = pyo.Constraint(model.P, rule=rule_segment_sum)\n\n    # (b) segment usage bounded by segment width * activation (big-M = width)\n    def rule_segment_cap(m, p, s):\n        return m.q[p, s] <= int(seg_w[p]) * m.y[p, s]\n    model.segment_cap = pyo.Constraint(model.P, model.S, rule=rule_segment_cap)\n\n    # (c) ordering: a segment is only used if prior segments are filled\n    # (monotone activation to preserve increasing marginal cost)\n    def rule_segment_order(m, p, s):\n        if s == 1:\n            return pyo.Constraint.Skip\n        return m.y[p, s] <= m.y[p, s - 1]\n    model.segment_order = pyo.Constraint(model.P, model.S, rule=rule_segment_order)\n\n    # (d) total production capacity: sum_p x[p] <= 1000\n    def rule_capacity(m):\n        return sum(m.x[p] for p in m.P) <= d[\"total_capacity\"]\n    model.capacity = pyo.Constraint(rule=rule_capacity)\n\n    # (e) budget: total production cost <= 50000\n    #  total cost = sum_p [ cost_rate[p] * x[p] + quadratic term ]\n    #  quadratic term approximated by sum_{p,s} seg_cost[p,s] * q[p,s]\n    def rule_budget(m):\n        linear_cost = sum(d[\"cost_rate\"][p] * m.x[p] for p in m.P)\n        quad_cost = sum(m.seg_cost[p, s] * m.q[p, s] for p in m.P for s in m.S)\n        return linear_cost + quad_cost <= d[\"budget\"]\n    model.budget = pyo.Constraint(rule=rule_budget)\n\n    # ---------------------------------------------------------------\n    # Objective: maximize total net profit\n    #   profit = sum_p profit_per_unit[p] * x[p]\n    #            - sum_p cost_rate[p] * x[p]\n    #            - quadratic cost term\n    # ---------------------------------------------------------------\n    def rule_obj(m):\n        revenue = sum(d[\"profit_per_unit\"][p] * m.x[p] for p in m.P)\n        linear_cost = sum(d[\"cost_rate\"][p] * m.x[p] for p in m.P)\n        quad_cost = sum(m.seg_cost[p, s] * m.q[p, s] for p in m.P for s in m.S)\n        return revenue - linear_cost - quad_cost\n    model.obj = pyo.Objective(rule=rule_obj, sense=pyo.maximize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1098,
+      "completion_tokens": 2144
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2801,
+      "completion_tokens": 1574
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2613,
+      "completion_tokens": 1574
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "possible_nonlinearity"
+   ],
+   "seconds": 21.990928411483765,
+   "position": 2,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Products\n    \"products\": [\"ProductA\", \"ProductB\", \"ProductC\", \"ProductD\"],\n    # Profit per unit ($) -- Table: Profit per Unit\n    \"profit\": {\"ProductA\": 50, \"ProductB\": 70, \"ProductC\": 90, \"ProductD\": 110},\n    # Base production cost per unit ($) -- Table: Production Cost per Unit base term\n    \"cost_base\": {\"ProductA\": 30, \"ProductB\": 40, \"ProductC\": 50, \"ProductD\": 60},\n    # Quadratic cost coefficient: x^2 / 1000  -> coefficient 1/1000\n    \"quad_coeff\": 1.0 / 1000.0,\n    # Total production capacity: 1000 units for the month\n    \"capacity\": 1000,\n    # ProductA demand bounds: at least 100, no more than 200\n    \"A_min\": 100,\n    \"A_max\": 200,\n    # Budget for production costs: $50,000\n    \"budget\": 50000,\n    # Piecewise-linearisation segments for x^2 (secant upper approximation)\n    \"segments\": 10,\n    # Upper bound on units per product (capacity)\n    \"x_ub\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = d[\"products\"]\n    K = d[\"segments\"]\n    x_ub = d[\"x_ub\"]\n\n    m = pyo.ConcreteModel()\n\n    m.P = pyo.Set(initialize=products, ordered=True)\n    m.K = pyo.RangeSet(1, K)\n    m.BP = pyo.RangeSet(0, K)\n\n    # Breakpoints for the piecewise-linear approximation of x^2 over [0, x_ub]\n    step = float(x_ub) / K\n    bp = {k: k * step for k in range(0, K + 1)}\n    m.breakpoint = pyo.Param(m.BP, initialize=bp)\n\n    # x[p]: units produced\n    def x_bounds(m, p):\n        if p == \"ProductA\":\n            return (d[\"A_min\"], d[\"A_max\"])\n        return (0, x_ub)\n\n    m.x = pyo.Var(m.P, domain=pyo.NonNegativeIntegers, bounds=x_bounds)\n\n    # q[p]: secant upper approximation of x[p]^2 (units^2)\n    m.q = pyo.Var(m.P, domain=pyo.NonNegativeReals)\n\n    # z[p,k]: selects segment k for product p\n    m.z = pyo.Var(m.P, m.K, domain=pyo.Binary)\n\n    # delta[p,k]: amount of x[p] inside segment k\n    m.delta = pyo.Var(m.P, m.K, domain=pyo.NonNegativeReals)\n\n    # ---- Constraints ----\n\n    # Total production capacity\n    def cap_rule(m):\n        return sum(m.x[p] for p in m.P) <= d[\"capacity\"]\n    m.capacity_con = pyo.Constraint(rule=cap_rule)\n\n    # Each product uses exactly one segment\n    def one_seg_rule(m, p):\n        return sum(m.z[p, k] for k in m.K) == 1\n    m.one_segment = pyo.Constraint(m.P, rule=one_seg_rule)\n\n    # x[p] = sum_k delta[p,k]  (decomposition across segments)\n    def x_decomp_rule(m, p):\n        return m.x[p] == sum(m.delta[p, k] for k in m.K)\n    m.x_decomposition = pyo.Constraint(m.P, rule=x_decomp_rule)\n\n    # delta[p,k] <= (b_k - b_{k-1}) * z[p,k]\n    def delta_cap_rule(m, p, k):\n        width = m.breakpoint[k] - m.breakpoint[k - 1]\n        return m.delta[p, k] <= width * m.z[p, k]\n    m.delta_cap = pyo.Constraint(m.P, m.K, rule=delta_cap_rule)\n\n    # q[p] = sum_k [ L_k^2 * z[p,k] + (L_k + U_k) * delta[p,k] ]  (secant line)\n    def q_rule(m, p):\n        expr = 0\n        for k in m.K:\n            L = m.breakpoint[k - 1]\n            U = m.breakpoint[k]\n            expr += L * L * m.z[p, k] + (L + U) * m.delta[p, k]\n        return m.q[p] == expr\n    m.q_def = pyo.Constraint(m.P, rule=q_rule)\n\n    # Budget: sum_p (cost_base_p * x_p + quad_coeff * q_p) <= budget\n    def budget_rule(m):\n        return sum(\n            d[\"cost_base\"][p] * m.x[p] + d[\"quad_coeff\"] * m.q[p] for p in m.P\n        ) <= d[\"budget\"]\n    m.budget_con = pyo.Constraint(rule=budget_rule)\n\n    # ---- Objective: maximize net profit ----\n    def obj_rule(m):\n        return sum(\n            d[\"profit\"][p] * m.x[p]\n            - d[\"cost_base\"][p] * m.x[p]\n            - d[\"quad_coeff\"] * m.q[p]\n            for p in m.P\n        )\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1086,
+      "completion_tokens": 2074
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2479,
+      "completion_tokens": 1268
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 15.471640825271606,
+   "position": 3,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   x[p] : number of units produced of product p, p in P = {A,B,C,D}\n#          domain: NonNegativeIntegers (units are indivisible)\n#          bounds: 0 <= x[p] <= ub[p]  (ProductA additionally >= 100)\n#\n# Objective (maximize): total net profit\n#   sum_p [ profit_per_unit[p] * x[p] - ( cost_linear[p] * x[p]\n#                                          + x[p]^2 / 1000 ) ]\n#   The quadratic cost term x[p]^2/1000 is linearised with a piecewise-linear\n#   (incremental) approximation using SOS-free binary segment selection.\n#\n# Constraints\n#   (1) Total production capacity:  sum_p x[p] <= 1000\n#   (2) ProductA minimum demand:    x[A] >= 100\n#   (3) ProductA maximum demand:    x[A] <= 200\n#   (4) Production budget:          sum_p ( cost_linear[p]*x[p] + x[p]^2/1000 ) <= 50000\n#       (the quadratic cost is represented by the linearised cost variable c[p])\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"P\": [\"ProductA\", \"ProductB\", \"ProductC\", \"ProductD\"],\n    \"profit_per_unit\": {\n        \"ProductA\": 50.0,\n        \"ProductB\": 70.0,\n        \"ProductC\": 90.0,\n        \"ProductD\": 110.0,\n    },\n    \"cost_linear\": {\n        \"ProductA\": 30.0,\n        \"ProductB\": 40.0,\n        \"ProductC\": 50.0,\n        \"ProductD\": 60.0,\n    },\n    \"quad_coeff\": 1.0 / 1000.0,          # coefficient of x^2 in cost\n    \"total_capacity\": 1000.0,            # constraint (1)\n    \"prodA_min\": 100.0,                  # constraint (2)\n    \"prodA_max\": 200.0,                  # constraint (3)\n    \"budget\": 50000.0,                   # constraint (4)\n    # upper bound on units of each product (capacity is the only global limit)\n    \"ub\": {\n        \"ProductA\": 200.0,\n        \"ProductB\": 1000.0,\n        \"ProductC\": 1000.0,\n        \"ProductD\": 1000.0,\n    },\n    # piecewise-linear breakpoints for the quadratic cost term x^2/1000\n    \"breakpoints\": [0.0, 100.0, 200.0, 400.0, 600.0, 800.0, 1000.0],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    P = d[\"P\"]\n    bp = d[\"breakpoints\"]\n    nseg = len(bp) - 1\n\n    m = pyo.ConcreteModel()\n\n    m.P = pyo.Set(initialize=P, ordered=True)\n    m.S = pyo.RangeSet(0, nseg - 1)\n\n    # ---- decision variables -------------------------------------------------\n    m.x = pyo.Var(\n        m.P,\n        domain=pyo.NonNegativeIntegers,\n        bounds=lambda m, p: (0, d[\"ub\"][p]),\n    )\n\n    # segment width variables for the piecewise-linear cost approximation\n    m.w = pyo.Var(m.P, m.S, domain=pyo.NonNegativeReals)\n\n    # binary: segment s is the \"active\" (last used) segment for product p\n    m.z = pyo.Var(m.P, m.S, domain=pyo.Binary)\n\n    # linearised production cost per product\n    m.cost = pyo.Var(m.P, domain=pyo.NonNegativeReals)\n\n    # ---- objective ----------------------------------------------------------\n    def obj_rule(m):\n        return sum(\n            d[\"profit_per_unit\"][p] * m.x[p] - m.cost[p] for p in m.P\n        )\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # ---- constraint (1): total production capacity --------------------------\n    def cap_rule(m):\n        return sum(m.x[p] for p in m.P) <= d[\"total_capacity\"]\n\n    m.capacity = pyo.Constraint(rule=cap_rule)\n\n    # ---- constraint (2): ProductA minimum demand ----------------------------\n    def prodA_min_rule(m):\n        return m.x[\"ProductA\"] >= d[\"prodA_min\"]\n\n    m.prodA_min = pyo.Constraint(rule=prodA_min_rule)\n\n    # ---- constraint (3): ProductA maximum demand ----------------------------\n    def prodA_max_rule(m):\n        return m.x[\"ProductA\"] <= d[\"prodA_max\"]\n\n    m.prodA_max = pyo.Constraint(rule=prodA_max_rule)\n\n    # ---- constraint (4): production budget ----------------------------------\n    def budget_rule(m):\n        return sum(m.cost[p] for p in m.P) <= d[\"budget\"]\n\n    m.budget = pyo.Constraint(rule=budget_rule)\n\n    # ---- piecewise-linear cost linking --------------------------------------\n    # x[p] = sum_s w[p,s]\n    def x_link_rule(m, p):\n        return m.x[p] == sum(m.w[p, s] for s in m.S)\n\n    m.x_link = pyo.Constraint(m.P, rule=x_link_rule)\n\n    # segment width upper bounds: w[p,s] <= width_s * z[p,s]\n    def seg_ub_rule(m, p, s):\n        width = bp[s + 1] - bp[s]\n        return m.w[p, s] <= width * m.z[p, s]\n\n    m.seg_ub = pyo.Constraint(m.P, m.S, rule=seg_ub_rule)\n\n    # exactly one active segment per product\n    def one_seg_rule(m, p):\n        return sum(m.z[p, s] for s in m.S) == 1\n\n    m.one_seg = pyo.Constraint(m.P, rule=one_seg_rule)\n\n    # cost[p] = sum_s ( linear slope over segment ) * w[p,s]\n    # slope over segment s of (cost_linear*x + quad_coeff*x^2) evaluated at\n    # the segment midpoint is used as a linear approximation.\n    def cost_link_rule(m, p):\n        expr = 0\n        for s in m.S:\n            lo = bp[s]\n            hi = bp[s + 1]\n            mid = 0.5 * (lo + hi)\n            slope = d[\"cost_linear\"][p] + 2.0 * d[\"quad_coeff\"] * mid\n            expr = expr + slope * m.w[p, s]\n        return m.cost[p] == expr\n\n    m.cost_link = pyo.Constraint(m.P, rule=cost_link_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1102,
+      "completion_tokens": 1024
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1400,
+      "completion_tokens": 1573
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 14.412965536117554,
+   "position": 4,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"ProductA\", \"ProductB\", \"ProductC\", \"ProductD\"],\n    \"profit_per_unit\": {\n        \"ProductA\": 50,\n        \"ProductB\": 70,\n        \"ProductC\": 90,\n        \"ProductD\": 110,\n    },\n    \"cost_base\": {\n        \"ProductA\": 30,\n        \"ProductB\": 40,\n        \"ProductC\": 50,\n        \"ProductD\": 60,\n    },\n    \"cost_quad_coeff\": 1.0 / 1000.0,   # units^2 / 1000\n    \"total_capacity\": 1000,\n    \"prodA_min\": 100,\n    \"prodA_max\": 200,\n    \"budget\": 50000,\n    # PWL breakpoints for units (shared across products)\n    \"breakpoints\": [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = d[\"products\"]\n    bps = d[\"breakpoints\"]\n    n_seg = len(bps) - 1\n\n    model = pyo.ConcreteModel()\n\n    # --- Sets ---\n    model.P = pyo.Set(initialize=products, ordered=True)\n    model.SEG = pyo.RangeSet(0, n_seg - 1)\n    model.BP = pyo.RangeSet(0, len(bps) - 1)\n\n    # --- Variables ---\n    model.production = pyo.Var(model.P, domain=pyo.NonNegativeIntegers)\n    model.cost = pyo.Var(model.P, domain=pyo.NonNegativeReals)\n\n    # PWL weights (convex combination) and segment indicators\n    model.lam = pyo.Var(model.P, model.BP, domain=pyo.NonNegativeReals)\n    model.seg = pyo.Var(model.P, model.SEG, domain=pyo.Binary)\n\n    # --- Objective: maximize net profit ---\n    def obj_rule(m):\n        return sum(\n            d[\"profit_per_unit\"][p] * m.production[p] - m.cost[p]\n            for p in m.P\n        )\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # --- Capacity constraint ---\n    def capacity_rule(m):\n        return sum(m.production[p] for p in m.P) <= d[\"total_capacity\"]\n    model.capacity = pyo.Constraint(rule=capacity_rule)\n\n    # --- ProductA demand bounds ---\n    def prodA_min_rule(m):\n        return m.production[\"ProductA\"] >= d[\"prodA_min\"]\n    model.prodA_min = pyo.Constraint(rule=prodA_min_rule)\n\n    def prodA_max_rule(m):\n        return m.production[\"ProductA\"] <= d[\"prodA_max\"]\n    model.prodA_max = pyo.Constraint(rule=prodA_max_rule)\n\n    # --- Budget constraint ---\n    def budget_rule(m):\n        return sum(m.cost[p] for p in m.P) <= d[\"budget\"]\n    model.budget = pyo.Constraint(rule=budget_rule)\n\n    # --- PWL: production expressed via convex combination of breakpoints ---\n    def prod_link_rule(m, p):\n        return m.production[p] == sum(bps[k] * m.lam[p, k] for k in m.BP)\n    model.prod_link = pyo.Constraint(model.P, rule=prod_link_rule)\n\n    def lam_sum_rule(m, p):\n        return sum(m.lam[p, k] for k in m.BP) == 1\n    model.lam_sum = pyo.Constraint(model.P, rule=lam_sum_rule)\n\n    # SOS2 via segment binaries: at most one segment active\n    def seg_sum_rule(m, p):\n        return sum(m.seg[p, s] for s in m.SEG) == 1\n    model.seg_sum = pyo.Constraint(model.P, rule=seg_sum_rule)\n\n    # lambda[k] may be positive only if adjacent segment active\n    # k=0 -> seg 0 ; k=n -> seg n-1 ; else seg k-1 or seg k\n    def lam_seg_rule(m, p, k):\n        if k == 0:\n            return m.lam[p, k] <= m.seg[p, 0]\n        elif k == len(bps) - 1:\n            return m.lam[p, k] <= m.seg[p, n_seg - 1]\n        else:\n            return m.lam[p, k] <= m.seg[p, k - 1] + m.seg[p, k]\n    model.lam_seg = pyo.Constraint(model.P, model.BP, rule=lam_seg_rule)\n\n    # --- PWL: cost equals convex combination of cost breakpoint values ---\n    def bp_cost(p, units):\n        return d[\"cost_base\"][p] * units + d[\"cost_quad_coeff\"] * units * units\n\n    def cost_link_rule(m, p):\n        return m.cost[p] == sum(bp_cost(p, bps[k]) * m.lam[p, k] for k in m.BP)\n    model.cost_link = pyo.Constraint(model.P, rule=cost_link_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1082,
+      "completion_tokens": 1581
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.94060754776001,
+   "position": 5,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"A\", \"B\", \"C\", \"D\"],\n    \"profit_per_unit\": {\"A\": 50, \"B\": 70, \"C\": 90, \"D\": 110},\n    \"linear_cost_per_unit\": {\"A\": 30, \"B\": 40, \"C\": 50, \"D\": 60},\n    \"quadratic_divisor\": 1000.0,\n    \"total_capacity\": 1000,\n    \"min_units\": {\"A\": 100},\n    \"max_units\": {\"A\": 200},\n    \"budget\": 50000,\n    \"breakpoints\": [0, 200, 400, 600, 800, 1000],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = d[\"products\"]\n    bps = d[\"breakpoints\"]\n    kset = list(range(len(bps)))\n    max_units = max(bps)\n\n    m = pyo.ConcreteModel()\n    m.P = pyo.Set(initialize=products)\n    m.K = pyo.Set(initialize=kset)\n\n    m.x = pyo.Var(m.P, within=pyo.NonNegativeIntegers, bounds=(0, max_units))\n    m.lam = pyo.Var(m.P, m.K, within=pyo.NonNegativeReals, bounds=(0, 1))\n\n    def weight_sum_rule(m, p):\n        return sum(m.lam[p, k] for k in kset) == 1\n    m.weight_sum = pyo.Constraint(m.P, rule=weight_sum_rule)\n\n    def def_x_rule(m, p):\n        return m.x[p] == sum(bps[k] * m.lam[p, k] for k in kset)\n    m.def_x = pyo.Constraint(m.P, rule=def_x_rule)\n\n    def cap_rule(m):\n        return sum(m.x[p] for p in products) <= d[\"total_capacity\"]\n    m.capacity = pyo.Constraint(rule=cap_rule)\n\n    def min_rule(m, p):\n        return m.x[p] >= d[\"min_units\"].get(p, 0)\n    m.min_demand = pyo.Constraint(m.P, rule=min_rule)\n\n    def max_rule(m, p):\n        return m.x[p] <= d[\"max_units\"].get(p, max_units)\n    m.max_demand = pyo.Constraint(m.P, rule=max_rule)\n\n    def budget_rule(m):\n        lin = sum(d[\"linear_cost_per_unit\"][p] * m.x[p] for p in products)\n        quad = sum((bps[k] ** 2 / d[\"quadratic_divisor\"]) * m.lam[p, k]\n                   for p in products for k in kset)\n        return (lin + quad) <= d[\"budget\"]\n    m.budget = pyo.Constraint(rule=budget_rule)\n\n    def obj_rule(m):\n        rev = sum((d[\"profit_per_unit\"][p] - d[\"linear_cost_per_unit\"][p]) * m.x[p]\n                  for p in products)\n        quad = sum((bps[k] ** 2 / d[\"quadratic_divisor\"]) * m.lam[p, k]\n                   for p in products for k in kset)\n        return rev - quad\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1088,
+      "completion_tokens": 2393
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "disallowed_lambda_rule"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1849,
+      "completion_tokens": 777
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 16.064746141433716,
+   "position": 6,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem statement\n# ---------------------------------------------------------------------------\nDATA = {\n    # Product set\n    \"products\": [\"A\", \"B\", \"C\", \"D\"],\n\n    # Profit per unit ($)  -- table column \"Profit per Unit\"\n    \"profit\": {\"A\": 50, \"B\": 70, \"C\": 90, \"D\": 110},\n\n    # Base production cost per unit ($) -- constant part of \"Production Cost per Unit\"\n    # ProductA: 30 + x^2/1000 ; ProductB: 40 + ...; ProductC: 50 + ...; ProductD: 60 + ...\n    \"cost_base\": {\"A\": 30, \"B\": 40, \"C\": 50, \"D\": 60},\n\n    # Quadratic cost coefficient (1/1000) appearing in every product's cost formula\n    \"quad_coef\": 1.0 / 1000.0,\n\n    # Total production capacity for the month: \"total production capacity of 1000 units\"\n    \"capacity\": 1000,\n\n    # ProductA demand bounds: \"at least 100 units of ProductA and no more than 200 units\"\n    \"A_min\": 100,\n    \"A_max\": 200,\n\n    # Production budget: \"budget of $50,000 for production costs\"\n    \"budget\": 50000,\n\n    # Piecewise-linear breakpoints for the quantity axis of each product.\n    # Chosen to cover [0, capacity] finely enough to approximate x^2/1000.\n    \"breakpoints\": [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000],\n\n    # Big-M for segment selection (max possible quantity)\n    \"big_m\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = d[\"products\"]\n    bps = d[\"breakpoints\"]\n    nbp = len(bps)\n    segments = list(range(nbp - 1))  # segment index s between bps[s] and bps[s+1]\n\n    m = pyo.ConcreteModel()\n\n    # ------------------------------------------------------------------\n    # Sets\n    # ------------------------------------------------------------------\n    m.P = pyo.Set(initialize=products, doc=\"products\")\n    m.K = pyo.Set(initialize=list(range(nbp)), doc=\"breakpoint indices\")\n    m.S = pyo.Set(initialize=segments, doc=\"segment indices\")\n\n    # ------------------------------------------------------------------\n    # Variables\n    # ------------------------------------------------------------------\n    # Production quantities (integer units)\n    def x_bounds(m, p):\n        if p == \"A\":\n            return (d[\"A_min\"], d[\"A_max\"])\n        return (0, d[\"capacity\"])\n    m.x = pyo.Var(m.P, within=pyo.NonNegativeIntegers, bounds=x_bounds)\n\n    # PWL weight (lambda) variables over breakpoints\n    m.lam = pyo.Var(m.P, m.K, within=pyo.NonNegativeReals, bounds=(0, 1))\n\n    # Binary: segment s is the active segment for product p\n    m.y = pyo.Var(m.P, m.S, within=pyo.Binary)\n\n    # ------------------------------------------------------------------\n    # Constraints\n    # ------------------------------------------------------------------\n    # (1) Total production capacity\n    def cap_rule(m):\n        return sum(m.x[p] for p in m.P) <= d[\"capacity\"]\n    m.capacity_con = pyo.Constraint(rule=cap_rule)\n\n    # (2) PWL: quantity equals weighted breakpoint values\n    def link_x_rule(m, p):\n        return m.x[p] == sum(bps[k] * m.lam[p, k] for k in m.K)\n    m.link_x = pyo.Constraint(m.P, rule=link_x_rule)\n\n    # (3) PWL: weights sum to one\n    def sum_lam_rule(m, p):\n        return sum(m.lam[p, k] for k in m.K) == 1\n    m.sum_lam = pyo.Constraint(m.P, rule=sum_lam_rule)\n\n    # (4) Exactly one active segment per product\n    def one_seg_rule(m, p):\n        return sum(m.y[p, s] for s in m.S) == 1\n    m.one_seg = pyo.Constraint(m.P, rule=one_seg_rule)\n\n    # (5) PWL: lambda only allowed on breakpoints of the active segment\n    #     lam[p,k] <= y[p,s] for k in {s, s+1}\n    def seg_lam_rule(m, p, s):\n        kk = [s, s + 1]\n        return sum(m.lam[p, k] for k in kk) <= 2 * m.y[p, s]\n    m.seg_lam = pyo.Constraint(m.P, m.S, rule=seg_lam_rule)\n\n    # (6) PWL approximation of production cost per product\n    #     cost_p ~ base_p * x_p + quad_coef * x_p^2  (x_p^2 approximated on active segment)\n    def cost_expr(m, p):\n        # linear part\n        lin = d[\"cost_base\"][p] * m.x[p]\n        # quadratic part via PWL: use fixed breakpoint values (constant coeffs)\n        quad = sum(\n            d[\"quad_coef\"] * (bps[k] ** 2) * m.lam[p, k] for k in m.K\n        )\n        return lin + quad\n    m.cost_expr = pyo.Expression(m.P, rule=cost_expr)\n\n    # (7) Budget on total production cost\n    def budget_rule(m):\n        return sum(m.cost_expr[p] for p in m.P) <= d[\"budget\"]\n    m.budget_con = pyo.Constraint(rule=budget_rule)\n\n    # ------------------------------------------------------------------\n    # Objective: maximise total net profit\n    #   net = sum_p (profit_p * x_p - cost_p)\n    # ------------------------------------------------------------------\n    def obj_rule(m):\n        return sum(\n            d[\"profit\"][p] * m.x[p] - m.cost_expr[p] for p in m.P\n        )\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1086,
+      "completion_tokens": 1832
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.432867527008057,
+   "position": 7,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "\"\"\"\nStructured formulation\n=======================\n\nSets / indices\n--------------\n  P = ['ProductA', 'ProductB', 'ProductC', 'ProductD']   # product index p\n\nDecision variables\n------------------\n  x[p] : number of units produced of product p\n         domain: NonNegativeIntegers, bounds (0, capacity)  [units are indivisible]\n\nObjective (maximize)\n--------------------\n  Total net profit = sum over p of\n      (profit_per_unit[p] * x[p])  -  (base_cost[p] * x[p] + quad_coeff[p] * x[p]^2)\n  The quadratic cost term is linearised with a piecewise (segmented) cost curve:\n  each product's production quantity is split into K segments, each segment s\n  having a fixed width w[p,s] and a per-unit cost equal to the marginal cost at\n  the segment's midpoint.  This yields a linear objective.\n\nConstraints\n-----------\n  (1) Total production capacity:  sum_p x[p] <= capacity            [source: \"total production capacity of 1000 units\"]\n  (2) ProductA minimum demand:    x['ProductA'] >= min_A            [source: \"must produce at least 100 units of ProductA\"]\n  (3) ProductA maximum demand:    x['ProductA'] <= max_A            [source: \"and no more than 200 units\"]\n  (4) Budget on production cost:  sum_p cost_p(x[p]) <= budget      [source: \"budget of $50,000 for production costs\"]\n      where cost_p(x[p]) = base_cost[p]*x[p] + quad_coeff[p]*x[p]^2, linearised\n      via the same segment variables.\n  (5) Segment linking:            x[p] = sum_s y[p,s]               [definition of segment split]\n  (6) Segment capacity:           0 <= y[p,s] <= w[p,s]             [segment widths]\n\nLinearisation of the quadratic cost\n-----------------------------------\n  For each product p and segment s, the marginal cost per unit is\n      mc[p,s] = base_cost[p] + quad_coeff[p] * (2*L[p,s] + w[p,s])\n  where L[p,s] is the cumulative lower bound of segment s.  The cost contribution\n  is mc[p,s] * y[p,s].  This is a piecewise-linear (convex) approximation of the\n  quadratic cost, keeping the model linear.\n\"\"\"\n\nimport pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"ProductA\", \"ProductB\", \"ProductC\", \"ProductD\"],\n    \"profit_per_unit\": {\n        \"ProductA\": 50,\n        \"ProductB\": 70,\n        \"ProductC\": 90,\n        \"ProductD\": 110,\n    },\n    \"base_cost\": {\n        \"ProductA\": 30,\n        \"ProductB\": 40,\n        \"ProductC\": 50,\n        \"ProductD\": 60,\n    },\n    \"quad_coeff\": {\n        \"ProductA\": 1.0 / 1000.0,\n        \"ProductB\": 1.0 / 1000.0,\n        \"ProductC\": 1.0 / 1000.0,\n        \"ProductD\": 1.0 / 1000.0,\n    },\n    \"capacity\": 1000,\n    \"min_A\": 100,\n    \"max_A\": 200,\n    \"budget\": 50000,\n    \"n_segments\": 10,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = d[\"products\"]\n    n_seg = d[\"n_segments\"]\n    capacity = d[\"capacity\"]\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=products, ordered=True)\n    model.S = pyo.RangeSet(1, n_seg)\n\n    # Segment width per product (equal split of capacity)\n    seg_width = {p: float(capacity) / float(n_seg) for p in products}\n\n    # Cumulative lower bound of each segment\n    def seg_lower(p, s):\n        return (s - 1) * seg_width[p]\n\n    # Marginal cost per unit at segment midpoint\n    def marginal_cost(p, s):\n        L = seg_lower(p, s)\n        w = seg_width[p]\n        return d[\"base_cost\"][p] + d[\"quad_coeff\"][p] * (2.0 * L + w)\n\n    # Decision variables\n    model.x = pyo.Var(model.P, within=pyo.NonNegativeIntegers,\n                      bounds=(0, capacity))\n    model.y = pyo.Var(model.P, model.S, within=pyo.NonNegativeReals,\n                      bounds=(0, None))\n\n    # Segment upper bounds\n    def seg_ub_rule(m, p, s):\n        return m.y[p, s] <= seg_width[p]\n    model.seg_ub = pyo.Constraint(model.P, model.S, rule=seg_ub_rule)\n\n    # Linking: x[p] = sum_s y[p,s]\n    def link_rule(m, p):\n        return m.x[p] == sum(m.y[p, s] for s in m.S)\n    model.link = pyo.Constraint(model.P, rule=link_rule)\n\n    # Capacity\n    def capacity_rule(m):\n        return sum(m.x[p] for p in m.P) <= capacity\n    model.capacity_con = pyo.Constraint(rule=capacity_rule)\n\n    # ProductA demand bounds\n    def min_A_rule(m):\n        return m.x[\"ProductA\"] >= d[\"min_A\"]\n    model.min_A_con = pyo.Constraint(rule=min_A_rule)\n\n    def max_A_rule(m):\n        return m.x[\"ProductA\"] <= d[\"max_A\"]\n    model.max_A_con = pyo.Constraint(rule=max_A_rule)\n\n    # Budget on production cost (linearised)\n    def budget_rule(m):\n        return sum(marginal_cost(p, s) * m.y[p, s]\n                   for p in m.P for s in m.S) <= d[\"budget\"]\n    model.budget_con = pyo.Constraint(rule=budget_rule)\n\n    # Objective: maximize net profit\n    def obj_rule(m):\n        revenue = sum(d[\"profit_per_unit\"][p] * m.x[p] for p in m.P)\n        cost = sum(marginal_cost(p, s) * m.y[p, s]\n                   for p in m.P for s in m.S)\n        return revenue - cost\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1102,
+      "completion_tokens": 1965
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "missing_constraints",
+      "missing_objective",
+      "missing_variables",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2050,
+      "completion_tokens": 1463
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 22.265233039855957,
+   "position": 8,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# All numeric constants from the problem statement\n# ---------------------------------------------------------------------------\nDATA = {\n    \"products\": [\"ProductA\", \"ProductB\", \"ProductC\", \"ProductD\"],\n    # Profit per unit ($)\n    \"profit_per_unit\": {\n        \"ProductA\": 50,\n        \"ProductB\": 70,\n        \"ProductC\": 90,\n        \"ProductD\": 110,\n    },\n    # Base (linear) part of production cost per unit ($)\n    \"base_cost_per_unit\": {\n        \"ProductA\": 30,\n        \"ProductB\": 40,\n        \"ProductC\": 50,\n        \"ProductD\": 60,\n    },\n    # Quadratic coefficient applied to units^2 (cost = base*units + coef*units^2)\n    \"quad_cost_coef\": 1.0 / 1000.0,\n    # Total production capacity (units)\n    \"total_capacity\": 1000,\n    # Demand bounds for ProductA\n    \"min_productA\": 100,\n    \"max_productA\": 200,\n    # Production-cost budget ($)\n    \"budget\": 50000,\n    # Breakpoints (in units) for the piecewise-linear approximation of units^2\n    # 0 .. total_capacity, chosen to give a good linear fit of the convex term\n    \"breakpoints\": [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = d[\"products\"]\n    bps = d[\"breakpoints\"]\n    n_seg = len(bps) - 1\n\n    model = pyo.ConcreteModel()\n\n    # ---------------- Sets ----------------\n    model.P = pyo.Set(initialize=products, ordered=True)\n    model.SEG = pyo.RangeSet(1, n_seg)  # piecewise-linear segments\n\n    # ---------------- Variables ----------------\n    # Units produced (integer, indivisible units)\n    def prod_bounds(m, p):\n        if p == \"ProductA\":\n            return (d[\"min_productA\"], d[\"max_productA\"])\n        return (0, d[\"total_capacity\"])\n\n    model.production = pyo.Var(\n        model.P, within=pyo.NonNegativeIntegers, bounds=prod_bounds\n    )\n\n    # Piecewise-linear fill variable per (product, segment): units assigned to seg\n    model.seg_fill = pyo.Var(\n        model.P,\n        model.SEG,\n        within=pyo.NonNegativeReals,\n        bounds=(0, d[\"total_capacity\"]),\n    )\n\n    # Binary selector: is segment k the active (top) segment for product p?\n    model.seg_active = pyo.Var(model.P, model.SEG, within=pyo.Binary)\n\n    # ---------------- Objective ----------------\n    # Net profit = sum(profit*units) - sum(base_cost*units) - sum(quad_cost_coef*units^2)\n    # The quadratic term is approximated by the piecewise-linear segment fills.\n    def obj_rule(m):\n        revenue = sum(d[\"profit_per_unit\"][p] * m.production[p] for p in m.P)\n        base_cost = sum(d[\"base_cost_per_unit\"][p] * m.production[p] for p in m.P)\n        quad_cost = sum(\n            d[\"quad_cost_coef\"] * m.seg_fill[p, k] for p in m.P for k in m.SEG\n        )\n        return revenue - base_cost - quad_cost\n\n    model.obj = pyo.Objective(expr=obj_rule(model), sense=pyo.maximize)\n\n    # ---------------- Constraints ----------------\n\n    # Total production capacity\n    def capacity_rule(m):\n        return sum(m.production[p] for p in m.P) <= d[\"total_capacity\"]\n\n    model.capacity = pyo.Constraint(rule=capacity_rule)\n\n    # ProductA minimum demand\n    def min_demand_rule(m):\n        return m.production[\"ProductA\"] >= d[\"min_productA\"]\n\n    model.min_demand = pyo.Constraint(rule=min_demand_rule)\n\n    # ProductA maximum demand\n    def max_demand_rule(m):\n        return m.production[\"ProductA\"] <= d[\"max_productA\"]\n\n    model.max_demand = pyo.Constraint(rule=max_demand_rule)\n\n    # Piecewise-linear linking: production[p] == sum_k seg_fill[p,k]\n    def link_production_rule(m, p):\n        return m.production[p] == sum(m.seg_fill[p, k] for k in m.SEG)\n\n    model.link_production = pyo.Constraint(model.P, rule=link_production_rule)\n\n    # Each segment fill cannot exceed its width\n    def seg_width_rule(m, p, k):\n        width = bps[k] - bps[k - 1]\n        return m.seg_fill[p, k] <= width * m.seg_active[p, k]\n\n    model.seg_width = pyo.Constraint(model.P, model.SEG, rule=seg_width_rule)\n\n    # Segments must be filled in order (segment k active only if k-1 active)\n    def seg_order_rule(m, p, k):\n        if k == 1:\n            return pyo.Constraint.Skip\n        return m.seg_active[p, k] <= m.seg_active[p, k - 1]\n\n    model.seg_order = pyo.Constraint(model.P, model.SEG, rule=seg_order_rule)\n\n    # Budget on total production cost (base + piecewise-linear quadratic part)\n    def budget_rule(m):\n        base_cost = sum(d[\"base_cost_per_unit\"][p] * m.production[p] for p in m.P)\n        quad_cost = sum(\n            d[\"quad_cost_coef\"] * m.seg_fill[p, k] for p in m.P for k in m.SEG\n        )\n        return base_cost + quad_cost <= d[\"budget\"]\n\n    model.budget = pyo.Constraint(rule=budget_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1082,
+      "completion_tokens": 1714
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.00875449180603,
+   "position": 9,
+   "recipe_index": 5
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T10:36:24"
+}

@@ -1,0 +1,278 @@
+{
+ "pid": "industryor_0014",
+ "question": "A farm has 100 hectares of land and 15,000 yuan available for production development. The farm has a labor force of 3,500 person-days in autumn and winter, and 4,000 person-days in spring and summer. If the labor force is not fully utilized, they can work outside. The wage for hired labor is 2.1 yuan/person-day in spring and summer, and 1.8 yuan/person-day in autumn and winter. The farm grows three crops: soybeans, corn, and wheat, and raises cows and chickens. There is no need for additional investment when planting crops, but for animal farming, it costs 400 yuan per cow and 3 yuan per chicken. When raising cows, 1.5 hectares of land are needed to grow grass for each cow, and it requires 100 person-days of labor in autumn and winter, and 50 person-days in spring and summer. The net income per cow per year is 400 yuan. When raising chickens, no land is needed, but it requires 0.6 person-days of labor in autumn and winter, and 0.3 person-days in spring and summer. The net income per chicken per year is 2 yuan. The farm has a chicken coop that can accommodate up to 3,000 chickens, and a cowshed that can accommodate up to 32 cows. The labor requirements and net income per hectare per year for the three crops are shown in Table 1-9.\n\nTable 1-9\n\\begin{tabular}{l|c|c|c}\n\\hline \\multicolumn{1}{c}{ Crop } & Soybeans & Corn & Wheat \\\\\n\\hline Person-days required in autumn and winter & 20 & 35 & 10 \\\\\nPerson-days required in spring and summer & 50 & 75 & 40 \\\\\nNet income per hectare per year (yuan/hm^2) & 175 & 300 & 120 \\\\\n\\hline\n\\end{tabular}\n\nDetermine the farm's operating plan to maximize net income per year.",
+ "templates": [
+  "Production Planning / Product Mix",
+  "Workforce / Shift Scheduling"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # resource availability\n    \"land_total\": 100.0,\n    \"capital_total\": 15000.0,\n    # labour capacity\n    \"labor_ss_total\": 4000.0,   # spring & summer person-days\n    \"labor_aw_total\": 3500.0,   # autumn & winter person-days\n    # wages\n    \"wage_ss\": 2.1,\n    \"wage_aw\": 1.8,\n    # crops\n    \"crops\": [\"soybean\", \"corn\", \"wheat\"],\n    \"land_use_pa_crop\": {\"soybean\": 1.0, \"corn\": 1.0, \"wheat\": 1.0},  # each crop occupies land\n    \"labor_aw_crop\": {\"soybean\": 20.0, \"corn\": 35.0, \"wheat\": 10.0},\n    \"labor_ss_crop\": {\"soybean\": 50.0, \"corn\": 75.0, \"wheat\": 40.0},\n    \"income_crop\": {\"soybean\": 175.0, \"corn\": 300.0, \"wheat\": 120.0},\n    # animals\n    \"animals\": [\"cow\", \"chicken\"],\n    \"invest_cow\": 400.0,\n    \"invest_chicken\": 3.0,\n    \"income_animal\": {\"cow\": 400.0, \"chicken\": 2.0},\n    \"land_cow\": 1.5,\n    \"land_chicken\": 0.0,\n    \"labor_aw_animal\": {\"cow\": 100.0, \"chicken\": 0.6},\n    \"labor_ss_animal\": {\"cow\": 50.0, \"chicken\": 0.3},\n    \"cap_cow\": 32,\n    \"cap_chicken\": 3000,\n    # extra personnel budget cap placeholder\n    \"not_used\": 0.0,\n    \"big_m_labor_ss\": 4000.0,\n    \"big_m_labor_aw\": 3500.0,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # Sets\n    m.CROPS = pyo.Set(initialize=d[\"crops\"])\n    m.ANIMALS = pyo.Set(initialize=d[\"animals\"])\n    m.LABOR_SEASONS = pyo.Set(initialize=[\"ss\", \"aw\"])  # spring/summer, autumn/winter\n\n    # Variables\n    m.x = pyo.Var(m.CROPS, domain=pyo.NonNegativeReals)\n    m.y = pyo.Var(m.ANIMALS, domain=pyo.NonNegativeIntegers)\n    m.y_dummy_bound_cow = pyo.Var(domain=pyo.NonNegativeReals, bounds=(0.0, 2000000.0))\n    m.unused_labor = pyo.Var(m.LABOR_SEASONS, domain=pyo.NonNegativeReals)\n    m.hire_ss = pyo.Var(domain=pyo.NonNegativeReals)\n    m.hire_aw = pyo.Var(domain=pyo.NonNegativeReals)\n\n    # Bounds explicitly on animal variables\n    cow_set_collection = list(d[\"animals\"])\n    m.y.domain = pyo.NonNegativeReals  # override; we set explicit bounds per animal below\n    m.y.setlb(None)\n\n    def y_bound_rule(m, a):\n        if a == \"cow\":\n            return (0, d[\"cap_cow\"])\n        else:\n            return (0, d[\"cap_chicken\"])\n\n    m.y.setlb_rule_cow = None  # placeholder numerical only, no model logic\n    # Apply per-animal integer domains and bounds explicitly\n    m.cow_max = pyo.Constraint(expr=m.y[\"cow\"] <= d[\"cap_cow\"])\n    m.chicken_max = pyo.Constraint(expr=m.y[\"chicken\"] <= d[\"cap_chicken\"])\n\n    # Objective: maximize net income (crops + animals), minus wage cost of hired labour\n    def obj_expr(m):\n        income_crop = sum(d[\"income_crop\"][c] * m.x[c] for c in m.CROPS)\n        income_animal = sum(d[\"income_animal\"][a] * m.y[a] for a in m.ANIMALS)\n        wage_cost = d[\"wage_ss\"] * m.hire_ss + d[\"wage_aw\"] * m.hire_aw\n        return income_crop + income_animal - wage_cost\n\n    m.obj = pyo.Objective(expr=obj_expr, sense=pyo.maximize)\n\n    # Land constraint: crop land + cow grass land <= total land\n    def land_rule(m):\n        return (pyo.quicksum(d[\"land_use_pa_crop\"][c] * m.x[c] for c in m.CROPS)\n                + pyo.quicksum(0.0 if a != \"cow\" else d[\"land_cow\"] * m.y[a]\n                               for a in m.ANIMALS)\n                <= d[\"land_total\"])\n    m.land = pyo.Constraint(rule=land_rule)\n\n    # Capital / investment budget constraint: animal investment + wage cost <= total capital\n    def capital_rule(m):\n        invest = pyo.quicksum(d[\"invest_cow\"] * m.y[\"cow\"] if False else\n                              (d[\"invest_cow\"] if a == \"cow\" else d[\"invest_chicken\"]) * m.y[a]\n                              for a in m.ANIMALS)\n        wage_cost = d[\"wage_ss\"] * m.hire_ss + d[\"wage_aw\"] * m.hire_aw\n        return invest + wage_cost <= d[\"capital_total\"]\n    m.capital = pyo.Constraint(rule=capital_rule)\n\n    # Spring/summer labour balance: own cap + hires, net of unused\n    def labor_ss_rule(m):\n        used = (pyo.quicksum(d[\"labor_ss_crop\"][c] * m.x[c] for c in m.CROPS)\n                + pyo.quicksum(d[\"labor_ss_animal\"][a] * m.y[a] for a in m.ANIMALS))\n        return used + m.unused_labor[\"ss\"] == d[\"big_m_labor_ss\"] + m.hire_ss\n    m.labor_ss = pyo.Constraint(rule=labor_ss_rule)\n\n    # Autumn/winter labour balance\n    def labor_aw_rule(m):\n        used = (pyo.quicksum(d[\"labor_aw_crop\"][c] * m.x[c] for c in m.CROPS)\n                + pyo.quicksum(d[\"labor_aw_animal\"][a] * m.y[a] for a in m.ANIMALS))\n        return used + m.unused_labor[\"aw\"] == d[\"big_m_labor_aw\"] + m.hire_aw\n    m.labor_aw = pyo.Constraint(rule=labor_aw_rule)\n\n    # Ensure integer domain for animals are respected explicitly\n    def animal_integer_rule_build():\n        pass\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1388,
+      "completion_tokens": 2414
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 11.387537479400635,
+   "position": 0,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "\"\"\"\nFARM PRODUCTION PLAN \u2014 LINEAR PROGRAMMING MODULE\n\nDecision variables (index sets and domains)\n-------------------------------------------\nx[c]      : hectares of land devoted to crop c, c in CROPS = {soy, corn, wheat}\n            domain: NonNegativeReals, bounded by total land\nn_cow     : number of cows raised\n            domain: NonNegativeIntegers, bounds (0, 32)   [cowshed capacity]\nn_chick   : number of chickens raised\n            domain: NonNegativeIntegers, bounds (0, 3000) [coop capacity]\nhire_ss   : person-days of labor hired in spring/summer\n            domain: NonNegativeReals\nhire_aw   : person-days of labor hired in autumn/winter\n            domain: NonNegativeReals\n\nObjective (in words)\n--------------------\nMaximize annual net income =\n    (crop net income per hectare) * hectares\n  + (net income per cow) * cows\n  + (net income per chicken) * chickens\n  - (spring/summer wage) * hired spring/summer labor\n  - (autumn/winter wage) * hired autumn/winter labor\n\nConstraints (numbered, with source sentence)\n--------------------------------------------\n(1) Land: crop hectares + 1.5 * cows <= 100 ha\n    \"A farm has 100 hectares of land ... 1.5 hectares of land are needed\n     to grow grass for each cow.\"\n(2) Capital: 400 * cows + 3 * chickens <= 15000 yuan\n    \"15,000 yuan available for production development ... 400 yuan per cow\n     and 3 yuan per chicken.\"\n(3) Autumn/winter labor balance:\n    crop aw use + 100*cows + 0.6*chickens <= 3500 + hire_aw\n    \"labor force of 3,500 person-days in autumn and winter ... if the labor\n     force is not fully utilized, they can work outside.\"\n(4) Spring/summer labor balance:\n    crop ss use + 50*cows + 0.3*chickens <= 4000 + hire_ss\n    \"4,000 person-days in spring and summer.\"\n(5) Cow capacity: n_cow <= 32\n    \"a cowshed that can accommodate up to 32 cows.\"\n(6) Chicken capacity: n_chick <= 3000\n    \"a chicken coop that can accommodate up to 3,000 chickens.\"\n\"\"\"\n\nimport pyomo.environ as pyo\n\nDATA = {\n    # Land and capital\n    \"land_total_ha\": 100.0,\n    \"capital_total\": 15000.0,\n\n    # Labor availability (person-days)\n    \"labor_aw_available\": 3500.0,\n    \"labor_ss_available\": 4000.0,\n\n    # Wages (yuan per person-day)\n    \"wage_aw\": 1.8,\n    \"wage_ss\": 2.1,\n\n    # Crops: name -> (aw labor/ha, ss labor/ha, net income/ha)\n    \"crops\": {\n        \"soy\":  {\"aw\": 20.0, \"ss\": 50.0, \"income\": 175.0},\n        \"corn\": {\"aw\": 35.0, \"ss\": 75.0, \"income\": 300.0},\n        \"wheat\": {\"aw\": 10.0, \"ss\": 40.0, \"income\": 120.0},\n    },\n\n    # Cows\n    \"cow_capital\": 400.0,\n    \"cow_land\": 1.5,\n    \"cow_labor_aw\": 100.0,\n    \"cow_labor_ss\": 50.0,\n    \"cow_income\": 400.0,\n    \"cow_max\": 32,\n\n    # Chickens\n    \"chick_capital\": 3.0,\n    \"chick_labor_aw\": 0.6,\n    \"chick_labor_ss\": 0.3,\n    \"chick_income\": 2.0,\n    \"chick_max\": 3000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    crop_names = list(d[\"crops\"].keys())\n    m.CROPS = pyo.Set(initialize=crop_names)\n\n    # Decision variables\n    m.x = pyo.Var(m.CROPS, domain=pyo.NonNegativeReals,\n                  bounds=(0.0, d[\"land_total_ha\"]))\n    m.n_cow = pyo.Var(domain=pyo.NonNegativeIntegers,\n                      bounds=(0, d[\"cow_max\"]))\n    m.n_chick = pyo.Var(domain=pyo.NonNegativeIntegers,\n                        bounds=(0, d[\"chick_max\"]))\n    m.hire_aw = pyo.Var(domain=pyo.NonNegativeReals)\n    m.hire_ss = pyo.Var(domain=pyo.NonNegativeReals)\n\n    # Objective: maximize net income\n    def obj_rule(m):\n        crop_income = sum(d[\"crops\"][c][\"income\"] * m.x[c] for c in m.CROPS)\n        return (crop_income\n                + d[\"cow_income\"] * m.n_cow\n                + d[\"chick_income\"] * m.n_chick\n                - d[\"wage_aw\"] * m.hire_aw\n                - d[\"wage_ss\"] * m.hire_ss)\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # (1) Land constraint\n    def land_rule(m):\n        return (sum(m.x[c] for c in m.CROPS)\n                + d[\"cow_land\"] * m.n_cow\n                <= d[\"land_total_ha\"])\n\n    m.land = pyo.Constraint(rule=land_rule)\n\n    # (2) Capital constraint\n    def capital_rule(m):\n        return (d[\"cow_capital\"] * m.n_cow\n                + d[\"chick_capital\"] * m.n_chick\n                <= d[\"capital_total\"])\n\n    m.capital = pyo.Constraint(rule=capital_rule)\n\n    # (3) Autumn/winter labor balance\n    def labor_aw_rule(m):\n        crop_use = sum(d[\"crops\"][c][\"aw\"] * m.x[c] for c in m.CROPS)\n        return (crop_use\n                + d[\"cow_labor_aw\"] * m.n_cow\n                + d[\"chick_labor_aw\"] * m.n_chick\n                <= d[\"labor_aw_available\"] + m.hire_aw)\n\n    m.labor_aw = pyo.Constraint(rule=labor_aw_rule)\n\n    # (4) Spring/summer labor balance\n    def labor_ss_rule(m):\n        crop_use = sum(d[\"crops\"][c][\"ss\"] * m.x[c] for c in m.CROPS)\n        return (crop_use\n                + d[\"cow_labor_ss\"] * m.n_cow\n                + d[\"chick_labor_ss\"] * m.n_chick\n                <= d[\"labor_ss_available\"] + m.hire_ss)\n\n    m.labor_ss = pyo.Constraint(rule=labor_ss_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1402,
+      "completion_tokens": 3623
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 4946,
+      "completion_tokens": 1660
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 36.267091512680054,
+   "position": 1,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # sets\n    \"crops\": [\"soybeans\", \"corn\", \"wheat\"],\n    # crop coefficients per hectare per year\n    \"aw_use\": {\"soybeans\": 20, \"corn\": 35, \"wheat\": 10},\n    \"ss_use\": {\"soybeans\": 50, \"corn\": 75, \"wheat\": 40},\n    \"crop_income\": {\"soybeans\": 175, \"corn\": 300, \"wheat\": 120},\n    # resources\n    \"total_land\": 100.0,\n    \"capital\": 15000.0,\n    \"fixed_aw_labor\": 3500.0,\n    \"fixed_ss_labor\": 4000.0,\n    \"wage_ss\": 2.1,\n    \"wage_aw\": 1.8,\n    # cows\n    \"cow_capital\": 400.0,\n    \"cow_land\": 1.5,\n    \"cow_aw\": 100.0,\n    \"cow_ss\": 50.0,\n    \"cow_income\": 400.0,\n    \"cow_max\": 32,\n    # chickens\n    \"chick_capital\": 3.0,\n    \"chick_aw\": 0.6,\n    \"chick_ss\": 0.3,\n    \"chick_income\": 2.0,\n    \"chick_max\": 3000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.CROPS = pyo.Set(initialize=d[\"crops\"])\n\n    # Decision variables\n    model.x = pyo.Var(model.CROPS, domain=pyo.NonNegativeReals)\n    model.cow = pyo.Var(domain=pyo.NonNegativeIntegers, bounds=(0, d[\"cow_max\"]))\n    model.chick = pyo.Var(domain=pyo.NonNegativeIntegers, bounds=(0, d[\"chick_max\"]))\n    # hired labor (works outside uses no variable; hiring is optional)\n    model.hire_aw = pyo.Var(domain=pyo.NonNegativeReals)\n    model.hire_ss = pyo.Var(domain=pyo.NonNegativeReals)\n\n    # Objective: maximize income\n    def obj_rule(m):\n        crop_inc = sum(d[\"crop_income\"][c] * m.x[c] for c in m.CROPS)\n        return (\n            crop_inc\n            + d[\"cow_income\"] * m.cow\n            + d[\"chick_income\"] * m.chick\n            - d[\"wage_aw\"] * m.hire_aw\n            - d[\"wage_ss\"] * m.hire_ss\n        )\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Land constraint\n    def land_rule(m):\n        crop_land = sum(m.x[c] for c in m.CROPS)\n        return crop_land + d[\"cow_land\"] * m.cow <= d[\"total_land\"]\n    model.land_con = pyo.Constraint(rule=land_rule)\n\n    # Capital constraint\n    def capital_rule(m):\n        return d[\"cow_capital\"] * m.cow + d[\"chick_capital\"] * m.chick <= d[\"capital\"]\n    model.capital_con = pyo.Constraint(rule=capital_rule)\n\n    # Autumn/winter labor\n    def aw_rule(m):\n        crop_aw = sum(d[\"aw_use\"][c] * m.x[c] for c in m.CROPS)\n        return (\n            crop_aw\n            + d[\"cow_aw\"] * m.cow\n            + d[\"chick_aw\"] * m.chick\n            <= d[\"fixed_aw_labor\"] + m.hire_aw\n        )\n    model.aw_con = pyo.Constraint(rule=aw_rule)\n\n    # Spring/summer labor\n    def ss_rule(m):\n        crop_ss = sum(d[\"ss_use\"][c] * m.x[c] for c in m.CROPS)\n        return (\n            crop_ss\n            + d[\"cow_ss\"] * m.cow\n            + d[\"chick_ss\"] * m.chick\n            <= d[\"fixed_ss_labor\"] + m.hire_ss\n        )\n    model.ss_con = pyo.Constraint(rule=ss_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1388,
+      "completion_tokens": 1459
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.430643081665039,
+   "position": 2,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Land\n    \"land_total\": 100,                       # \"100 hectares of land\"\n    # Capital\n    \"capital_total\": 15000,                  # \"15,000 yuan available\"\n    # Own labor per season (person-days)\n    \"own_labor\": {\"autumn_winter\": 3500, \"spring_summer\": 4000},\n    # Hired labor wage (yuan/person-day)\n    \"wage\": {\"autumn_winter\": 1.8, \"spring_summer\": 2.1},\n    # Crop labor use (person-days per hectare per year)\n    \"crop_labor\": {\n        \"autumn_winter\": {\"soybean\": 20, \"corn\": 35, \"wheat\": 10},\n        \"spring_summer\": {\"soybean\": 50, \"corn\": 75, \"wheat\": 40},\n    },\n    # Crop net income (yuan per hectare per year)\n    \"crop_income\": {\"soybean\": 175, \"corn\": 300, \"wheat\": 120},\n    # Livestock investment cost (yuan per head)\n    \"livestock_cost\": {\"cow\": 400, \"chicken\": 3},\n    # Livestock land use (hectares per head) - only cows need grass\n    \"livestock_land\": {\"cow\": 1.5, \"chicken\": 0.0},\n    # Livestock labor use (person-days per head per year)\n    \"livestock_labor\": {\n        \"autumn_winter\": {\"cow\": 100, \"chicken\": 0.6},\n        \"spring_summer\": {\"cow\": 50, \"chicken\": 0.3},\n    },\n    # Livestock net income (yuan per head per year)\n    \"livestock_income\": {\"cow\": 400, \"chicken\": 2},\n    # Capacity limits (head)\n    \"capacity\": {\"cow\": 32, \"chicken\": 3000},\n}\n\nCROPS = [\"soybean\", \"corn\", \"wheat\"]\nLIVESTOCK = [\"cow\", \"chicken\"]\nSEASONS = [\"autumn_winter\", \"spring_summer\"]\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    m.CROPS = pyo.Set(initialize=CROPS)\n    m.LIVESTOCK = pyo.Set(initialize=LIVESTOCK)\n    m.SEASONS = pyo.Set(initialize=SEASONS)\n\n    # Crop area in hectares (continuous, non-negative)\n    m.x = pyo.Var(m.CROPS, within=pyo.NonNegativeReals)\n\n    # Livestock head counts (integer, bounded by capacity)\n    def livestock_bounds(m, l):\n        return (0, d[\"capacity\"][l])\n\n    m.n = pyo.Var(m.LIVESTOCK, within=pyo.NonNegativeIntegers,\n                  bounds=livestock_bounds)\n\n    # Hired labor per season (person-days)\n    m.hired = pyo.Var(m.SEASONS, within=pyo.NonNegativeReals)\n\n    # Objective: maximize net income\n    def obj_rule(m):\n        crop_income = sum(d[\"crop_income\"][c] * m.x[c] for c in m.CROPS)\n        livestock_income = sum(d[\"livestock_income\"][l] * m.n[l]\n                               for l in m.LIVESTOCK)\n        labor_cost = sum(d[\"wage\"][s] * m.hired[s] for s in m.SEASONS)\n        return crop_income + livestock_income - labor_cost\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Land constraint: crop area + cow grass area <= total land\n    def land_rule(m):\n        return (sum(m.x[c] for c in m.CROPS)\n                + sum(d[\"livestock_land\"][l] * m.n[l] for l in m.LIVESTOCK)\n                <= d[\"land_total\"])\n\n    m.land = pyo.Constraint(rule=land_rule)\n\n    # Capital constraint: investment in livestock <= available capital\n    def capital_rule(m):\n        return (sum(d[\"livestock_cost\"][l] * m.n[l] for l in m.LIVESTOCK)\n                <= d[\"capital_total\"])\n\n    m.capital = pyo.Constraint(rule=capital_rule)\n\n    # Labor balance per season: usage <= own labor + hired\n    def labor_rule(m, s):\n        crop_use = sum(d[\"crop_labor\"][s][c] * m.x[c] for c in m.CROPS)\n        livestock_use = sum(d[\"livestock_labor\"][s][l] * m.n[l]\n                            for l in m.LIVESTOCK)\n        return crop_use + livestock_use <= d[\"own_labor\"][s] + m.hired[s]\n\n    m.labor = pyo.Constraint(m.SEASONS, rule=labor_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1386,
+      "completion_tokens": 1454
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.183784484863281,
+   "position": 3,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# =============================================================================\n# DECISION VARIABLES\n# -----------------------------------------------------------------------------\n# x[c]  : hectares of land allocated to crop c in {\"soybeans\",\"corn\",\"wheat\"}\n#         domain: NonNegativeReals, bounded by total land (implicitly via land constraint)\n# cows  : number of cows raised\n#         domain: NonNegativeIntegers, bounds (0, 32)   [cowshed capacity]\n# chicks: number of chickens raised\n#         domain: NonNegativeIntegers, bounds (0, 3000) [coop capacity]\n# hire_ss : person-days of hired labor in spring/summer\n#           domain: NonNegativeReals\n# hire_aw : person-days of hired labor in autumn/winter\n#           domain: NonNegativeReals\n#\n# OBJECTIVE (maximize net income per year):\n#   crop income + cow income + chicken income\n#   - cost of hired labor in spring/summer - cost of hired labor in autumn/winter\n#\n# CONSTRAINTS\n# (1) Land: sum_c x[c] + 1.5 * cows <= 100\n# (2) Capital: 400 * cows + 3 * chicks <= 15000\n# (3) Spring/Summer labor balance:\n#       sum_c labor_ss[c]*x[c] + 50*cows + 0.3*chicks <= 4000 + hire_ss\n# (4) Autumn/Winter labor balance:\n#       sum_c labor_aw[c]*x[c] + 100*cows + 0.6*chicks <= 3500 + hire_aw\n# =============================================================================\n\nDATA = {\n    \"crops\": [\"soybeans\", \"corn\", \"wheat\"],\n    \"crop_income\": {\"soybeans\": 175, \"corn\": 300, \"wheat\": 120},\n    \"crop_labor_aw\": {\"soybeans\": 20, \"corn\": 35, \"wheat\": 10},\n    \"crop_labor_ss\": {\"soybeans\": 50, \"corn\": 75, \"wheat\": 40},\n    \"total_land\": 100,\n    \"capital_available\": 15000,\n    \"labor_aw_available\": 3500,\n    \"labor_ss_available\": 4000,\n    \"wage_ss\": 2.1,\n    \"wage_aw\": 1.8,\n    \"cow_cost\": 400,\n    \"cow_income\": 400,\n    \"cow_land\": 1.5,\n    \"cow_labor_aw\": 100,\n    \"cow_labor_ss\": 50,\n    \"cow_max\": 32,\n    \"chick_cost\": 3,\n    \"chick_income\": 2,\n    \"chick_labor_aw\": 0.6,\n    \"chick_labor_ss\": 0.3,\n    \"chick_max\": 3000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.CROPS = pyo.Set(initialize=d[\"crops\"])\n\n    model.x = pyo.Var(model.CROPS, within=pyo.NonNegativeReals)\n    model.cows = pyo.Var(within=pyo.NonNegativeIntegers, bounds=(0, d[\"cow_max\"]))\n    model.chicks = pyo.Var(within=pyo.NonNegativeIntegers, bounds=(0, d[\"chick_max\"]))\n    model.hire_ss = pyo.Var(within=pyo.NonNegativeReals)\n    model.hire_aw = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Objective: maximize net income\n    def obj_rule(m):\n        crop_income = sum(d[\"crop_income\"][c] * m.x[c] for c in m.CROPS)\n        animal_income = d[\"cow_income\"] * m.cows + d[\"chick_income\"] * m.chicks\n        labor_cost = d[\"wage_ss\"] * m.hire_ss + d[\"wage_aw\"] * m.hire_aw\n        return crop_income + animal_income - labor_cost\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # (1) Land constraint\n    def land_rule(m):\n        return sum(m.x[c] for c in m.CROPS) + d[\"cow_land\"] * m.cows <= d[\"total_land\"]\n\n    model.land = pyo.Constraint(rule=land_rule)\n\n    # (2) Capital constraint\n    def capital_rule(m):\n        return d[\"cow_cost\"] * m.cows + d[\"chick_cost\"] * m.chicks <= d[\"capital_available\"]\n\n    model.capital = pyo.Constraint(rule=capital_rule)\n\n    # (3) Spring/Summer labor balance\n    def labor_ss_rule(m):\n        crop_labor = sum(d[\"crop_labor_ss\"][c] * m.x[c] for c in m.CROPS)\n        animal_labor = d[\"cow_labor_ss\"] * m.cows + d[\"chick_labor_ss\"] * m.chicks\n        return crop_labor + animal_labor <= d[\"labor_ss_available\"] + m.hire_ss\n\n    model.labor_ss = pyo.Constraint(rule=labor_ss_rule)\n\n    # (4) Autumn/Winter labor balance\n    def labor_aw_rule(m):\n        crop_labor = sum(d[\"crop_labor_aw\"][c] * m.x[c] for c in m.CROPS)\n        animal_labor = d[\"cow_labor_aw\"] * m.cows + d[\"chick_labor_aw\"] * m.chicks\n        return crop_labor + animal_labor <= d[\"labor_aw_available\"] + m.hire_aw\n\n    model.labor_aw = pyo.Constraint(rule=labor_aw_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1402,
+      "completion_tokens": 1238
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1534,
+      "completion_tokens": 1372
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 14.547123670578003,
+   "position": 4,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"land_total\": 100.0,\n    \"capital_total\": 15000.0,\n    \"labor_available\": {\n        \"autumn_winter\": 3500.0,\n        \"spring_summer\": 4000.0,\n    },\n    \"wage_hired\": {\n        \"autumn_winter\": 1.8,\n        \"spring_summer\": 2.1,\n    },\n    \"wage_outside\": {\n        \"autumn_winter\": 1.8,\n        \"spring_summer\": 2.1,\n    },\n    \"crops\": [\"soybean\", \"corn\", \"wheat\"],\n    \"crop_labor_autumn_winter\": {\"soybean\": 20.0, \"corn\": 35.0, \"wheat\": 10.0},\n    \"crop_labor_spring_summer\": {\"soybean\": 50.0, \"corn\": 75.0, \"wheat\": 40.0},\n    \"crop_income\": {\"soybean\": 175.0, \"corn\": 300.0, \"wheat\": 120.0},\n    \"animals\": [\"cow\", \"chicken\"],\n    \"animal_capital\": {\"cow\": 400.0, \"chicken\": 3.0},\n    \"animal_land\": {\"cow\": 1.5, \"chicken\": 0.0},\n    \"animal_labor_autumn_winter\": {\"cow\": 100.0, \"chicken\": 0.6},\n    \"animal_labor_spring_summer\": {\"cow\": 50.0, \"chicken\": 0.3},\n    \"animal_income\": {\"cow\": 400.0, \"chicken\": 2.0},\n    \"animal_capacity\": {\"cow\": 32, \"chicken\": 3000},\n    \"seasons\": [\"autumn_winter\", \"spring_summer\"],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.CROPS = pyo.Set(initialize=d[\"crops\"])\n    model.ANIMALS = pyo.Set(initialize=d[\"animals\"])\n    model.SEASONS = pyo.Set(initialize=d[\"seasons\"])\n\n    # Decision variables\n    model.crop_area = pyo.Var(model.CROPS, within=pyo.NonNegativeReals)\n    model.animal_count = pyo.Var(\n        model.ANIMALS,\n        within=pyo.NonNegativeIntegers,\n        bounds=lambda m, a: (0, d[\"animal_capacity\"][a]),\n    )\n    model.hired_labor = pyo.Var(model.SEASONS, within=pyo.NonNegativeReals)\n    model.outside_labor = pyo.Var(model.SEASONS, within=pyo.NonNegativeReals)\n\n    # Land constraint\n    def land_rule(m):\n        expr = sum(m.crop_area[c] for c in m.CROPS)\n        expr += sum(d[\"animal_land\"][a] * m.animal_count[a] for a in m.ANIMALS)\n        return expr <= d[\"land_total\"]\n\n    model.land_limit = pyo.Constraint(rule=land_rule)\n\n    # Capital constraint\n    def capital_rule(m):\n        expr = sum(d[\"animal_capital\"][a] * m.animal_count[a] for a in m.ANIMALS)\n        return expr <= d[\"capital_total\"]\n\n    model.capital_limit = pyo.Constraint(rule=capital_rule)\n\n    # Labor balance per season\n    def labor_balance_rule(m, s):\n        if s == \"autumn_winter\":\n            crop_labor = sum(\n                d[\"crop_labor_autumn_winter\"][c] * m.crop_area[c] for c in m.CROPS\n            )\n            animal_labor = sum(\n                d[\"animal_labor_autumn_winter\"][a] * m.animal_count[a]\n                for a in m.ANIMALS\n            )\n        else:\n            crop_labor = sum(\n                d[\"crop_labor_spring_summer\"][c] * m.crop_area[c] for c in m.CROPS\n            )\n            animal_labor = sum(\n                d[\"animal_labor_spring_summer\"][a] * m.animal_count[a]\n                for a in m.ANIMALS\n            )\n        return (\n            d[\"labor_available\"][s] + m.hired_labor[s]\n            == crop_labor + animal_labor + m.outside_labor[s]\n        )\n\n    model.labor_balance = pyo.Constraint(model.SEASONS, rule=labor_balance_rule)\n\n    # Objective: maximize net income\n    def obj_rule(m):\n        crop_income = sum(d[\"crop_income\"][c] * m.crop_area[c] for c in m.CROPS)\n        animal_income = sum(\n            d[\"animal_income\"][a] * m.animal_count[a] for a in m.ANIMALS\n        )\n        outside_income = sum(\n            d[\"wage_outside\"][s] * m.outside_labor[s] for s in m.SEASONS\n        )\n        hired_cost = sum(\n            d[\"wage_hired\"][s] * m.hired_labor[s] for s in m.SEASONS\n        )\n        return crop_income + animal_income + outside_income - hired_cost\n\n    model.obj = pyo.Objective(expr=obj_rule, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1382,
+      "completion_tokens": 1677
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2855,
+      "completion_tokens": 1265
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 10.690179586410522,
+   "position": 5,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # resource limits\n    \"land_total\": 100.0,\n    \"capital_total\": 15000.0,\n    \"labor_autumn_own\": 3500.0,\n    \"labor_spring_own\": 4000.0,\n    # hired labor wages (yuan/person-day)\n    \"wage_spring\": 2.1,\n    \"wage_autumn\": 1.8,\n    # crops\n    \"crops\": [\"soybean\", \"corn\", \"wheat\"],\n    \"crop_income\": {\"soybean\": 175.0, \"corn\": 300.0, \"wheat\": 120.0},\n    \"crop_labor_autumn\": {\"soybean\": 20.0, \"corn\": 35.0, \"wheat\": 10.0},\n    \"crop_labor_spring\": {\"soybean\": 50.0, \"corn\": 75.0, \"wheat\": 40.0},\n    # cows\n    \"cow_capital\": 400.0,\n    \"cow_land\": 1.5,\n    \"cow_labor_autumn\": 100.0,\n    \"cow_labor_spring\": 50.0,\n    \"cow_income\": 400.0,\n    \"cow_capacity\": 32,\n    # chickens\n    \"chicken_capital\": 3.0,\n    \"chicken_land\": 0.0,\n    \"chicken_labor_autumn\": 0.6,\n    \"chicken_labor_spring\": 0.3,\n    \"chicken_income\": 2.0,\n    \"chicken_capacity\": 3000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    crops = d[\"crops\"]\n\n    model = pyo.ConcreteModel()\n\n    # --- Sets ---\n    model.CROPS = pyo.Set(initialize=crops)\n\n    # --- Variables ---\n    model.crop_area = pyo.Var(\n        model.CROPS, within=pyo.NonNegativeReals, bounds=(0, None)\n    )\n    model.n_cows = pyo.Var(\n        within=pyo.NonNegativeIntegers, bounds=(0, d[\"cow_capacity\"])\n    )\n    model.n_chickens = pyo.Var(\n        within=pyo.NonNegativeIntegers, bounds=(0, d[\"chicken_capacity\"])\n    )\n    model.hired_autumn = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, None))\n    model.hired_spring = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, None))\n\n    # --- Objective: maximize net income ---\n    crop_income = sum(d[\"crop_income\"][c] * model.crop_area[c] for c in model.CROPS)\n    livestock_income = (\n        d[\"cow_income\"] * model.n_cows\n        + d[\"chicken_income\"] * model.n_chickens\n    )\n    labor_cost = (\n        d[\"wage_autumn\"] * model.hired_autumn\n        + d[\"wage_spring\"] * model.hired_spring\n    )\n    model.obj = pyo.Objective(\n        expr=crop_income + livestock_income - labor_cost, sense=pyo.maximize\n    )\n\n    # --- Constraints ---\n\n    # Land constraint: crop area + grass land for cows <= total land\n    def land_rule(m):\n        crop_land = sum(m.crop_area[c] for c in m.CROPS)\n        cow_land = d[\"cow_land\"] * m.n_cows\n        chicken_land = d[\"chicken_land\"] * m.n_chickens\n        return crop_land + cow_land + chicken_land <= d[\"land_total\"]\n\n    model.land_con = pyo.Constraint(rule=land_rule)\n\n    # Capital constraint\n    def capital_rule(m):\n        return (\n            d[\"cow_capital\"] * m.n_cows\n            + d[\"chicken_capital\"] * m.n_chickens\n            <= d[\"capital_total\"]\n        )\n\n    model.capital_con = pyo.Constraint(rule=capital_rule)\n\n    # Autumn/winter labor balance: usage <= own + hired\n    def labor_autumn_rule(m):\n        crop_use = sum(\n            d[\"crop_labor_autumn\"][c] * m.crop_area[c] for c in m.CROPS\n        )\n        animal_use = (\n            d[\"cow_labor_autumn\"] * m.n_cows\n            + d[\"chicken_labor_autumn\"] * m.n_chickens\n        )\n        return crop_use + animal_use <= d[\"labor_autumn_own\"] + m.hired_autumn\n\n    model.labor_autumn_con = pyo.Constraint(rule=labor_autumn_rule)\n\n    # Spring/summer labor balance: usage <= own + hired\n    def labor_spring_rule(m):\n        crop_use = sum(\n            d[\"crop_labor_spring\"][c] * m.crop_area[c] for c in m.CROPS\n        )\n        animal_use = (\n            d[\"cow_labor_spring\"] * m.n_cows\n            + d[\"chicken_labor_spring\"] * m.n_chickens\n        )\n        return crop_use + animal_use <= d[\"labor_spring_own\"] + m.hired_spring\n\n    model.labor_spring_con = pyo.Constraint(rule=labor_spring_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1382,
+      "completion_tokens": 1697
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.746212005615234,
+   "position": 6,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # resources\n    \"land_total\": 100.0,          # hectares\n    \"capital_total\": 15000.0,     # yuan\n    \"cowshed_cap\": 32,            # cows\n    \"coop_cap\": 3000,             # chickens\n\n    # crops: net income per hectare (yuan/ha)\n    \"crop_income\": {\"soybean\": 175.0, \"corn\": 300.0, \"wheat\": 120.0},\n    # crop labor: person-days per hectare\n    \"crop_labor_aw\": {\"soybean\": 20.0, \"corn\": 35.0, \"wheat\": 10.0},   # autumn/winter\n    \"crop_labor_ss\": {\"soybean\": 50.0, \"corn\": 75.0, \"wheat\": 40.0},   # spring/summer\n\n    # animals: net income per head (yuan/head/year)\n    \"animal_income\": {\"cow\": 400.0, \"chicken\": 2.0},\n    # animal capital cost per head (yuan)\n    \"animal_capital\": {\"cow\": 400.0, \"chicken\": 3.0},\n    # animal land requirement (ha per head)\n    \"animal_land\": {\"cow\": 1.5, \"chicken\": 0.0},\n    # animal labor per head (person-days)\n    \"animal_labor_aw\": {\"cow\": 100.0, \"chicken\": 0.6},\n    \"animal_labor_ss\": {\"cow\": 50.0, \"chicken\": 0.3},\n\n    # own labor supply (person-days)\n    \"own_labor_aw\": 3500.0,   # autumn & winter\n    \"own_labor_ss\": 4000.0,   # spring & summer\n\n    # hired labor wage (yuan/person-day)\n    \"wage_aw\": 1.8,           # autumn & winter\n    \"wage_ss\": 2.1,           # spring & summer\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # ---------- Sets ----------\n    m.CROPS = pyo.Set(initialize=list(d[\"crop_income\"].keys()))\n    m.ANIMALS = pyo.Set(initialize=list(d[\"animal_income\"].keys()))\n    m.SEASONS = pyo.Set(initialize=[\"aw\", \"ss\"])\n\n    # ---------- Variables ----------\n    # hectares planted per crop (continuous, land is divisible)\n    m.x = pyo.Var(m.CROPS,\n                  domain=pyo.NonNegativeReals,\n                  bounds=(0.0, d[\"land_total\"]))\n\n    # animal headcounts (integer, indivisible)\n    m.y = pyo.Var(m.ANIMALS,\n                  domain=pyo.NonNegativeIntegers,\n                  bounds=(0, None))\n\n    # hired labor per season (person-days)\n    m.h = pyo.Var(m.SEASONS,\n                  domain=pyo.NonNegativeReals,\n                  bounds=(0.0, None))\n\n    # unused own labor (sent out / idle) per season\n    m.u = pyo.Var(m.SEASONS,\n                  domain=pyo.NonNegativeReals,\n                  bounds=(0.0, None))\n\n    # ---------- Objective: maximize net income ----------\n    crop_inc = sum(d[\"crop_income\"][c] * m.x[c] for c in m.CROPS)\n    animal_inc = sum(d[\"animal_income\"][a] * m.y[a] for a in m.ANIMALS)\n    wage_cost = (d[\"wage_aw\"] * m.h[\"aw\"] + d[\"wage_ss\"] * m.h[\"ss\"])\n    m.obj = pyo.Objective(expr=crop_inc + animal_inc - wage_cost,\n                          sense=pyo.maximize)\n\n    # ---------- Constraints ----------\n    # Land: crop hectares + grass land for cows <= 100\n    def land_rule(mm):\n        return (sum(mm.x[c] for c in mm.CROPS)\n                + sum(d[\"animal_land\"][a] * mm.y[a] for a in mm.ANIMALS)\n                <= d[\"land_total\"])\n    m.land = pyo.Constraint(rule=land_rule)\n\n    # Capital: animal startup cost <= 15000 (crops need no investment)\n    def capital_rule(mm):\n        return (sum(d[\"animal_capital\"][a] * mm.y[a] for a in mm.ANIMALS)\n                <= d[\"capital_total\"])\n    m.capital = pyo.Constraint(rule=capital_rule)\n\n    # Cowshed capacity: number of cows <= 32\n    def cowshed_rule(mm):\n        return mm.y[\"cow\"] <= d[\"cowshed_cap\"]\n    m.cowshed = pyo.Constraint(rule=cowshed_rule)\n\n    # Coop capacity: number of chickens <= 3000\n    def coop_rule(mm):\n        return mm.y[\"chicken\"] <= d[\"coop_cap\"]\n    m.coop = pyo.Constraint(rule=coop_rule)\n\n    # Labor balance autumn/winter:\n    # own_labor_aw = used_aw + hired_aw - hired_aw...  (labor used + unused\n    #   = own supply + hired).  used_aw <= own_labor_aw + hired_aw.\n    def labor_aw_rule(mm):\n        crop = sum(d[\"crop_labor_aw\"][c] * mm.x[c] for c in mm.CROPS)\n        anml = sum(d[\"animal_labor_aw\"][a] * mm.y[a] for a in mm.ANIMALS)\n        return crop + anml <= d[\"own_labor_aw\"] + mm.h[\"aw\"]\n    m.labor_aw = pyo.Constraint(rule=labor_aw_rule)\n\n    # Labor balance spring/summer\n    def labor_ss_rule(mm):\n        crop = sum(d[\"crop_labor_ss\"][c] * mm.x[c] for c in mm.CROPS)\n        anml = sum(d[\"animal_labor_ss\"][a] * mm.y[a] for a in mm.ANIMALS)\n        return crop + anml <= d[\"own_labor_ss\"] + mm.h[\"ss\"]\n    m.labor_ss = pyo.Constraint(rule=labor_ss_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1398,
+      "completion_tokens": 1810
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.391077041625977,
+   "position": 7,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"A farm has 100 hectares of land\"\n    \"land_total\": 100,\n    # \"15,000 yuan available for production development\"\n    \"budget_total\": 15000,\n    # \"labor force of 3,500 person-days in autumn and winter\"\n    \"labor_aw_total\": 3500,\n    # \"4,000 person-days in spring and summer\"\n    \"labor_ss_total\": 4000,\n    # \"wage for hired labor is 2.1 yuan/person-day in spring and summer\"\n    \"wage_ss\": 2.1,\n    # \"1.8 yuan/person-day in autumn and winter\"\n    \"wage_aw\": 1.8,\n    # \"costs 400 yuan per cow\"\n    \"cost_cow\": 400,\n    # \"3 yuan per chicken\"\n    \"cost_chicken\": 3,\n    # \"1.5 hectares of land are needed to grow grass for each cow\"\n    \"land_per_cow\": 1.5,\n    # cow \"requires 100 person-days of labor in autumn and winter\"\n    \"labor_aw_cow\": 100,\n    # cow \"50 person-days in spring and summer\"\n    \"labor_ss_cow\": 50,\n    # \"net income per cow per year is 400 yuan\"\n    \"income_cow\": 400,\n    # chicken \"0.6 person-days of labor in autumn and winter\"\n    \"labor_aw_chicken\": 0.6,\n    # chicken \"0.3 person-days in spring and summer\"\n    \"labor_ss_chicken\": 0.3,\n    # \"net income per chicken per year is 2 yuan\"\n    \"income_chicken\": 2,\n    # \"chicken coop that can accommodate up to 3,000 chickens\"\n    \"chicken_max\": 3000,\n    # \"cowshed that can accommodate up to 32 cows\"\n    \"cow_max\": 32,\n    # Table 1-9 net income per hectare per year (yuan/hm^2)\n    \"income_crop\": {\"soybean\": 175, \"corn\": 300, \"wheat\": 120},\n    # Table 1-9 autumn-winter person-days per hectare\n    \"labor_aw_crop\": {\"soybean\": 20, \"corn\": 35, \"wheat\": 10},\n    # Table 1-9 spring-summer person-days per hectare\n    \"labor_ss_crop\": {\"soybean\": 50, \"corn\": 75, \"wheat\": 40},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    crops = list(d[\"income_crop\"].keys())\n\n    m = pyo.ConcreteModel()\n\n    m.CROPS = pyo.Set(initialize=crops, ordered=True)\n\n    # hectares of each crop\n    m.x = pyo.Var(m.CROPS, within=pyo.NonNegativeReals)\n    # number of cows / chickens\n    m.cow = pyo.Var(within=pyo.NonNegativeIntegers, bounds=(0, d[\"cow_max\"]))\n    m.chicken = pyo.Var(within=pyo.NonNegativeIntegers, bounds=(0, d[\"chicken_max\"]))\n    # hired (outside) labour person-days per season\n    m.hire_aw = pyo.Var(within=pyo.NonNegativeReals)\n    m.hire_ss = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Objective: maximise net income\n    def obj_rule(m):\n        crop_income = sum(d[\"income_crop\"][c] * m.x[c] for c in m.CROPS)\n        animal_income = d[\"income_cow\"] * m.cow + d[\"income_chicken\"] * m.chicken\n        labor_cost = d[\"wage_aw\"] * m.hire_aw + d[\"wage_ss\"] * m.hire_ss\n        return crop_income + animal_income - labor_cost\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Land: crops + grass for cows <= 100\n    def land_rule(m):\n        return sum(m.x[c] for c in m.CROPS) + d[\"land_per_cow\"] * m.cow <= d[\"land_total\"]\n\n    m.land = pyo.Constraint(rule=land_rule)\n\n    # Budget: animal investment <= 15000 (crops need no additional investment)\n    def budget_rule(m):\n        return d[\"cost_cow\"] * m.cow + d[\"cost_chicken\"] * m.chicken <= d[\"budget_total\"]\n\n    m.budget = pyo.Constraint(rule=budget_rule)\n\n    # Autumn/winter labour: required <= available + hired\n    def labor_aw_rule(m):\n        crop_labor = sum(d[\"labor_aw_crop\"][c] * m.x[c] for c in m.CROPS)\n        animal_labor = d[\"labor_aw_cow\"] * m.cow + d[\"labor_aw_chicken\"] * m.chicken\n        return crop_labor + animal_labor <= d[\"labor_aw_total\"] + m.hire_aw\n\n    m.labor_aw = pyo.Constraint(rule=labor_aw_rule)\n\n    # Spring/summer labour: required <= available + hired\n    def labor_ss_rule(m):\n        crop_labor = sum(d[\"labor_ss_crop\"][c] * m.x[c] for c in m.CROPS)\n        animal_labor = d[\"labor_ss_cow\"] * m.cow + d[\"labor_ss_chicken\"] * m.chicken\n        return crop_labor + animal_labor <= d[\"labor_ss_total\"] + m.hire_ss\n\n    m.labor_ss = pyo.Constraint(rule=labor_ss_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1386,
+      "completion_tokens": 1574
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.44938588142395,
+   "position": 8,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"land_total\": 100,\n    \"capital_total\": 15000,\n    # labor availability (person-days)\n    \"labor_avail\": {\"spring_summer\": 4000, \"autumn_winter\": 3500},\n    # hired labor wages (yuan/person-day)\n    \"wage\": {\"spring_summer\": 2.1, \"autumn_winter\": 1.8},\n    # crops: labor per hectare and net income per hectare\n    \"crop_income\": {\"soybeans\": 175, \"corn\": 300, \"wheat\": 120},\n    \"crop_labor_spring_summer\": {\"soybeans\": 50, \"corn\": 75, \"wheat\": 40},\n    \"crop_labor_autumn_winter\": {\"soybeans\": 20, \"corn\": 35, \"wheat\": 10},\n    # cows\n    \"cow_capital\": 400,\n    \"cow_land\": 1.5,\n    \"cow_income\": 400,\n    \"cow_labor_spring_summer\": 50,\n    \"cow_labor_autumn_winter\": 100,\n    \"cow_max\": 32,\n    # chickens\n    \"chicken_capital\": 3,\n    \"chicken_income\": 2,\n    \"chicken_labor_spring_summer\": 0.3,\n    \"chicken_labor_autumn_winter\": 0.6,\n    \"chicken_max\": 3000,\n    \"chicken_land\": 0.0,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.CROPS = pyo.Set(initialize=list(d[\"crop_income\"].keys()))\n    m.ANIMALS = pyo.Set(initialize=[\"cows\", \"chickens\"])\n    m.SEASONS = pyo.Set(initialize=[\"spring_summer\", \"autumn_winter\"])\n\n    # decision variables\n    m.x = pyo.Var(m.CROPS, within=pyo.NonNegativeReals)      # hectares per crop\n    m.n = pyo.Var(m.ANIMALS, within=pyo.NonNegativeIntegers)  # animal counts\n    m.hire = pyo.Var(m.SEASONS, within=pyo.NonNegativeReals)  # hired person-days\n    m.outside = pyo.Var(m.SEASONS, within=pyo.NonNegativeReals)  # outside person-days\n\n    # capacity bounds\n    m.n[\"cows\"].setlb(0)\n    m.n[\"cows\"].setub(d[\"cow_max\"])\n    m.n[\"chickens\"].setlb(0)\n    m.n[\"chickens\"].setub(d[\"chicken_max\"])\n\n    # land constraint: sum crop area + cow grass area <= total land\n    def land_rule(mm):\n        return sum(mm.x[c] for c in mm.CROPS) + d[\"cow_land\"] * mm.n[\"cows\"] <= d[\"land_total\"]\n    m.land = pyo.Constraint(rule=land_rule)\n\n    # capital constraint: cows + chickens investment <= capital\n    def capital_rule(mm):\n        return (d[\"cow_capital\"] * mm.n[\"cows\"]\n                + d[\"chicken_capital\"] * mm.n[\"chickens\"] <= d[\"capital_total\"])\n    m.capital = pyo.Constraint(rule=capital_rule)\n\n    # spring/summer labor balance: used work + outside = available + hired\n    def labor_ss_rule(mm):\n        used = (sum(d[\"crop_labor_spring_summer\"][c] * mm.x[c] for c in mm.CROPS)\n                + d[\"cow_labor_spring_summer\"] * mm.n[\"cows\"]\n                + d[\"chicken_labor_spring_summer\"] * mm.n[\"chickens\"])\n        return used + mm.outside[\"spring_summer\"] == d[\"labor_avail\"][\"spring_summer\"] + mm.hire[\"spring_summer\"]\n    m.labor_ss = pyo.Constraint(rule=labor_ss_rule)\n\n    # autumn/winter labor balance\n    def labor_aw_rule(mm):\n        used = (sum(d[\"crop_labor_autumn_winter\"][c] * mm.x[c] for c in mm.CROPS)\n                + d[\"cow_labor_autumn_winter\"] * mm.n[\"cows\"]\n                + d[\"chicken_labor_autumn_winter\"] * mm.n[\"chickens\"])\n        return used + mm.outside[\"autumn_winter\"] == d[\"labor_avail\"][\"autumn_winter\"] + mm.hire[\"autumn_winter\"]\n    m.labor_aw = pyo.Constraint(rule=labor_aw_rule)\n\n    # objective: maximize net income (crops + animals) minus hired labor cost\n    def obj_rule(mm):\n        crop_income = sum(d[\"crop_income\"][c] * mm.x[c] for c in mm.CROPS)\n        animal_income = (d[\"cow_income\"] * mm.n[\"cows\"]\n                         + d[\"chicken_income\"] * mm.n[\"chickens\"])\n        labor_cost = sum(d[\"wage\"][s] * mm.hire[s] for s in mm.SEASONS)\n        return crop_income + animal_income - labor_cost\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1398,
+      "completion_tokens": 1603
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.289187908172607,
+   "position": 9,
+   "recipe_index": 7
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:50:10"
+}

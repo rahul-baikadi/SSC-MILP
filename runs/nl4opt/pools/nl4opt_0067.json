@@ -1,0 +1,269 @@
+{
+ "pid": "nl4opt_0067",
+ "question": "A toy store decides to deliver gifts using two shipping companies, a new one and an old one. The new company can deliver 50 gifts per trip while the old company can deliver 70 gifts per trip. The new company uses 30 liters of diesel per trip while the old company uses 40 liters of diesel per trip. The toy store needs to deliver at least 1000 gifts. There can be at most 15 trips made by the new company. In order to make sure that the old company does not go out of business, at least 40% of all trips must be made by the old company. How many trips should each company make to minimize the total amount of diesel used?",
+ "templates": [
+  "Blending / Diet",
+  "Production Planning / Product Mix"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Every numeric constant from the problem, with its source sentence.\n# ---------------------------------------------------------------------------\nDATA = {\n    # \"The new company can deliver 50 gifts per trip\"\n    \"gifts_new\": 50,\n    # \"the old company can deliver 70 gifts per trip\"\n    \"gifts_old\": 70,\n    # \"The new company uses 30 liters of diesel per trip\"\n    \"diesel_new\": 30,\n    # \"the old company uses 40 liters of diesel per trip\"\n    \"diesel_old\": 40,\n    # \"The toy store needs to deliver at least 1000 gifts\"\n    \"gifts_required\": 1000,\n    # \"There can be at most 15 trips made by the new company\"\n    \"max_trips_new\": 15,\n    # \"at least 40% of all trips must be made by the old company\"\n    \"old_trip_fraction\": 0.40,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # --- Sets ---------------------------------------------------------------\n    model.COMPANIES = pyo.Set(initialize=[\"new\", \"old\"])\n\n    # --- Variables ----------------------------------------------------------\n    # Bounds: new company capped at 15 trips; old company unbounded above.\n    def trips_bounds(m, c):\n        if c == \"new\":\n            return (0, d[\"max_trips_new\"])\n        return (0, None)\n\n    model.trips = pyo.Var(\n        model.COMPANIES,\n        domain=pyo.NonNegativeIntegers,\n        bounds=trips_bounds,\n    )\n\n    # --- Objective: minimize total diesel -----------------------------------\n    def diesel_rule(m):\n        return (\n            d[\"diesel_new\"] * m.trips[\"new\"]\n            + d[\"diesel_old\"] * m.trips[\"old\"]\n        )\n\n    model.obj = pyo.Objective(rule=diesel_rule, sense=pyo.minimize)\n\n    # --- Constraints --------------------------------------------------------\n\n    # Gifts delivered must be at least 1000.\n    def gifts_rule(m):\n        return (\n            d[\"gifts_new\"] * m.trips[\"new\"]\n            + d[\"gifts_old\"] * m.trips[\"old\"]\n            >= d[\"gifts_required\"]\n        )\n\n    model.gifts_delivered = pyo.Constraint(rule=gifts_rule)\n\n    # At least 40% of all trips must be made by the old company.\n    # t_old >= f * (t_new + t_old)  ->  (1 - f) * t_old - f * t_new >= 0\n    def old_share_rule(m):\n        f = d[\"old_trip_fraction\"]\n        return (1 - f) * m.trips[\"old\"] - f * m.trips[\"new\"] >= 0\n\n    model.old_company_share = pyo.Constraint(rule=old_share_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1116,
+      "completion_tokens": 982
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.952814817428589,
+   "position": 0,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # per-trip gift capacity\n    \"gifts_new\": 50,\n    \"gifts_old\": 70,\n    # per-trip diesel consumption (objective coefficients)\n    \"diesel_new\": 30,\n    \"diesel_old\": 40,\n    # demand / requirements\n    \"gifts_required\": 1000,\n    \"new_max_trips\": 15,\n    # fraction of all trips that must be made by the old company\n    \"old_trip_fraction_min\": 0.40,\n    # solver-free bound placeholder for trips with no explicit upper limit\n    \"trip_ub\": None,\n}\n\n# index labels for the two companies\nCOMPANIES = [\"new\", \"old\"]\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.C = pyo.Set(initialize=COMPANIES)\n\n    def trips_bounds(m, c):\n        if c == \"new\":\n            return (0, d[\"new_max_trips\"])\n        return (0, None)\n\n    m.trips = pyo.Var(\n        m.C,\n        within=pyo.NonNegativeIntegers,\n        bounds=lambda m, c: (0, d[\"new_max_trips\"]) if c == \"new\" else (0, None),\n    )\n\n    diesel = {\"new\": d[\"diesel_new\"], \"old\": d[\"diesel_old\"]}\n\n    # Objective: minimise total diesel = 30 * x_new + 40 * x_old\n    m.obj = pyo.Objective(\n        expr=sum(diesel[c] * m.trips[c] for c in m.C),\n        sense=pyo.minimize,\n    )\n\n    # At most 15 trips by the new company.\n    def rule_new_cap(m):\n        return m.trips[\"new\"] <= d[\"new_max_trips\"]\n\n    m.new_trip_cap = pyo.Constraint(rule=rule_new_cap)\n\n    # Deliver at least 1000 gifts: 50 * x_new + 70 * x_old >= 1000\n    def rule_demand(m):\n        return (\n            d[\"gifts_new\"] * m.trips[\"new\"] + d[\"gifts_old\"] * m.trips[\"old\"]\n            >= d[\"gifts_required\"]\n        )\n\n    m.gift_demand = pyo.Constraint(rule=rule_demand)\n\n    # At least 40% of all trips must be by the old company (linearised):\n    #   x_old >= f * (x_new + x_old)  <=>  (1 - f) * x_old >= f * x_new\n    m.old_trip_share = pyo.Constraint(\n        expr=(1 - d[\"old_trip_fraction_min\"]) * m.trips[\"old\"]\n        >= d[\"old_trip_fraction_min\"] * m.trips[\"new\"]\n    )\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1118,
+      "completion_tokens": 1109
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.801692724227905,
+   "position": 1,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"gifts_per_trip\": {0: 50, 1: 70},      # new, old\n    \"diesel_per_trip\": {0: 30, 1: 40},     # new, old\n    \"min_gifts\": 1000,\n    \"max_new_trips\": 15,\n    \"min_old_share\": 0.4,\n    \"companies\": [0, 1],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.C = pyo.Set(initialize=d[\"companies\"], ordered=True)\n\n    # Variables: integer number of trips per company\n    def x_bounds(m, c):\n        if c == 0:\n            return (0, d[\"max_new_trips\"])\n        return (0, None)\n\n    model.x = pyo.Var(model.C, within=pyo.NonNegativeIntegers, bounds=x_bounds)\n\n    # Objective: minimize total diesel\n    def obj_rule(m):\n        return sum(d[\"diesel_per_trip\"][c] * m.x[c] for c in m.C)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint: deliver at least min_gifts (>=)\n    def gifts_rule(m):\n        return sum(d[\"gifts_per_trip\"][c] * m.x[c] for c in m.C) >= d[\"min_gifts\"]\n\n    model.gifts = pyo.Constraint(rule=gifts_rule)\n\n    # Constraint: new company trip cap (<=) \u2014 also in bounds, kept explicit\n    def new_cap_rule(m):\n        return m.x[0] <= d[\"max_new_trips\"]\n\n    model.new_cap = pyo.Constraint(rule=new_cap_rule)\n\n    # Constraint: at least 40% of trips by old company\n    # x[1] >= 0.4*(x[0]+x[1])  ->  (1-0.4)*x[1] - 0.4*x[0] >= 0\n    def old_share_rule(m):\n        s = d[\"min_old_share\"]\n        return (1 - s) * m.x[1] - s * m.x[0] >= 0\n\n    model.old_share = pyo.Constraint(rule=old_share_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1128,
+      "completion_tokens": 838
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.807647705078125,
+   "position": 2,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"gifts_new\": 50,\n    \"gifts_old\": 70,\n    \"diesel_new\": 30,\n    \"diesel_old\": 40,\n    \"gift_demand\": 1000,\n    \"max_new_trips\": 15,\n    \"old_share\": 0.40,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # Variables\n    m.x = pyo.Var(within=pyo.NonNegativeIntegers,\n                  bounds=(0, d[\"max_new_trips\"]))   # trips by new company\n    m.y = pyo.Var(within=pyo.NonNegativeIntegers,\n                  bounds=(0, None))                   # trips by old company\n\n    # Objective: minimize total diesel\n    m.obj = pyo.Objective(\n        expr=d[\"diesel_new\"] * m.x + d[\"diesel_old\"] * m.y,\n        sense=pyo.minimize,\n    )\n\n    # Gifts requirement: 50x + 70y >= 1000\n    m.gift_req = pyo.Constraint(\n        expr=d[\"gifts_new\"] * m.x + d[\"gifts_old\"] * m.y >= d[\"gift_demand\"]\n    )\n\n    # Old company share: y >= old_share*(x+y)\n    # => (1 - old_share)*y - old_share*x >= 0\n    m.old_share = pyo.Constraint(\n        expr=(1 - d[\"old_share\"]) * m.y - d[\"old_share\"] * m.x >= 0\n    )\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1128,
+      "completion_tokens": 654
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 3.6168601512908936,
+   "position": 3,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"companies\": [\"new\", \"old\"],\n    \"gifts_per_trip\": {\"new\": 50, \"old\": 70},\n    \"diesel_per_trip\": {\"new\": 30, \"old\": 40},\n    \"min_gifts\": 1000,\n    \"max_new_trips\": 15,\n    \"min_old_share\": 0.40,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.companies = pyo.Set(initialize=d[\"companies\"])\n\n    # Variables\n    model.trips = pyo.Var(\n        model.companies,\n        domain=pyo.NonNegativeIntegers,\n    )\n\n    # Objective: minimize total diesel\n    def obj_rule(m):\n        return sum(d[\"diesel_per_trip\"][c] * m.trips[c] for c in m.companies)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint: deliver at least min_gifts gifts\n    def gifts_rule(m):\n        return sum(d[\"gifts_per_trip\"][c] * m.trips[c] for c in m.companies) >= d[\"min_gifts\"]\n\n    model.gifts_delivered = pyo.Constraint(rule=gifts_rule)\n\n    # Constraint: at most max_new_trips by the new company\n    def new_cap_rule(m):\n        return m.trips[\"new\"] <= d[\"max_new_trips\"]\n\n    model.new_trip_cap = pyo.Constraint(rule=new_cap_rule)\n\n    # Constraint: old company makes at least min_old_share of all trips\n    # trips[old] >= share * (trips[new] + trips[old])\n    # => (1 - share) * trips[old] - share * trips[new] >= 0\n    def old_share_rule(m):\n        share = d[\"min_old_share\"]\n        return (1 - share) * m.trips[\"old\"] - share * m.trips[\"new\"] >= 0\n\n    model.old_share = pyo.Constraint(rule=old_share_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1112,
+      "completion_tokens": 798
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.524088144302368,
+   "position": 4,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# =============================================================================\n# Toy store gift delivery - shipping company trip selection\n# =============================================================================\n# Decision variables:\n#   x_new -- trips made by the new company; NonNegativeIntegers, bounds (0, 15)\n#   x_old -- trips made by the old company; NonNegativeIntegers, bounds (0, None)\n#\n# Objective (minimize): total diesel used\n#   new_diesel * x_new + old_diesel * x_old\n#\n# Constraints:\n#   (01) gift demand        : new_cap*x_new + old_cap*x_old >= gift_req\n#                             (50*x_new + 70*x_old >= 1000)\n#   (02) new trips limit    : x_new <= max_new_trips (15)  [enforced via bound]\n#   (03) old company share  : x_old >= old_share*(x_new + x_old)\n#                             linearised: (1-old_share)*x_old - old_share*x_new >= 0\n#                             (0.6*x_old - 0.4*x_new >= 0)\n# =============================================================================\n\nDATA = {\n    \"new_cap\": 50,          # gifts per trip, new company\n    \"old_cap\": 70,          # gifts per trip, old company\n    \"new_diesel\": 30,       # liters per trip, new company\n    \"old_diesel\": 40,       # liters per trip, old company\n    \"gift_req\": 1000,       # minimum gifts to deliver\n    \"max_new_trips\": 15,    # at most 15 trips by new company\n    \"old_share\": 0.4,       # at least 40% of trips by old company\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Decision variables\n    model.x_new = pyo.Var(\n        within=pyo.NonNegativeIntegers,\n        bounds=(0, d[\"max_new_trips\"]),\n    )\n    model.x_old = pyo.Var(\n        within=pyo.NonNegativeIntegers,\n        bounds=(0, None),\n    )\n\n    # Objective: minimize total diesel\n    model.obj = pyo.Objective(\n        expr=d[\"new_diesel\"] * model.x_new + d[\"old_diesel\"] * model.x_old,\n        sense=pyo.minimize,\n    )\n\n    # (01) gift demand\n    model.gift_demand = pyo.Constraint(\n        expr=d[\"new_cap\"] * model.x_new + d[\"old_cap\"] * model.x_old >= d[\"gift_req\"]\n    )\n\n    # (03) old company share (linearised)\n    model.old_share = pyo.Constraint(\n        expr=(1 - d[\"old_share\"]) * model.x_old - d[\"old_share\"] * model.x_new >= 0\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1132,
+      "completion_tokens": 508
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1561,
+      "completion_tokens": 670
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.8166022300720215,
+   "position": 5,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"companies\": [\"new\", \"old\"],\n    \"gifts_per_trip\": {\"new\": 50, \"old\": 70},\n    \"diesel_per_trip\": {\"new\": 30, \"old\": 40},\n    \"min_gifts_required\": 1000,\n    \"max_new_trips\": 15,\n    \"min_old_proportion\": 0.40,\n    \"max_total_trips\": 10000,   # practical upper bound for solver integer range\n}\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # --- Sets ---\n    model.I = pyo.Set(initialize=d[\"companies\"])\n\n    # --- Variables ---\n    def trips_bounds(m, i):\n        if i == \"new\":\n            return (0, d[\"max_new_trips\"])\n        return (0, d[\"max_total_trips\"])\n    model.x = pyo.Var(model.I, within=pyo.NonNegativeIntegers,\n                      bounds=trips_bounds)\n\n    # --- Objective: minimise total diesel consumed ---\n    def obj_rule(m):\n        return sum(d[\"diesel_per_trip\"][i] * m.x[i] for i in m.I)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --- Constraint 1: deliver at least min_gifts_required gifts ---\n    def gifts_rule(m):\n        return sum(d[\"gifts_per_trip\"][i] * m.x[i] for i in m.I) >= d[\"min_gifts_required\"]\n    model.gifts = pyo.Constraint(rule=gifts_rule)\n\n    # --- Constraint 2: at least 40% of trips by old company ---\n    # x_old >= p * (x_new + x_old)  ->  (1-p)*x_old - p*x_new >= 0\n    def old_share_rule(m):\n        p = d[\"min_old_proportion\"]\n        return (1 - p) * m.x[\"old\"] - p * m.x[\"new\"] >= 0\n    model.old_share = pyo.Constraint(rule=old_share_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1118,
+      "completion_tokens": 887
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.8645179271698,
+   "position": 6,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"companies\": [\"new\", \"old\"],\n    \"gifts_per_trip\": {\"new\": 50, \"old\": 70},\n    \"diesel_per_trip\": {\"new\": 30, \"old\": 40},\n    \"min_gifts\": 1000,\n    \"max_new_trips\": 15,\n    \"min_old_share\": 0.40,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # --- Sets ---\n    model.COMPANIES = pyo.Set(initialize=d[\"companies\"])\n\n    # --- Variables ---\n    def trips_bounds(m, c):\n        if c == \"new\":\n            return (0, d[\"max_new_trips\"])\n        return (0, None)\n\n    model.trips = pyo.Var(\n        model.COMPANIES,\n        domain=pyo.NonNegativeIntegers,\n        bounds=trips_bounds,\n    )\n\n    # --- Objective: minimise total diesel ---\n    model.obj = pyo.Objective(\n        expr=sum(d[\"diesel_per_trip\"][c] * model.trips[c] for c in model.COMPANIES),\n        sense=pyo.minimize,\n    )\n\n    # --- Constraint 1: deliver at least 1000 gifts ---\n    def gifts_rule(m):\n        return sum(\n            d[\"gifts_per_trip\"][c] * m.trips[c] for c in m.COMPANIES\n        ) >= d[\"min_gifts\"]\n\n    model.gift_demand = pyo.Constraint(rule=gifts_rule)\n\n    # --- Constraint 2: at most 15 trips by the new company ---\n    def new_cap_rule(m):\n        return m.trips[\"new\"] <= d[\"max_new_trips\"]\n\n    model.new_trip_cap = pyo.Constraint(rule=new_cap_rule)\n\n    # --- Constraint 3: at least 40% of all trips by the old company ---\n    # trips[old] >= share * (trips[new] + trips[old])\n    # => (1 - share) * trips[old] - share * trips[new] >= 0\n    def old_share_rule(m):\n        s = d[\"min_old_share\"]\n        return (1 - s) * m.trips[\"old\"] - s * m.trips[\"new\"] >= 0\n\n    model.old_share = pyo.Constraint(rule=old_share_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1112,
+      "completion_tokens": 879
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.390969514846802,
+   "position": 7,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"The new company can deliver 50 gifts per trip\"\n    \"gifts_per_trip\": {\"new\": 50, \"old\": 70},\n    # \"The new company uses 30 liters of diesel per trip\"\n    \"diesel_per_trip\": {\"new\": 30, \"old\": 40},\n    # \"The toy store needs to deliver at least 1000 gifts\"\n    \"min_gifts\": 1000,\n    # \"There can be at most 15 trips made by the new company\"\n    \"max_new_trips\": 15,\n    # \"at least 40% of all trips must be made by the old company\"\n    \"min_old_trip_fraction\": 0.40,\n    # Finite upper bound for the old company's trips (large enough to be non-binding)\n    \"max_old_trips\": 100000,\n    \"companies\": [\"new\", \"old\"],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # --- Sets ---\n    model.COMPANIES = pyo.Set(initialize=d[\"companies\"])\n\n    # --- Variables ---\n    def trip_bounds(m, c):\n        if c == \"new\":\n            return (0, d[\"max_new_trips\"])\n        return (0, d[\"max_old_trips\"])\n\n    model.x = pyo.Var(\n        model.COMPANIES,\n        domain=pyo.NonNegativeIntegers,\n        bounds=trip_bounds,\n    )\n\n    # --- Objective: minimize total diesel used ---\n    def obj_rule(m):\n        return sum(d[\"diesel_per_trip\"][c] * m.x[c] for c in m.COMPANIES)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --- Constraints ---\n\n    # Gifts delivered must be at least the required minimum\n    def gifts_rule(m):\n        return sum(d[\"gifts_per_trip\"][c] * m.x[c] for c in m.COMPANIES) >= d[\"min_gifts\"]\n\n    model.gift_requirement = pyo.Constraint(rule=gifts_rule)\n\n    # At least 40% of all trips must be made by the old company:\n    #   x_old >= frac * (x_new + x_old)   ->   (1 - frac) * x_old - frac * x_new >= 0\n    def old_share_rule(m):\n        frac = d[\"min_old_trip_fraction\"]\n        return (1 - frac) * m.x[\"old\"] - frac * m.x[\"new\"] >= 0\n\n    model.old_company_share = pyo.Constraint(rule=old_share_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1116,
+      "completion_tokens": 1119
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.276379585266113,
+   "position": 8,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   x_new : integer trips made by the new company, 0 <= x_new <= 15\n#   x_old : integer trips made by the old company, x_old >= 0\n#\n# Objective (minimize): total diesel used\n#   diesel_new * x_new + diesel_old * x_old\n#\n# Constraints\n#   (1) Gift demand: gifts_new * x_new + gifts_old * x_old >= demand\n#   (2) New company trip cap: x_new <= max_new\n#   (3) Old company share: at least old_share of all trips by old company\n#       x_old >= old_share * (x_new + x_old)\n#       linearised: (1 - old_share) * x_old - old_share * x_new >= 0\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"gifts_new\": 50,\n    \"gifts_old\": 70,\n    \"diesel_new\": 30,\n    \"diesel_old\": 40,\n    \"demand\": 1000,\n    \"max_new\": 15,\n    \"old_share\": 0.4,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Decision variables\n    model.x_new = pyo.Var(\n        domain=pyo.NonNegativeIntegers, bounds=(0, d[\"max_new\"])\n    )\n    model.x_old = pyo.Var(domain=pyo.NonNegativeIntegers, bounds=(0, None))\n\n    # Objective: minimize total diesel\n    model.obj = pyo.Objective(\n        expr=d[\"diesel_new\"] * model.x_new + d[\"diesel_old\"] * model.x_old,\n        sense=pyo.minimize,\n    )\n\n    # (1) Deliver at least the required number of gifts\n    model.demand_con = pyo.Constraint(\n        expr=d[\"gifts_new\"] * model.x_new + d[\"gifts_old\"] * model.x_old\n        >= d[\"demand\"]\n    )\n\n    # (2) At most max_new trips by the new company\n    model.max_new_con = pyo.Constraint(expr=model.x_new <= d[\"max_new\"])\n\n    # (3) At least old_share of all trips by the old company\n    #     x_old >= old_share * (x_new + x_old)\n    model.old_share_con = pyo.Constraint(\n        expr=(1 - d[\"old_share\"]) * model.x_old - d[\"old_share\"] * model.x_new\n        >= 0\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1132,
+      "completion_tokens": 1662
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "missing_constraints",
+      "missing_objective",
+      "sandbox_no_constraints",
+      "sandbox_no_objective"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1294,
+      "completion_tokens": 609
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 14.994976282119751,
+   "position": 9,
+   "recipe_index": 9
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-13T22:59:38"
+}

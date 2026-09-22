@@ -1,0 +1,267 @@
+{
+ "pid": "industryor_0037",
+ "question": "A company has three factories that produce the same product, and now they need to transport the products from the three factories to four customers. The supply capacity of the factories, the demand of the customers, and the unit transportation cost from the three factories to the four customers are shown in Table 3.4 (the number in the top right corner of the table is the unit transportation cost).\n\nTable 3.4\n| Factory |  |  |  |  | Customer |  |  |  | Supply |\n| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n|  | 1 |  | 2 |  | 3 |  | 4 |  |  |\n| 1 |  | 5 |  | 2 |  | 6 |  | 7 | 30 |\n| 2 |  | 3 |  | 5 |  | 4 |  | 10 | 20 |\n| 3 |  | 4 |  | 3 |  | 2 |  | 13 | $\\Delta 0$ |\n| Demand | 20 |  | 10 |  | 45 |  | 25 |  | 100 |\n\nNow, a transportation plan needs to be made to meet the following requirements:\n\n$p_{1}$: The order quantity of Customer 4 must be fully satisfied first.\n\n$p_{2}$: The degree of satisfaction of the order quantity for the remaining customers should not be less than 80%.\n\n$p_{3}$: The quantity of products transported from Factory 3 to Customer 1 should be at least 15 units.\n\n$p_{4}$: Due to route restrictions, Factory 2 should preferably not be allocated to Customer 4.\n\n$p_{5}$: The degree of satisfaction of the demands of Customer 1 and Customer 3 should be balanced as much as possible.\n\n$p_{6}$: Minimize the total transportation cost.\n\nTry to establish a goal programming model for the above problem.",
+ "templates": [
+  "Transportation",
+  "Production Planning / Product Mix",
+  "Vehicle Routing / TSP"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "\"\"\"Goal-programming transportation model.\n\nSets\n  model.I = {1, 2, 3}   factories\n  model.J = {1, 2, 3, 4} customers\n\nDecision variables\n  x[i, j] : units shipped from factory i to customer j          (NonNegativeReals)\n  y[j]    : unfilled demand (deficit) for customer j            (NonNegativeReals)\n  d       : max fractional deficit over customers 1 and 3       (NonNegativeReals)\n  w2      : binary allowance for factory 2 -> customer 4        (Binary)\n\nObjective (minimize), weighted goal programming:\n  p1 * y[4]                       [p1: fully satisfy Customer 4 first]\n+ p2 * sum(y[j] for j in 1..3)    [p2: remaining customers >= 80% satisfied]\n+ p3 * deficit32                  [p3: Factory 3 -> Customer 1 at least 15]\n+ p4 * x[2, 4]                    [p4: avoid Factory 2 -> Customer 4]\n+ p5 * d                          [p5: balance satisfaction of Customers 1 and 3]\n+ p6 * total transportation cost  [p6: minimize total cost]\n\nConstraints\n  (supply)   sum_j x[i, j] <= supply[i]                       for all i\n  (demand)   sum_i x[i, j] + y[j] = demand[j]                 for all j\n  (p2)       y[j] <= 0.2 * demand[j]                          for j in {1, 2, 3}\n  (p3)       x[3, 1] + deficit32 >= 15\n  (p4)       x[2, 4] <= bigM * w2\n  (p5)       y[1] / demand[1] <= d\n  (p5)       y[3] / demand[3] <= d\n\"\"\"\n\nimport pyomo.environ as pyo\n\nDATA = {\n    \"factories\": [1, 2, 3],\n    \"customers\": [1, 2, 3, 4],\n    \"supply\": {1: 30, 2: 20, 3: 50},\n    \"demand\": {1: 20, 2: 10, 3: 45, 4: 25},\n    \"cost\": {\n        (1, 1): 5, (1, 2): 2, (1, 3): 6, (1, 4): 7,\n        (2, 1): 3, (2, 2): 5, (2, 3): 4, (2, 4): 10,\n        (3, 1): 4, (3, 2): 3, (3, 3): 2, (3, 4): 13,\n    },\n    \"p1\": 1000.0,\n    \"p2\": 500.0,\n    \"p3\": 100.0,\n    \"p4\": 50.0,\n    \"p5\": 200.0,\n    \"p6\": 1.0,\n    \"min_frac_remaining\": 0.80,\n    \"min_f3_c1\": 15,\n    \"bigM\": 1000.0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=d[\"factories\"])\n    model.J = pyo.Set(initialize=d[\"customers\"])\n    model.Jrem = pyo.Set(initialize=[j for j in d[\"customers\"] if j != 4])\n\n    model.x = pyo.Var(model.I, model.J, within=pyo.NonNegativeReals)\n    model.y = pyo.Var(model.J, within=pyo.NonNegativeReals)\n    model.d = pyo.Var(within=pyo.NonNegativeReals)\n    model.deficit32 = pyo.Var(within=pyo.NonNegativeReals)\n    model.w2 = pyo.Var(within=pyo.Binary)\n\n    def supply_rule(m, i):\n        return sum(m.x[i, j] for j in m.J) <= d[\"supply\"][i]\n    model.supply_con = pyo.Constraint(model.I, rule=supply_rule)\n\n    def demand_rule(m, j):\n        return sum(m.x[i, j] for i in m.I) + m.y[j] == d[\"demand\"][j]\n    model.demand_con = pyo.Constraint(model.J, rule=demand_rule)\n\n    def p2_rule(m, j):\n        return m.y[j] <= (1.0 - d[\"min_frac_remaining\"]) * d[\"demand\"][j]\n    model.p2_con = pyo.Constraint(model.Jrem, rule=p2_rule)\n\n    def p3_rule(m):\n        return m.x[3, 1] + m.deficit32 >= d[\"min_f3_c1\"]\n    model.p3_con = pyo.Constraint(rule=p3_rule)\n\n    def p4_rule(m):\n        return m.x[2, 4] <= d[\"bigM\"] * m.w2\n    model.p4_con = pyo.Constraint(rule=p4_rule)\n\n    def p5_rule1(m):\n        return m.y[1] <= d[\"demand\"][1] * m.d\n    model.p5_con1 = pyo.Constraint(rule=p5_rule1)\n\n    def p5_rule3(m):\n        return m.y[3] <= d[\"demand\"][3] * m.d\n    model.p5_con3 = pyo.Constraint(rule=p5_rule3)\n\n    total_cost = sum(d[\"cost\"][(i, j)] * model.x[i, j]\n                     for i in model.I for j in model.J)\n\n    model.obj = pyo.Objective(\n        expr=(\n            d[\"p1\"] * model.y[4]\n            + d[\"p2\"] * sum(model.y[j] for j in model.Jrem)\n            + d[\"p3\"] * model.deficit32\n            + d[\"p4\"] * model.x[2, 4]\n            + d[\"p5\"] * model.d\n            + d[\"p6\"] * total_cost\n        ),\n        sense=pyo.minimize,\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1647,
+      "completion_tokens": 1911
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3355,
+      "completion_tokens": 1439
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 20.33443331718445,
+   "position": 0,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"factories\": [1, 2, 3],\n    \"customers\": [1, 2, 3, 4],\n    \"supply\": {1: 30, 2: 20, 3: 30},                # total = 80 = total demand 100? see note\n    \"demand\": {1: 20, 2: 10, 3: 45, 4: 25},         # total = 100\n    \"cost\": {\n        (1, 1): 5,  (1, 2): 2,  (1, 3): 6,  (1, 4): 7,\n        (2, 1): 3,  (2, 2): 5,  (2, 3): 4,  (2, 4): 10,\n        (3, 1): 4,  (3, 2): 3,  (3, 3): 2,  (3, 4): 13,\n    },\n    \"min_satisfaction_frac\": 0.80,                  # p2: remaining customers >= 80%\n    \"f31_min\": 15,                                  # p3: factory3 -> customer1 >= 15\n    \"p4_customer\": 4,                               # p4: factory2 preferably not to customer4\n    \"p4_factory\": 2,\n    \"balance_pair\": (1, 3),                         # p5: balance customers 1 and 3\n    \"total_supply\": 80,\n    \"big_M\": 1000,\n    \"weights\": {                                    # lexicographic priority weights\n        \"p1\": 1e7,   # customer 4 fully satisfied first\n        \"p2\": 1e6,   # remaining >= 80%\n        \"p3\": 1e5,   # f3->c1 >= 15\n        \"p4\": 1e4,   # avoid f2->c4\n        \"p5\": 1e3,   # balance c1,c3\n        \"p6\": 1.0,   # minimize cost\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.I = pyo.Set(initialize=d[\"factories\"])\n    m.J = pyo.Set(initialize=d[\"customers\"])\n\n    # Decision variable: units shipped i -> j\n    def x_bounds(m, i, j):\n        return (0, d[\"supply\"][i])\n    m.x = pyo.Var(m.I, m.J, within=pyo.NonNegativeReals,\n                  bounds=x_bounds)\n\n    # Deviation variables (goal programming)\n    m.n1 = pyo.Var(within=pyo.NonNegativeReals)  # p1 shortfall of customer 4\n    m.p1 = pyo.Var(within=pyo.NonNegativeReals)  # p1 surplus of customer 4\n    m.n2 = pyo.Var(m.J, within=pyo.NonNegativeReals)  # p2 shortfall below 80%\n    m.p2 = pyo.Var(m.J, within=pyo.NonNegativeReals)  # p2 surplus above 80%\n    m.n3 = pyo.Var(within=pyo.NonNegativeReals)  # p3 shortfall below 15\n    m.p3 = pyo.Var(within=pyo.NonNegativeReals)  # p3 surplus above 15\n    m.p4 = pyo.Var(within=pyo.NonNegativeReals)  # p4: amount 2->4 (to penalize)\n    m.n5 = pyo.Var(within=pyo.NonNegativeReals)  # p5 imbalance direction 1\n    m.p5 = pyo.Var(within=pyo.NonNegativeReals)  # p5 imbalance direction 2\n\n    # --- Supply constraints: sum_j x[i,j] <= supply[i] ---\n    def supply_rule(m, i):\n        return sum(m.x[i, j] for j in m.J) <= d[\"supply\"][i]\n    m.supply_con = pyo.Constraint(m.I, rule=supply_rule)\n\n    # --- p1: customer 4 fully satisfied: sum_i x[i,4] + n1 - p1 == demand[4] ---\n    def p1_rule(m):\n        return sum(m.x[i, d[\"p4_customer\"]] for i in m.I) + m.n1 - m.p1 == d[\"demand\"][d[\"p4_customer\"]]\n    m.p1_con = pyo.Constraint(rule=p1_rule)\n\n    # --- p2: remaining customers (1,2,3) satisfaction >= 80% ---\n    #     sum_i x[i,j] + n2[j] - p2[j] == 0.8 * demand[j]\n    m.remaining = pyo.Set(initialize=[j for j in d[\"customers\"] if j != d[\"p4_customer\"]])\n\n    def p2_rule(m, j):\n        return sum(m.x[i, j] for i in m.I) + m.n2[j] - m.p2[j] == \\\n               d[\"min_satisfaction_frac\"] * d[\"demand\"][j]\n    m.p2_con = pyo.Constraint(m.remaining, rule=p2_rule)\n\n    # --- p3: factory3 -> customer1 >= 15 : x[3,1] + n3 - p3 == 15 ---\n    def p3_rule(m):\n        return m.x[3, 1] + m.n3 - m.p3 == d[\"f31_min\"]\n    m.p3_con = pyo.Constraint(rule=p3_rule)\n\n    # --- p4: factory2 -> customer4 preferably 0 : p4 == x[2,4] ---\n    def p4_rule(m):\n        return m.p4 == m.x[d[\"p4_factory\"], d[\"p4_customer\"]]\n    m.p4_con = pyo.Constraint(rule=p4_rule)\n\n    # --- p5: balance satisfaction of c1 and c3 ---\n    #     sum_i x[i,c1] - sum_i x[i,c3] = n5 - p5\n    def p5_rule(m):\n        j1, j3 = d[\"balance_pair\"]\n        return sum(m.x[i, j1] for i in m.I) - sum(m.x[i, j3] for i in m.I) == m.n5 - m.p5\n    m.p5_con = pyo.Constraint(rule=p5_rule)\n\n    # --- Objective: weighted deviations + transport cost (p6) ---\n    def obj_rule(m):\n        w = d[\"weights\"]\n        transport_cost = sum(d[\"cost\"][(i, j)] * m.x[i, j] for i in m.I for j in m.J)\n        return (w[\"p1\"] * (m.n1 + m.p1)\n                + w[\"p2\"] * sum(m.n2[j] + m.p2[j] for j in m.J)\n                + w[\"p3\"] * (m.n3 + m.p3)\n                + w[\"p4\"] * m.p4\n                + w[\"p5\"] * (m.n5 + m.p5)\n                + w[\"p6\"] * transport_cost)\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1643,
+      "completion_tokens": 2310
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 9.357689619064331,
+   "position": 1,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"factories\": [1, 2, 3],\n    \"customers\": [1, 2, 3, 4],\n    \"supply\": {1: 30, 2: 20, 3: 40},          # Factory 3 supply (\u03940 read as 40; total = 100)\n    \"demand\": {1: 20, 2: 10, 3: 45, 4: 25},    # total = 100\n    \"cost\": {\n        (1, 1): 5, (1, 2): 2, (1, 3): 6, (1, 4): 7,\n        (2, 1): 3, (2, 2): 5, (2, 3): 4, (2, 4): 10,\n        (3, 1): 4, (3, 2): 3, (3, 3): 2, (3, 4): 13,\n    },\n    \"p2_min_satisfaction\": 0.80,   # remaining customers must be >= 80% satisfied\n    \"p3_min_f3_to_c1\": 15,         # factory 3 -> customer 1 at least 15 units\n    \"big_M\": 100,                  # big-M for p4 binary link\n    \"w_cost\": 1.0,                 # weight on transport cost (p6)\n    \"w_p1\": 1000.0,                # weight on failing customer 4 (p1)\n    \"w_p2\": 500.0,                 # weight on unmet demand (p2)\n    \"w_p4\": 200.0,                 # weight on using factory2->customer4 (p4)\n    \"w_p5\": 300.0,                 # weight on imbalance of customers 1 & 3 (p5)\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=d[\"factories\"], ordered=True)\n    model.J = pyo.Set(initialize=d[\"customers\"], ordered=True)\n\n    # Decision: units shipped from factory i to customer j\n    model.ship = pyo.Var(model.I, model.J, within=pyo.NonNegativeReals)\n\n    # Deviation variables: unmet / over-served demand per customer\n    model.unsat = pyo.Var(model.J, within=pyo.NonNegativeReals)\n    model.over = pyo.Var(model.J, within=pyo.NonNegativeReals)\n\n    # p1 shortfall for customer 4 (should be zero)\n    model.d4_short = pyo.Var(within=pyo.NonNegativeReals)\n\n    # p5 balance deviation between customer 1 and customer 3 satisfaction\n    model.bal_pos = pyo.Var(within=pyo.NonNegativeReals)\n    model.bal_neg = pyo.Var(within=pyo.NonNegativeReals)\n\n    # p4 binary: 1 if factory 2 ships to customer 4\n    model.use24 = pyo.Var(within=pyo.Binary)\n\n    # --- Constraints ---\n\n    # Supply capacity per factory\n    def supply_rule(m, i):\n        return sum(m.ship[i, j] for j in m.J) <= d[\"supply\"][i]\n    model.supply_limit = pyo.Constraint(model.I, rule=supply_rule)\n\n    # Demand balance: shipped + unsat - over = demand\n    def demand_rule(m, j):\n        return (sum(m.ship[i, j] for i in m.I)\n                + m.unsat[j] - m.over[j] == d[\"demand\"][j])\n    model.demand_balance = pyo.Constraint(model.J, rule=demand_rule)\n\n    # p1: customer 4 fully satisfied -> unsat[4] == 0, tracked via d4_short\n    def p1_rule(m):\n        return m.unsat[4] == m.d4_short\n    model.p1_full_c4 = pyo.Constraint(rule=p1_rule)\n\n    # p2: remaining customers (1,2,3) at least 80% satisfied -> unsat[j] <= 20% demand\n    def p2_rule(m, j):\n        if j == 4:\n            return pyo.Constraint.Skip\n        return m.unsat[j] <= (1.0 - d[\"p2_min_satisfaction\"]) * d[\"demand\"][j]\n    model.p2_min_sat = pyo.Constraint(model.J, rule=p2_rule)\n\n    # p3: factory 3 -> customer 1 at least 15 units\n    def p3_rule(m):\n        return m.ship[3, 1] >= d[\"p3_min_f3_to_c1\"]\n    model.p3_min_ship = pyo.Constraint(rule=p3_rule)\n\n    # p4: factory 2 -> customer 4 only if use24 = 1 (big-M link)\n    def p4_rule(m):\n        return m.ship[2, 4] <= d[\"big_M\"] * m.use24\n    model.p4_link = pyo.Constraint(rule=p4_rule)\n\n    # p5: balance satisfaction of customer 1 and customer 3\n    # satisfaction_j = (demand_j - unsat_j) / demand_j ; balance difference captured linearly\n    def p5_rule(m):\n        # (d1 - unsat1)/d1 - (d3 - unsat3)/d3 = bal_pos - bal_neg\n        # multiply through by d1*d3 to stay linear with constant coefficients\n        d1 = d[\"demand\"][1]\n        d3 = d[\"demand\"][3]\n        lhs = (d3 * (d1 - m.unsat[1])) - (d1 * (d3 - m.unsat[3]))\n        rhs = d1 * d3 * (m.bal_pos - m.bal_neg)\n        return lhs == rhs\n    model.p5_balance = pyo.Constraint(rule=p5_rule)\n\n    # --- Objective: weighted goal programming (minimise) ---\n    transport_cost = sum(d[\"cost\"][(i, j)] * model.ship[i, j]\n                         for i in model.I for j in model.J)\n\n    def obj_rule(m):\n        return (\n            d[\"w_cost\"] * transport_cost\n            + d[\"w_p1\"] * m.d4_short\n            + d[\"w_p2\"] * sum(m.unsat[j] for j in m.J)\n            + d[\"w_p4\"] * m.use24\n            + d[\"w_p5\"] * (m.bal_pos + m.bal_neg)\n        )\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1627,
+      "completion_tokens": 2157
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.684357166290283,
+   "position": 2,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Goal-programming transportation model\n#\n# Decision variables\n#   x[i, j]  : units shipped from factory i to customer j   (i in I, j in J)\n#              domain: NonNegativeReals\n#   y[j]     : units of demand of customer j that are satisfied (j in J)\n#              domain: NonNegativeReals, bounded above by demand d[j]\n#   r        : binary, 1 if Factory 2 ships anything to Customer 4 (p4 penalty)\n#   dp, dm   : nonnegative deviation of Customer 1 satisfaction above/below\n#              the balanced target (p5)\n#\n# Objective (p6): minimise total transportation cost, plus a small penalty\n#   for allocating Factory 2 to Customer 4 (p4), plus a penalty on the\n#   imbalance between Customer 1 and Customer 3 satisfaction (p5).\n#\n# Constraints\n#   (1) supply limit per factory                       sum_j x[i,j] <= s[i]\n#   (2) satisfaction definition per customer           y[j] = sum_i x[i,j]\n#   (3) y[j] <= demand[j]                              (cannot over-satisfy)\n#   (4) p1: Customer 4 fully satisfied                 y[4] = d[4]\n#   (5) p2: remaining customers >= 80% satisfaction    y[j] >= 0.8*d[j], j != 4\n#   (6) p3: Factory 3 -> Customer 1 at least 15        x[3,1] >= 15\n#   (7) p4: big-M link for r                           x[2,4] <= M * r\n#   (8) p5: balance Customer 1 and Customer 3          y[1] - y[3] = dp - dm\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"factories\": [1, 2, 3],\n    \"customers\": [1, 2, 3, 4],\n    \"supply\": {1: 30, 2: 20, 3: 30},\n    \"demand\": {1: 20, 2: 10, 3: 45, 4: 25},\n    \"cost\": {\n        (1, 1): 5, (1, 2): 2, (1, 3): 6, (1, 4): 7,\n        (2, 1): 3, (2, 2): 5, (2, 3): 4, (2, 4): 10,\n        (3, 1): 4, (3, 2): 3, (3, 3): 2, (3, 4): 13,\n    },\n    \"min_satisfaction_frac\": 0.80,\n    \"factory3_customer1_min\": 15,\n    \"big_m\": 100,\n    \"penalty_f2_c4\": 1000,\n    \"penalty_imbalance\": 1,\n    \"customer4\": 4,\n    \"balance_pair\": (1, 3),\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    m.I = pyo.Set(initialize=d[\"factories\"])\n    m.J = pyo.Set(initialize=d[\"customers\"])\n\n    m.x = pyo.Var(m.I, m.J, within=pyo.NonNegativeReals)\n    m.y = pyo.Var(m.J, within=pyo.NonNegativeReals)\n    m.r = pyo.Var(within=pyo.Binary)\n    m.dp = pyo.Var(within=pyo.NonNegativeReals)\n    m.dm = pyo.Var(within=pyo.NonNegativeReals)\n\n    # (1) supply limits\n    def supply_rule(m, i):\n        return sum(m.x[i, j] for j in m.J) <= d[\"supply\"][i]\n    m.supply_con = pyo.Constraint(m.I, rule=supply_rule)\n\n    # (2) satisfaction definition\n    def sat_def_rule(m, j):\n        return m.y[j] == sum(m.x[i, j] for i in m.I)\n    m.sat_def_con = pyo.Constraint(m.J, rule=sat_def_rule)\n\n    # (3) cannot satisfy more than demand\n    def sat_cap_rule(m, j):\n        return m.y[j] <= d[\"demand\"][j]\n    m.sat_cap_con = pyo.Constraint(m.J, rule=sat_cap_rule)\n\n    # (4) p1: Customer 4 fully satisfied\n    m.p1_con = pyo.Constraint(\n        expr=m.y[d[\"customer4\"]] == d[\"demand\"][d[\"customer4\"]]\n    )\n\n    # (5) p2: remaining customers at least 80% satisfied\n    def p2_rule(m, j):\n        if j == d[\"customer4\"]:\n            return pyo.Constraint.Skip\n        return m.y[j] >= d[\"min_satisfaction_frac\"] * d[\"demand\"][j]\n    m.p2_con = pyo.Constraint(m.J, rule=p2_rule)\n\n    # (6) p3: Factory 3 -> Customer 1 at least 15\n    m.p3_con = pyo.Constraint(\n        expr=m.x[3, 1] >= d[\"factory3_customer1_min\"]\n    )\n\n    # (7) p4: big-M link, r = 1 if Factory 2 ships to Customer 4\n    m.p4_con = pyo.Constraint(\n        expr=m.x[2, d[\"customer4\"]] <= d[\"big_m\"] * m.r\n    )\n\n    # (8) p5: balance Customer 1 and Customer 3 satisfaction\n    j1, j3 = d[\"balance_pair\"]\n    m.p5_con = pyo.Constraint(\n        expr=m.y[j1] - m.y[j3] == m.dp - m.dm\n    )\n\n    # (p6) objective: cost + p4 penalty + p5 imbalance penalty\n    m.obj = pyo.Objective(\n        expr=(\n            sum(d[\"cost\"][(i, j)] * m.x[i, j] for i in m.I for j in m.J)\n            + d[\"penalty_f2_c4\"] * m.r\n            + d[\"penalty_imbalance\"] * (m.dp + m.dm)\n        ),\n        sense=pyo.minimize,\n    )\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1647,
+      "completion_tokens": 3839
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1861,
+      "completion_tokens": 1472
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 37.87359595298767,
+   "position": 3,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------\n# DATA: every numeric constant from the problem statement\n# ---------------------------------------------------------------\nDATA = {\n    \"factories\": [1, 2, 3],\n    \"customers\": [1, 2, 3, 4],\n\n    # supply s_i\n    \"supply\": {1: 30, 2: 20, 3: 30},\n\n    # demand d_j\n    \"demand\": {1: 20, 2: 10, 3: 45, 4: 25},\n\n    # unit transportation cost per table row / col\n    \"cost\": {\n        (1, 1): 5, (1, 2): 2, (1, 3): 6, (1, 4): 7,\n        (2, 1): 3, (2, 2): 5, (2, 3): 4, (2, 4): 10,\n        (3, 1): 4, (3, 2): 3, (3, 3): 2, (3, 4): 13,\n    },\n\n    # p1 priority tier data\n    \"priority_cust4\": 4,\n\n    # p2 - satisfaction threshold data\n    \"min_sat_frac\": 0.80,\n\n    # p3 - minimum quantity F3 -> C1 = 15\n    \"factory3_to_cust1_min\": 15,\n    \"factory3\": 3,\n    \"customer1\": 1,\n\n    # p4 - F2 should ideally not serve C4\n    \"factory2\": 2,\n    \"customer4\": 4,\n\n    # p5 - balancing customers 1 & 3\n    \"balance_cust_a\": 1,\n    \"balance_cust_b\": 3,\n\n    # big-M for p4 indicator\n    \"big_M\": 100,\n\n    # Tier priority weights (lexicographic hierarchy)\n    \"weight_cost\":              1.0,\n    \"weight_balance\":          1e3,\n    \"weight_avoid_F2C4\":       1e6,\n    \"weight_F3toC1\":           1e9,\n    \"weight_sat_residual\":     1e12,\n    \"weight_cust4_fullfill\":   1e15,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    I = d[\"factories\"]\n    J = d[\"customers\"]\n\n    m = pyo.ConcreteModel(name=\"goal_programming_transport\")\n\n    # ---------------- Sets ----------------\n    m.I = pyo.Set(initialize=I, ordered=True)   # factories (sources)\n    m.J = pyo.Set(initialize=J, ordered=True)   # customers (destinations)\n\n    m.Jother = pyo.Set(initialize=[1, 2, 3], ordered=True)   # p2 residual customers\n    m.I_eq  = pyo.Set(initialize=[1, 2, 3], ordered=True)\n\n    # ---------------- Variables ----------------\n    m.x = pyo.Var(m.I, m.J, within=pyo.NonNegativeReals)\n\n    # Deviation / slack variables (goal programming)\n    # p1: shortfall on customer 4 demand\n    m.s1 = pyo.Var(within=pyo.NonNegativeReals)\n\n    # p2: shortfall on 80% satisfaction remaining customers\n    m.s2 = pyo.Var(m.Jother, within=pyo.NonNegativeReals)\n\n    # p3: shortfall on F3->C1 minimum of 15\n    m.s3 = pyo.Var(within=pyo.NonNegativeReals)\n\n    # p4: binary indicator if F2 ships to C4; penalty = indicator value\n    m.y4 = pyo.Var(within=pyo.Binary)\n\n    # p5: balancing deviations |x_ij -> satisfaction of C1 -_ satisfaction of C3|\n    m.bal_pos = pyo.Var(within=pyo.NonNegativeReals)\n    m.bal_neg = pyo.Var(within=pyo.NonNegativeReals)\n\n    # -------------- Auxiliary activity variables for balance --------------\n    m.sat1 = pyo.Var(within=pyo.NonNegativeReals)\n    m.sat3 = pyo.Var(within=pyo.NonNegativeReals)\n\n    # ---------------- Constraints ----------------\n    # Supply capacity: sum_j x[i,j] <= s_i  (for all i)\n    def supply_rule(mm, i):\n        return sum(mm.x[i, j] for j in mm.J) <= d[\"supply\"][i]\n    m.supply_cap = pyo.Constraint(m.I, rule=supply_rule)\n\n    # Definition of satisfied quantities for customers 1 & 3\n    def sat1_rule(mm):\n        return mm.sat1 == sum(mm.x[i, d[\"customer1\"]] for i in mm.I_eq)\n    m.sat1_def = pyo.Constraint(rule=sat1_rule)\n\n    def sat3_rule(mm):\n        return mm.sat3 == sum(mm.x[i, d[\"balance_cust_b\"]] for i in mm.I_eq)\n    m.sat3_def = pyo.Constraint(rule=sat3_rule)\n\n    # p1: Customer 4 \u2013 attempt to satisfy full demand using slack\n    def p1_rule(mm):\n        return sum(mm.x[i, d[\"customer4\"]] for i in mm.I_eq) + mm.s1 >= d[\"demand\"][d[\"customer4\"]]\n    m.p1_cust4_full = pyo.Constraint(rule=p1_rule)\n\n    # p2: remaining customers (1,2,3) \u2013 satisfaction >= 80% min + slack\n    def p2_rule(mm, j):\n        return sum(mm.x[i, j] for i in mm.I_eq) + mm.s2[j] >= d[\"min_sat_frac\"] * d[\"demand\"][j]\n    m.p2_residual_sat = pyo.Constraint(m.Jother, rule=p2_rule)\n\n    # p3: Factory3 -> Customer1 at least 15 + slack\n    def p3_rule(mm):\n        return mm.x[d[\"factory3\"], d[\"customer1\"]] + mm.s3 >= d[\"factory3_to_cust1_min\"]\n    m.p3_f3_to_c1 = pyo.Constraint(rule=p3_rule)\n\n    # p4: if y=0 then x[2,4]=0 ; if y=1 x[2,4] can be positive (big-M)\n    def p4_rule(mm):\n        return mm.x[d[\"factory2\"], d[\"customer4\"]] <= d[\"big_M\"] * mm.y4\n    m.p4_avoid_F2C4 = pyo.Constraint(rule=p4_rule)\n\n    # p5: balance satisfaction of customers 1 and 3\n    # deviation equation: sat1 - sat3 = bal_pos - bal_neg\n    def p5_rule(mm):\n        return mm.sat1 - mm.sat3 == mm.bal_pos - mm.bal_neg\n    m.p5_balance_eq = pyo.Constraint(rule=p5_rule)\n\n    # ---------------- Objective (weighted goal program) ----------------\n    tier_penalty = (\n        d[\"weight_cust4_fullfill\"] * m.s1\n        + d[\"weight_sat_residual\"] * sum(m.s2[j] for j in m.Jother)\n        + d[\"weight_F3toC1\"] * m.s3\n        + d[\"weight_avoid_F2C4\"] * m.y4\n        + d[\"weight_balance\"] * (m.bal_pos + m.bal_neg)\n        + d[\"weight_cost\"] * sum(d[\"cost\"][(i, j)] * m.x[i, j] for i in m.I for j in m.J)\n    )\n\n    m.obj = pyo.Objective(expr=tier_penalty, sense=pyo.minimize)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1633,
+      "completion_tokens": 2421
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 10.195577144622803,
+   "position": 4,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem, with source quotes.\n# ---------------------------------------------------------------------------\nDATA = {\n    # Factories (Table 3.4 rows) and customers (columns)\n    \"factories\": [1, 2, 3],\n    \"customers\": [1, 2, 3, 4],\n\n    # Unit transportation costs c[i][j]  (\"number in the top right corner\")\n    \"cost\": {\n        (1, 1): 5,  (1, 2): 2,  (1, 3): 6,  (1, 4): 7,\n        (2, 1): 3,  (2, 2): 5,  (2, 3): 4,  (2, 4): 10,\n        (3, 1): 4,  (3, 2): 3,  (3, 3): 2,  (3, 4): 13,\n    },\n\n    # Supply capacity of each factory (\"Supply\" column)\n    \"supply\": {1: 30, 2: 20, 3: 0},   # Factory 3 supply shown as \u03940 -> 0\n\n    # Customer demands (\"Demand\" row)\n    \"demand\": {1: 20, 2: 10, 3: 45, 4: 25},\n\n    # p2: satisfaction of remaining customers not less than 80%\n    \"min_satisfaction_others\": 0.80,\n\n    # p3: Factory 3 -> Customer 1 at least 15 units\n    \"min_f3_c1\": 15,\n\n    # p4: big-M for the factory2->customer4 flag (max possible flow)\n    \"bigM\": 100,\n\n    # Goal-programming weights (penalties for deviating from each priority)\n    \"w_cost\": 1.0,          # p6 cost (per unit cost)\n    \"w_p1\": 1000.0,         # p1 customer 4 fully satisfied\n    \"w_p2\": 1000.0,         # p2 others >= 80%\n    \"w_p3\": 1000.0,         # p3 factory3->customer1 >= 15\n    \"w_p4\": 500.0,          # p4 avoid factory2->customer4\n    \"w_p5\": 500.0,          # p5 balance satisfaction of customers 1 & 3\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    # ------------------------- Sets -------------------------\n    m.I = pyo.Set(initialize=d[\"factories\"], ordered=True)\n    m.J = pyo.Set(initialize=d[\"customers\"], ordered=True)\n\n    # ------------------------- Variables -------------------------\n    # x[i,j]: units shipped from factory i to customer j\n    m.x = pyo.Var(m.I, m.J, within=pyo.NonNegativeReals)\n\n    # u[j]: fraction of customer j demand satisfied\n    m.u = pyo.Var(m.J, within=pyo.NonNegativeReals, bounds=(0.0, 1.0))\n\n    # b: binary flag, 1 if factory 2 ships anything to customer 4 (p4)\n    m.b = pyo.Var(within=pyo.Binary)\n\n    # dev_p1: shortfall of customer 4 (p1), dev_p2: shortfall of others (p2),\n    # dev_p3: shortfall of factory3->customer1 (p3), z: imbalance p5\n    m.dev_p1 = pyo.Var(within=pyo.NonNegativeReals)\n    m.dev_p2 = pyo.Var(m.J, within=pyo.NonNegativeReals)\n    m.dev_p3 = pyo.Var(within=pyo.NonNegativeReals)\n    m.z = pyo.Var(within=pyo.NonNegativeReals)\n\n    # ------------------------- Constraints -------------------------\n\n    # Supply limit: sum_j x[i,j] <= supply[i]\n    def supply_rule(m, i):\n        return sum(m.x[i, j] for j in m.J) <= d[\"supply\"][i]\n    m.supply_con = pyo.Constraint(m.I, rule=supply_rule)\n\n    # Cannot deliver more than demand: sum_i x[i,j] <= demand[j]\n    def demand_cap_rule(m, j):\n        return sum(m.x[i, j] for i in m.I) <= d[\"demand\"][j]\n    m.demand_cap_con = pyo.Constraint(m.J, rule=demand_cap_rule)\n\n    # Satisfaction fraction definition: u[j]*demand[j] = sum_i x[i,j]\n    def sat_def_rule(m, j):\n        return d[\"demand\"][j] * m.u[j] == sum(m.x[i, j] for i in m.I)\n    m.sat_def_con = pyo.Constraint(m.J, rule=sat_def_rule)\n\n    # p1: Customer 4 fully satisfied (with shortfall dev_p1)\n    def p1_rule(m):\n        return sum(m.x[i, 4] for i in m.I) + m.dev_p1 >= d[\"demand\"][4]\n    m.p1_con = pyo.Constraint(rule=p1_rule)\n\n    # p2: Remaining customers (1,2,3) satisfied >= 80% (with shortfalls)\n    def p2_rule(m, j):\n        if j == 4:\n            return pyo.Constraint.Skip\n        return sum(m.x[i, j] for i in m.I) + m.dev_p2[j] >= \\\n            d[\"min_satisfaction_others\"] * d[\"demand\"][j]\n    m.p2_con = pyo.Constraint(m.J, rule=p2_rule)\n\n    # p3: Factory 3 -> Customer 1 at least 15 units (with shortfall dev_p3)\n    def p3_rule(m):\n        return m.x[3, 1] + m.dev_p3 >= d[\"min_f3_c1\"]\n    m.p3_con = pyo.Constraint(rule=p3_rule)\n\n    # p4: Factory 2 -> Customer 4 only if flag b = 1 (big-M)\n    def p4_rule(m):\n        return m.x[2, 4] <= d[\"bigM\"] * m.b\n    m.p4_con = pyo.Constraint(rule=p4_rule)\n\n    # p5: Balance satisfaction of customers 1 and 3 via z >= |u1 - u3|\n    def p5_a_rule(m):\n        return m.u[1] - m.u[3] <= m.z\n    m.p5_a_con = pyo.Constraint(rule=p5_a_rule)\n\n    def p5_b_rule(m):\n        return m.u[3] - m.u[1] <= m.z\n    m.p5_b_con = pyo.Constraint(rule=p5_b_rule)\n\n    # ------------------------- Objective -------------------------\n    # Minimise weighted goal deviations: cost (p6), priority shortfalls (p1-p3),\n    # p4 flag penalty, and p5 imbalance.\n    def obj_rule(m):\n        cost = sum(d[\"cost\"][(i, j)] * m.x[i, j]\n                   for i in m.I for j in m.J)\n        penalty = (d[\"w_p1\"] * m.dev_p1\n                   + sum(d[\"w_p2\"] * m.dev_p2[j] for j in m.J)\n                   + d[\"w_p3\"] * m.dev_p3\n                   + d[\"w_p4\"] * m.b\n                   + d[\"w_p5\"] * m.z)\n        return d[\"w_cost\"] * cost + penalty\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1631,
+      "completion_tokens": 2322
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 9.283092737197876,
+   "position": 5,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"factories\": [1, 2, 3],\n    \"customers\": [1, 2, 3, 4],\n    \"supply\": {1: 30, 2: 20, 3: 40},          # Factory 3 supply (\"\u03940\" -> 40)\n    \"demand\": {1: 20, 2: 10, 3: 45, 4: 25},  # customer demands\n    \"cost\": {\n        (1, 1): 5, (1, 2): 2, (1, 3): 6, (1, 4): 7,\n        (2, 1): 3, (2, 2): 5, (2, 3): 4, (2, 4): 10,\n        (3, 1): 4, (3, 2): 3, (3, 3): 2, (3, 4): 13,\n    },\n    # Goal-programming weights (priority ordering embedded via large weights)\n    \"w_cost\": 1,\n    \"w_cust4_short\": 1000,      # p1: highest priority\n    \"w_cust123_short\": 500,     # p2\n    \"w_route31_short\": 300,     # p3\n    \"w_f2c4\": 200,              # p4 (soft penalty)\n    \"w_balance\": 400,           # p5\n    # Target parameters\n    \"cust4_target\": 25,\n    \"min_satisfaction_frac\": 0.8,\n    \"route_31_min\": 15,\n    \"bigM\": 100,                # big-M for f2c4 penalty\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # ----- Sets -----\n    m.I = pyo.Set(initialize=d[\"factories\"], ordered=True)     # factories\n    m.J = pyo.Set(initialize=d[\"customers\"], ordered=True)     # customers\n    m.J123 = pyo.Set(initialize=[1, 2, 3], ordered=True)       # customers 1-3\n\n    # ----- Variables -----\n    # Shipment quantity from factory i to customer j\n    m.x = pyo.Var(m.I, m.J, within=pyo.NonNegativeIntegers)\n\n    # Deviation variables (goal programming)\n    m.d4_short = pyo.Var(within=pyo.NonNegativeReals)   # shortfall customer 4\n    m.s_short = pyo.Var(within=pyo.NonNegativeReals)    # shortfall customers 1-3\n    m.r_short = pyo.Var(within=pyo.NonNegativeReals)    # shortfall route (3,1)\n    m.y_f2c4 = pyo.Var(within=pyo.Binary)               # 1 if F2 ships to C4\n    m.u_pos = pyo.Var(within=pyo.NonNegativeReals)      # balance over-achievement\n    m.u_neg = pyo.Var(within=pyo.NonNegativeReals)      # balance under-achievement\n\n    # ----- Objective -----\n    def obj_rule(m):\n        return (\n            d[\"w_cost\"] * sum(d[\"cost\"][(i, j)] * m.x[i, j]\n                              for i in m.I for j in m.J)\n            + d[\"w_cust4_short\"] * m.d4_short\n            + d[\"w_cust123_short\"] * m.s_short\n            + d[\"w_route31_short\"] * m.r_short\n            + d[\"w_f2c4\"] * m.y_f2c4\n            + d[\"w_balance\"] * (m.u_pos + m.u_neg)\n        )\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ----- Constraints -----\n\n    # Supply capacity: total shipped from factory i <= supply_i\n    def supply_rule(m, i):\n        return sum(m.x[i, j] for j in m.J) <= d[\"supply\"][i]\n    m.supply_con = pyo.Constraint(m.I, rule=supply_rule)\n\n    # Demand cannot exceed requirement (customer receives at most demand)\n    def demand_ub_rule(m, j):\n        return sum(m.x[i, j] for i in m.I) <= d[\"demand\"][j]\n    m.demand_ub_con = pyo.Constraint(m.J, rule=demand_ub_rule)\n\n    # p1: Customer 4 fully satisfied -> shipped + shortfall = target\n    def cust4_rule(m):\n        return sum(m.x[i, 4] for i in m.I) + m.d4_short == d[\"cust4_target\"]\n    m.cust4_con = pyo.Constraint(rule=cust4_rule)\n\n    # p2: Customers 1-3 satisfaction at least 80% (shortfall measures gap)\n    def cust123_rule(m):\n        shipped = sum(m.x[i, j] for i in m.I for j in m.J123)\n        required = d[\"min_satisfaction_frac\"] * sum(d[\"demand\"][j] for j in m.J123)\n        return shipped + m.s_short >= required\n    m.cust123_con = pyo.Constraint(rule=cust123_rule)\n\n    # p3: Factory 3 -> Customer 1 at least 15 units\n    def route31_rule(m):\n        return m.x[3, 1] + m.r_short >= d[\"route_31_min\"]\n    m.route31_con = pyo.Constraint(rule=route31_rule)\n\n    # p4: discourage Factory 2 -> Customer 4 (big-M linking)\n    def f2c4_rule(m):\n        return m.x[2, 4] <= d[\"bigM\"] * m.y_f2c4\n    m.f2c4_con = pyo.Constraint(rule=f2c4_rule)\n\n    # p5: balance satisfaction of Customer 1 and Customer 3 demands\n    # define satisfaction ratio difference via linearised deviation:\n    # x_total_c1 / d1  -  x_total_c3 / d3 = u_pos - u_neg\n    def balance_rule(m):\n        x1 = sum(m.x[i, 1] for i in m.I)\n        x3 = sum(m.x[i, 3] for i in m.I)\n        return x1 * d[\"demand\"][3] - x3 * d[\"demand\"][1] == \\\n            d[\"demand\"][1] * d[\"demand\"][3] * (m.u_pos - m.u_neg)\n    m.balance_con = pyo.Constraint(rule=balance_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1643,
+      "completion_tokens": 2006
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.195595979690552,
+   "position": 6,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Every numeric constant from the problem, with its source.\n# ---------------------------------------------------------------------------\nDATA = {\n    # Sets\n    \"factories\": [1, 2, 3],                       # three factories\n    \"customers\": [1, 2, 3, 4],                    # four customers\n    \"remaining_customers\": [1, 2, 3],             # customers other than 4 (p1 prioritises 4)\n\n    # Unit transportation cost  c[i][j]  (Table 3.4, top-right numbers)\n    \"cost\": {\n        (1, 1): 5,  (1, 2): 2,  (1, 3): 6,  (1, 4): 7,    # factory 1 row\n        (2, 1): 3,  (2, 2): 5,  (2, 3): 4,  (2, 4): 10,   # factory 2 row\n        (3, 1): 4,  (3, 2): 3,  (3, 3): 2,  (3, 4): 13,   # factory 3 row\n    },\n\n    # Supply capacity per factory (Table 3.4 \"Supply\" column)\n    # Factory 3 shows \"\u03940\" (garbled); read as 30 so total supply = 100 = total demand.\n    \"supply\": {1: 30, 2: 20, 3: 30},\n\n    # Demand per customer (Table 3.4 \"Demand\" row)\n    \"demand\": {1: 20, 2: 10, 3: 45, 4: 25},\n\n    # p2: remaining customers must be at least 80% satisfied\n    \"satisfaction_floor\": 0.80,\n\n    # p3: Factory 3 -> Customer 1 at least 15 units\n    \"f3_c1_min\": 15,\n\n    # p4: Big-M for the \"Factory 2 should preferably not serve Customer 4\" indicator\n    \"big_m\": 100,\n\n    # p5: balancing weight for Customer 1 vs Customer 3 satisfaction\n    \"balance_weight\": 1,\n\n    # Goal-programming penalty weights\n    \"penalty_avoid_f2c4\": 50,   # p4 penalty per unit of the \"used\" indicator\n    \"penalty_shortfall\": 1,     # penalty per unit of remaining-customer shortfall\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # ---------------- Sets ----------------\n    m.I = pyo.Set(initialize=d[\"factories\"], ordered=True)\n    m.J = pyo.Set(initialize=d[\"customers\"], ordered=True)\n    m.Jrem = pyo.Set(initialize=d[\"remaining_customers\"], ordered=True)\n\n    # ---------------- Variables ----------------\n    # shipments (units of product, non-negative integers)\n    m.x = pyo.Var(m.I, m.J, within=pyo.NonNegativeIntegers)\n\n    # p4 indicator: 1 if factory 2 ships anything to customer 4\n    m.y = pyo.Var(within=pyo.Binary)\n\n    # p5 balancing auxiliary (absolute deviation between satisfaction of c1 and c3)\n    m.bal = pyo.Var(within=pyo.NonNegativeReals)\n\n    # soft shortfall of each remaining customer below its target (= demand)\n    m.short = pyo.Var(m.Jrem, within=pyo.NonNegativeReals)\n\n    # ---------------- Objective (p6: minimise cost + goal penalties) ----------------\n    def obj_rule(mm):\n        cost = sum(d[\"cost\"][(i, j)] * mm.x[i, j] for i in mm.I for j in mm.J)\n        pen_p4 = d[\"penalty_avoid_f2c4\"] * mm.y\n        pen_p5 = d[\"balance_weight\"] * mm.bal\n        pen_short = d[\"penalty_shortfall\"] * sum(mm.short[j] for j in mm.Jrem)\n        return cost + pen_p4 + pen_p5 + pen_short\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---------------- Constraints ----------------\n\n    # Supply: each factory ships at most its supply capacity\n    def supply_rule(mm, i):\n        return sum(mm.x[i, j] for j in mm.J) <= d[\"supply\"][i]\n\n    m.supply_limit = pyo.Constraint(m.I, rule=supply_rule)\n\n    # Demand upper bound: no customer receives more than demanded\n    def demand_ub_rule(mm, j):\n        return sum(mm.x[i, j] for i in mm.I) <= d[\"demand\"][j]\n\n    m.demand_ub = pyo.Constraint(m.J, rule=demand_ub_rule)\n\n    # p1: Customer 4's order must be fully satisfied first (exactly its demand)\n    def c4_full_rule(mm):\n        return sum(mm.x[i, 4] for i in mm.I) == d[\"demand\"][4]\n\n    m.c4_full = pyo.Constraint(rule=c4_full_rule)\n\n    # p2: remaining customers' satisfaction not below 80% of their demand\n    def p2_rule(mm, j):\n        return sum(mm.x[i, j] for i in mm.I) >= d[\"satisfaction_floor\"] * d[\"demand\"][j]\n\n    m.p2_floor = pyo.Constraint(m.Jrem, rule=p2_rule)\n\n    # p3: Factory 3 -> Customer 1 at least 15 units\n    def p3_rule(mm):\n        return mm.x[3, 1] >= d[\"f3_c1_min\"]\n\n    m.p3_min = pyo.Constraint(rule=p3_rule)\n\n    # p4: big-M link so y = 1 whenever Factory 2 ships to Customer 4\n    def p4_link_rule(mm):\n        return mm.x[2, 4] <= d[\"big_m\"] * mm.y\n\n    m.p4_link = pyo.Constraint(rule=p4_link_rule)\n\n    # p5: balance satisfaction of Customer 1 and Customer 3.\n    # Satisfaction measured as delivered / demand.  bal >= |sat1 - sat3| via two\n    # linear inequalities (demands are constants, so no variable products appear).\n    def p5_balance_lo_rule(mm):\n        sat1 = sum(mm.x[i, 1] for i in mm.I) / d[\"demand\"][1]\n        sat3 = sum(mm.x[i, 3] for i in mm.I) / d[\"demand\"][3]\n        return mm.bal >= sat1 - sat3\n\n    m.p5_balance_lo = pyo.Constraint(rule=p5_balance_lo_rule)\n\n    def p5_balance_hi_rule(mm):\n        sat1 = sum(mm.x[i, 1] for i in mm.I) / d[\"demand\"][1]\n        sat3 = sum(mm.x[i, 3] for i in mm.I) / d[\"demand\"][3]\n        return mm.bal >= sat3 - sat1\n\n    m.p5_balance_hi = pyo.Constraint(rule=p5_balance_hi_rule)\n\n    # Soft shortfall definition for remaining customers (target = full demand)\n    def short_rule(mm, j):\n        return mm.short[j] >= d[\"demand\"][j] - sum(mm.x[i, j] for i in mm.I)\n\n    m.short_def = pyo.Constraint(m.Jrem, rule=short_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1631,
+      "completion_tokens": 2218
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.725343942642212,
+   "position": 7,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"factories\": [1, 2, 3],\n    \"customers\": [1, 2, 3, 4],\n    \"remaining_customers\": [1, 2, 3],\n    \"supply\": {1: 30, 2: 20, 3: 10},\n    \"demand\": {1: 20, 2: 10, 3: 45, 4: 25},\n    \"cost\": {\n        (1, 1): 5, (1, 2): 2, (1, 3): 6, (1, 4): 7,\n        (2, 1): 3, (2, 2): 5, (2, 3): 4, (2, 4): 10,\n        (3, 1): 4, (3, 2): 3, (3, 3): 2, (3, 4): 13,\n    },\n    \"min_satisfaction_remaining\": 0.8,\n    \"factory3_customer1_min\": 15,\n    \"big_M\": 100,\n    # goal-programming weights (priority ordering)\n    \"w_cust4\": 1000,\n    \"w_remaining\": 100,\n    \"w_factory3_cust1\": 50,\n    \"w_avoid_f2c4\": 20,\n    \"w_balance\": 10,\n    \"w_cost\": 1,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=d[\"factories\"])\n    model.J = pyo.Set(initialize=d[\"customers\"])\n    model.Jrem = pyo.Set(initialize=d[\"remaining_customers\"])\n\n    # Decision variables\n    model.ship = pyo.Var(model.I, model.J, within=pyo.NonNegativeReals)\n    model.satisfy = pyo.Var(model.J, within=pyo.NonNegativeReals,\n                            bounds=(0, 1))\n    # deviations: shortfall for goal p1, p2, p3\n    model.dev_cust4 = pyo.Var(within=pyo.NonNegativeReals)\n    model.dev_remaining = pyo.Var(model.Jrem, within=pyo.NonNegativeReals)\n    model.dev_f3c1 = pyo.Var(within=pyo.NonNegativeReals)\n    # balance deviations for p5 (customer 1 vs customer 3)\n    model.dev_bal_pos = pyo.Var(within=pyo.NonNegativeReals)\n    model.dev_bal_neg = pyo.Var(within=pyo.NonNegativeReals)\n    # binary for p4\n    model.y24 = pyo.Var(within=pyo.Binary)\n\n    # Supply capacity\n    def supply_rule(m, i):\n        return sum(m.ship[i, j] for j in m.J) <= d[\"supply\"][i]\n    model.supply_con = pyo.Constraint(model.I, rule=supply_rule)\n\n    # Satisfaction definition\n    def satisfy_def_rule(m, j):\n        return sum(m.ship[i, j] for i in m.I) == m.satisfy[j] * d[\"demand\"][j]\n    model.satisfy_def = pyo.Constraint(model.J, rule=satisfy_def_rule)\n\n    # p1: customer 4 fully satisfied (shortfall via deviation)\n    def p1_rule(m):\n        return m.satisfy[4] + m.dev_cust4 >= 1\n    model.p1_con = pyo.Constraint(rule=p1_rule)\n\n    # p2: remaining customers satisfaction >= 80% (shortfall via deviation)\n    def p2_rule(m, j):\n        return m.satisfy[j] + m.dev_remaining[j] >= d[\"min_satisfaction_remaining\"]\n    model.p2_con = pyo.Constraint(model.Jrem, rule=p2_rule)\n\n    # p3: factory 3 -> customer 1 at least 15 (shortfall via deviation)\n    def p3_rule(m):\n        return m.ship[3, 1] + m.dev_f3c1 >= d[\"factory3_customer1_min\"]\n    model.p3_con = pyo.Constraint(rule=p3_rule)\n\n    # p4: avoid allocating factory 2 to customer 4 (big-M link)\n    def p4_rule(m):\n        return m.ship[2, 4] <= d[\"big_M\"] * m.y24\n    model.p4_con = pyo.Constraint(rule=p4_rule)\n\n    # p5: balance satisfaction of customer 1 and customer 3\n    def p5_rule(m):\n        return (m.satisfy[1] - m.satisfy[3]\n                == m.dev_bal_pos - m.dev_bal_neg)\n    model.p5_con = pyo.Constraint(rule=p5_rule)\n\n    # Objective: weighted goal programming (minimize)\n    def obj_rule(m):\n        cost = sum(d[\"cost\"][(i, j)] * m.ship[i, j]\n                   for i in m.I for j in m.J)\n        return (d[\"w_cust4\"] * m.dev_cust4\n                + d[\"w_remaining\"] * sum(m.dev_remaining[j] for j in m.Jrem)\n                + d[\"w_factory3_cust1\"] * m.dev_f3c1\n                + d[\"w_avoid_f2c4\"] * m.y24\n                + d[\"w_balance\"] * (m.dev_bal_pos + m.dev_bal_neg)\n                + d[\"w_cost\"] * cost)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1627,
+      "completion_tokens": 1874
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.2527852058410645,
+   "position": 8,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"factories\": [1, 2, 3],\n    \"customers\": [1, 2, 3, 4],\n    \"supply\": {1: 30, 2: 20, 3: 50},\n    \"demand\": {1: 20, 2: 10, 3: 45, 4: 25},\n    \"cost\": {\n        (1, 1): 5, (1, 2): 2, (1, 3): 6, (1, 4): 7,\n        (2, 1): 3, (2, 2): 5, (2, 3): 4, (2, 4): 10,\n        (3, 1): 4, (3, 2): 3, (3, 3): 2, (3, 4): 13,\n    },\n    # p2: satisfaction of remaining customers >= 80%\n    \"satisfaction_frac\": 0.80,\n    \"remaining_customers\": [1, 2, 3],\n    # p3: factory 3 -> customer 1 at least 15 units\n    \"f3_c1_min\": 15,\n    \"f3\": 3,\n    \"c1\": 1,\n    # p4: factory 2 to customer 4 forbidden-ish (big-M penalty)\n    \"f2\": 2,\n    \"c4\": 4,\n    \"big_m\": 100,\n    # goal weights (priority-style, larger = higher priority desired)\n    \"weight_cost\": 1.0,\n    \"weight_p4\": 200.0,   # route penalty\n    \"weight_p5_balance\": 100.0,  # balanced C1 & C3\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    m.I = pyo.Set(initialize=d[\"factories\"])\n    m.J = pyo.Set(initialize=d[\"customers\"])\n    m.Jrem = pyo.Set(initialize=d[\"remaining_customers\"])\n\n    # Decision: quantity shipped\n    m.arcs = pyo.Set(initialize=list(d[\"cost\"].keys()), dimen=2)\n    m.x = pyo.Var(m.arcs, domain=pyo.NonNegativeReals)\n\n    # Balance deviation variables for C1 vs C3 (p5)\n    m.bal_neg = pyo.Var(domain=pyo.NonNegativeReals)\n    m.bal_pos = pyo.Var(domain=pyo.NonNegativeReals)\n\n    # Binary for route usage f2->c4 (p4)\n    m.y24 = pyo.Var(domain=pyo.Binary)\n\n    # ---- Objective (p6 + weighted soft goals) ----\n    def obj_expr(m):\n        cost = sum(d[\"cost\"][(i, j)] * m.x[(i, j)] for (i, j) in m.arcs)\n        return (\n            d[\"weight_cost\"] * cost\n            + d[\"weight_p4\"] * m.y24\n            + d[\"weight_p5_balance\"] * (m.bal_pos + m.bal_neg)\n        )\n\n    m.obj = pyo.Objective(rule=obj_expr, sense=pyo.minimize)\n\n    # ---- Supply constraints ----\n    def supply_rule(m, i):\n        return sum(m.x[(i, j)] for j in m.J if (i, j) in m.arcs) <= d[\"supply\"][i]\n\n    m.supply = pyo.Constraint(m.I, rule=supply_rule)\n\n    # ---- p1: full satisfy Customer 4 ----\n    def c4_full_rule(m):\n        return sum(m.x[(i, 4)] for i in m.I if (i, 4) in m.arcs) == d[\"demand\"][4]\n\n    m.c4_full = pyo.Constraint(rule=c4_full_rule)\n\n    # ---- p2: remaining customers >= 80% satisfaction ----\n    def satisfaction_rule(m, j):\n        return sum(m.x[(i, j)] for i in m.I if (i, j) in m.arcs) >= (\n            d[\"satisfaction_frac\"] * d[\"demand\"][j]\n        )\n\n    m.satisfaction = pyo.Constraint(m.Jrem, rule=satisfaction_rule)\n\n    # ---- p3: factory 3 -> customer 1 at least 15 ----\n    def f3_c1_rule(m):\n        return m.x[(d[\"f3\"], d[\"c1\"])] >= d[\"f3_c1_min\"]\n\n    m.f3_c1 = pyo.Constraint(rule=f3_c1_rule)\n\n    # ---- p4 (soft): f2 -> c4 used only at penalty ----\n    def p4_rule(m):\n        return m.x[(d[\"f2\"], d[\"c4\"])] <= d[\"big_m\"] * m.y24\n\n    m.p4_link = pyo.Constraint(rule=p4_rule)\n\n    # ---- p5 (soft): balance Customer 1 and Customer 3 total shipped ----\n    def balance_rule(m):\n        ship_c1 = sum(m.x[(i, 1)] for i in m.I if (i, 1) in m.arcs)\n        ship_c3 = sum(m.x[(i, 3)] for i in m.I if (i, 3) in m.arcs)\n        return ship_c1 - ship_c3 == m.bal_pos - m.bal_neg\n\n    m.balance = pyo.Constraint(rule=balance_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1633,
+      "completion_tokens": 1896
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.721234083175659,
+   "position": 9,
+   "recipe_index": 8
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:54:27"
+}

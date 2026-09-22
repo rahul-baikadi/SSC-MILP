@@ -1,0 +1,265 @@
+{
+ "pid": "industryor_0065",
+ "question": "A company produces two types of small motorcycles, with Type A being completely manufactured by the company and Type B being assembled from imported parts. The manufacturing, assembly, and inspection times required for these two products are shown in Table 3.2.\nTable 3.2\n\n| Type | Manufacturing | Assembly | Inspection | Selling Price <br> (yuan per unit) |\n| :---: | :---: | :---: | :---: | :---: |\n|  |  |  |  |  |\n| Type A (hours per unit) | 20 | 5 | 3 | 650 |\n| Type B (hours per unit) | 0 | 7 | 6 | 725 |\n| Maximum weekly production capacity (hours) | 120 | 80 | 40 |  |\n| Hourly production cost (yuan) | 12 | 8 | 10 |  |\n\nIf the company's expected goals and priority levels are as follows:\n\n$p_{1}$: Total weekly profit is at least 3000 yuan;\n\n$p_{2}$: At least 5 units of Type A motorcycles are produced weekly;\n\n$p_{3}$: Minimize the idle time of each process, with the coefficients of the three processes being proportional to their hourly costs, and no overtime is allowed.\n\nFormulate an objective programming model for this problem.",
+ "templates": [
+  "Production Planning / Product Mix"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "# -*- coding: utf-8 -*-\n\"\"\"\nGoal-programming (pre-emptive priority) model for small-motorcycle production.\n\nDECISION VARIABLES\n  xA : units of Type A produced weekly          (NonNegativeIntegers)\n  xB : units of Type B produced weekly          (NonNegativeIntegers)\n  uM : idle hours of the Manufacturing process  (NonNegativeReals)\n  uA : idle hours of the Assembly process       (NonNegativeReals)\n  uI : idle hours of the Inspection process     (NonNegativeReals)\n  d1 : shortfall of weekly profit below 3000    (NonNegativeReals)\n  d2 : shortfall of Type A output below 5 units (NonNegativeReals)\n\nOBJECTIVE (lexicographic, weighted by priority levels p1 >> p2 >> p3)\n  min  W1*d1 + W2*d2 + W3*(cM*uM + cA*uA + cI*uI)\n  where the p3 coefficients are proportional to the hourly process costs.\n\nCONSTRAINTS\n  (1) Profit accounting:  profit = 650*xA + 725*xB - 12*20*xA - 8*(5*xA+7*xB) - 10*(3*xA+6*xB)\n      Profit + d1 >= 3000                                        [goal p1]\n  (2) xA + d2 >= 5                                               [goal p2]\n  (3) 20*xA + uM = 120                                           [capacity, no overtime]\n  (4) 5*xA + 7*xB + uA = 80                                      [capacity, no overtime]\n  (5) 3*xA + 6*xB + uI = 40                                      [capacity, no overtime]\n\"\"\"\n\n__all__ = [\"DATA\", \"build_model\", \"GOLD_ANSWER\"]\n\nimport pyomo.environ as pyo\n\nDATA = {\n    # products\n    \"products\": [\"A\", \"B\"],\n    # per-unit hours: [manufacturing, assembly, inspection]\n    \"hours\": {\n        \"A\": {\"M\": 20, \"A\": 5, \"I\": 3},\n        \"B\": {\"M\": 0, \"A\": 7, \"I\": 6},\n    },\n    # weekly capacity (hours) per process\n    \"capacity\": {\"M\": 120, \"A\": 80, \"I\": 40},\n    # hourly production cost (yuan) per process\n    \"hour_cost\": {\"M\": 12, \"A\": 8, \"I\": 10},\n    # selling price (yuan per unit)\n    \"price\": {\"A\": 650, \"B\": 725},\n    # goal targets\n    \"profit_target\": 3000,\n    \"typeA_target\": 5,\n    # priority weights (p1 >> p2 >> p3)\n    \"W1\": 1000000,\n    \"W2\": 1000,\n    \"W3\": 1,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    # ---- sets ----\n    m.P = pyo.Set(initialize=d[\"products\"])\n    m.R = pyo.Set(initialize=[\"M\", \"A\", \"I\"])\n\n    # ---- decision variables ----\n    m.x = pyo.Var(m.P, within=pyo.NonNegativeIntegers)\n    m.u = pyo.Var(m.R, within=pyo.NonNegativeReals)\n    m.d1 = pyo.Var(within=pyo.NonNegativeReals)\n    m.d2 = pyo.Var(within=pyo.NonNegativeReals)\n\n    # ---- objective: weighted sum of goal deviations ----\n    def obj_rule(mm):\n        idle_cost = sum(d[\"hour_cost\"][r] * mm.u[r] for r in mm.R)\n        return d[\"W1\"] * mm.d1 + d[\"W2\"] * mm.d2 + d[\"W3\"] * idle_cost\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---- (1) profit goal ----\n    def profit_rule(mm):\n        revenue = sum(d[\"price\"][p] * mm.x[p] for p in mm.P)\n        manuf_cost = d[\"hour_cost\"][\"M\"] * sum(\n            d[\"hours\"][p][\"M\"] * mm.x[p] for p in mm.P\n        )\n        asm_cost = d[\"hour_cost\"][\"A\"] * sum(\n            d[\"hours\"][p][\"A\"] * mm.x[p] for p in mm.P\n        )\n        insp_cost = d[\"hour_cost\"][\"I\"] * sum(\n            d[\"hours\"][p][\"I\"] * mm.x[p] for p in mm.P\n        )\n        profit = revenue - manuf_cost - asm_cost - insp_cost\n        return profit + mm.d1 >= d[\"profit_target\"]\n\n    m.profit_goal = pyo.Constraint(rule=profit_rule)\n\n    # ---- (2) Type A output goal ----\n    def typeA_rule(mm):\n        return mm.x[\"A\"] + mm.d2 >= d[\"typeA_target\"]\n\n    m.typeA_goal = pyo.Constraint(rule=typeA_rule)\n\n    # ---- (3)-(5) capacity / idle-time balance per process ----\n    def capacity_rule(mm, r):\n        usage = sum(d[\"hours\"][p][r] * mm.x[p] for p in mm.P)\n        return usage + mm.u[r] == d[\"capacity\"][r]\n\n    m.capacity = pyo.Constraint(m.R, rule=capacity_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1123,
+      "completion_tokens": 2075
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1641,
+      "completion_tokens": 1249
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 21.44847822189331,
+   "position": 0,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Every numeric constant from the problem, with the source sentence quoted.\n# ---------------------------------------------------------------------------\nDATA = {\n    # Products and processes\n    \"products\": [\"A\", \"B\"],\n    \"processes\": [\"manufacturing\", \"assembly\", \"inspection\"],\n\n    # Table 3.2 -- manufacturing hours per unit (Type A = 20, Type B = 0)\n    \"manuf_hours\": {\"A\": 20, \"B\": 0},\n    # Table 3.2 -- assembly hours per unit (Type A = 5, Type B = 7)\n    \"assembly_hours\": {\"A\": 5, \"B\": 7},\n    # Table 3.2 -- inspection hours per unit (Type A = 3, Type B = 6)\n    \"inspection_hours\": {\"A\": 3, \"B\": 6},\n\n    # Table 3.2 -- selling price (yuan per unit)\n    \"price\": {\"A\": 650, \"B\": 725},\n\n    # Table 3.2 -- maximum weekly production capacity (hours)\n    \"capacity\": {\"manufacturing\": 120, \"assembly\": 80, \"inspection\": 40},\n\n    # Table 3.2 -- hourly production cost (yuan)\n    \"hourly_cost\": {\"manufacturing\": 12, \"assembly\": 8, \"inspection\": 10},\n\n    # p1: total weekly profit at least 3000 yuan\n    \"profit_target\": 3000,\n    # p2: at least 5 units of Type A weekly\n    \"typeA_target\": 5,\n\n    # Priority weights (lexicographic p1 > p2 handled via large weights)\n    \"w_profit_under\": 1000000,   # p1 under-achievement penalty\n    \"w_typeA_under\": 1000,       # p2 under-achievement penalty\n    # p3 weights = hourly costs (12, 8, 10) applied to idle time\n    \"idle_weight\": {\"manufacturing\": 12, \"assembly\": 8, \"inspection\": 10},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # ------------------------------------------------------------------ Sets\n    m.P = pyo.Set(initialize=d[\"products\"], ordered=True)\n    m.R = pyo.Set(initialize=d[\"processes\"], ordered=True)\n\n    # ------------------------------------------------------------- Variables\n    # Weekly production quantity (motorcycles are whole units)\n    m.x = pyo.Var(m.P, within=pyo.NonNegativeIntegers)\n\n    # Goal-programming deviational variables (continuous, >= 0)\n    m.u1 = pyo.Var(within=pyo.NonNegativeReals)   # profit under-achievement\n    m.v1 = pyo.Var(within=pyo.NonNegativeReals)   # profit over-achievement\n    m.u2 = pyo.Var(within=pyo.NonNegativeReals)   # Type-A under-achievement\n    m.v2 = pyo.Var(within=pyo.NonNegativeReals)   # Type-A over-achievement\n    m.u3 = pyo.Var(m.R, within=pyo.NonNegativeReals)  # idle hours per process\n\n    # ------------------------------------------------------------- Objective\n    # Minimise weighted unwanted deviations.\n    # p1: penalty * profit under-deviation\n    # p2: penalty * Type-A under-deviation\n    # p3: sum of (hourly-cost-proportional) idle-time weights * idle hours\n    def _obj(m):\n        return (\n            d[\"w_profit_under\"] * m.u1\n            + d[\"w_typeA_under\"] * m.u2\n            + sum(d[\"idle_weight\"][r] * m.u3[r] for r in m.R)\n        )\n    m.obj = pyo.Objective(rule=_obj, sense=pyo.minimize)\n\n    # ----------------------------------------------------------- Constraints\n    # Helper: hours used per process for a given product mix\n    def hours_used(m, r, p):\n        if r == \"manufacturing\":\n            return d[\"manuf_hours\"][p]\n        if r == \"assembly\":\n            return d[\"assembly_hours\"][p]\n        return d[\"inspection_hours\"][p]\n\n    # p1 goal: weekly profit + u1 - v1 = profit_target\n    # profit = sum_p price[p]*x[p] - sum_r hourly_cost[r]*hours_used[r,p]*x[p]\n    def profit_rule(m):\n        revenue = sum(d[\"price\"][p] * m.x[p] for p in m.P)\n        cost = sum(\n            d[\"hourly_cost\"][r] * hours_used(m, r, p) * m.x[p]\n            for r in m.R for p in m.P\n        )\n        return revenue - cost + m.u1 - m.v1 == d[\"profit_target\"]\n    m.profit_goal = pyo.Constraint(rule=profit_rule)\n\n    # p2 goal: Type-A production + u2 - v2 = typeA_target\n    def typeA_rule(m):\n        return m.x[\"A\"] + m.u2 - m.v2 == d[\"typeA_target\"]\n    m.typeA_goal = pyo.Constraint(rule=typeA_rule)\n\n    # Hard capacity limits (no overtime): usage <= capacity, for each process\n    def cap_rule(m, r):\n        return sum(hours_used(m, r, p) * m.x[p] for p in m.P) <= d[\"capacity\"][r]\n    m.capacity_limit = pyo.Constraint(m.R, rule=cap_rule)\n\n    # p3: idle time per process = capacity - usage (non-negative)\n    def idle_rule(m, r):\n        return m.u3[r] == d[\"capacity\"][r] - sum(hours_used(m, r, p) * m.x[p] for p in m.P)\n    m.idle_time = pyo.Constraint(m.R, rule=idle_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1107,
+      "completion_tokens": 1799
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.068814992904663,
+   "position": 1,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   xA : units of Type A produced weekly          (NonNegativeIntegers)\n#   xB : units of Type B produced weekly          (NonNegativeIntegers)\n#   d1 : shortfall of weekly profit below 3000    (NonNegativeReals)  [p1]\n#   d2 : shortfall of Type A output below 5       (NonNegativeReals)  [p2]\n#   u_m, u_a, u_i : idle hours of manufacturing / assembly / inspection\n#                  (NonNegativeReals)                                  [p3]\n#\n# Objective (lexicographic priorities handled by weighted sum):\n#   minimize  M1*d1 + M2*d2 + (w_m*u_m + w_a*u_a + w_i*u_i)\n#   where the idle-time coefficients are proportional to hourly costs\n#   (12, 8, 10) and M1, M2 are large priority weights.\n#\n# Constraints\n#   (1) manufacturing hours: 20*xA + 0*xB + u_m = 120\n#   (2) assembly hours:       5*xA + 7*xB + u_a =  80\n#   (3) inspection hours:     3*xA + 6*xB + u_i =  40\n#   (4) profit goal: 650*xA + 725*xB - (12*20*xA + 8*(5*xA+7*xB) + 10*(3*xA+6*xB)) + d1 >= 3000\n#   (5) Type A goal: xA + d2 >= 5\n#   (6) no overtime: idle hours are nonnegative (enforced by variable domain)\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"TYPES\": [\"A\", \"B\"],\n    \"PROCESSES\": [\"manufacturing\", \"assembly\", \"inspection\"],\n\n    # hours per unit of each type in each process\n    \"HOURS\": {\n        (\"A\", \"manufacturing\"): 20,\n        (\"A\", \"assembly\"): 5,\n        (\"A\", \"inspection\"): 3,\n        (\"B\", \"manufacturing\"): 0,\n        (\"B\", \"assembly\"): 7,\n        (\"B\", \"inspection\"): 6,\n    },\n\n    # weekly capacity (hours) of each process\n    \"CAPACITY\": {\n        \"manufacturing\": 120,\n        \"assembly\": 80,\n        \"inspection\": 40,\n    },\n\n    # hourly production cost (yuan) of each process\n    \"HOURLY_COST\": {\n        \"manufacturing\": 12,\n        \"assembly\": 8,\n        \"inspection\": 10,\n    },\n\n    # selling price per unit (yuan)\n    \"PRICE\": {\"A\": 650, \"B\": 725},\n\n    # priority goals\n    \"PROFIT_GOAL\": 3000,\n    \"TYPE_A_GOAL\": 5,\n\n    # priority weights (lexicographic: p1 >> p2 >> p3)\n    \"W1\": 1_000_000,\n    \"W2\": 1_000,\n    \"W3\": 1,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    m.TYPES = pyo.Set(initialize=d[\"TYPES\"])\n    m.PROCESSES = pyo.Set(initialize=d[\"PROCESSES\"])\n\n    # decision variables\n    m.x = pyo.Var(m.TYPES, within=pyo.NonNegativeIntegers)\n    m.d1 = pyo.Var(within=pyo.NonNegativeReals)\n    m.d2 = pyo.Var(within=pyo.NonNegativeReals)\n    m.u = pyo.Var(m.PROCESSES, within=pyo.NonNegativeReals)\n\n    # (1)-(3) process capacity with idle time, no overtime\n    def capacity_rule(m, p):\n        return sum(d[\"HOURS\"][(t, p)] * m.x[t] for t in m.TYPES) + m.u[p] == d[\"CAPACITY\"][p]\n\n    m.capacity = pyo.Constraint(m.PROCESSES, rule=capacity_rule)\n\n    # (4) profit goal: revenue - production cost + shortfall >= goal\n    def profit_rule(m):\n        revenue = sum(d[\"PRICE\"][t] * m.x[t] for t in m.TYPES)\n        cost = sum(\n            d[\"HOURLY_COST\"][p] * d[\"HOURS\"][(t, p)] * m.x[t]\n            for t in m.TYPES\n            for p in m.PROCESSES\n        )\n        return revenue - cost + m.d1 >= d[\"PROFIT_GOAL\"]\n\n    m.profit_goal = pyo.Constraint(rule=profit_rule)\n\n    # (5) Type A production goal\n    def type_a_rule(m):\n        return m.x[\"A\"] + m.d2 >= d[\"TYPE_A_GOAL\"]\n\n    m.type_a_goal = pyo.Constraint(rule=type_a_rule)\n\n    # objective: weighted priority deviations + idle-time penalty\n    def obj_rule(m):\n        idle = sum(d[\"HOURLY_COST\"][p] * m.u[p] for p in m.PROCESSES)\n        return d[\"W1\"] * m.d1 + d[\"W2\"] * m.d2 + d[\"W3\"] * idle\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1123,
+      "completion_tokens": 1343
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1170,
+      "completion_tokens": 1257
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 15.575663566589355,
+   "position": 2,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Every numeric constant of the problem lives here.\n# ---------------------------------------------------------------------------\nDATA = {\n    # products and processes\n    \"A\": [(\"A\", \"mfg\"), (\"A\", \"asm\"), (\"A\", \"insp\")],\n    \"products\": [\"A\", \"B\"],\n    \"processes\": [\"mfg\", \"asm\", \"insp\"],\n\n    # weekly available hours per process  (no overtime allowed)\n    \"capacity\": {\"mfg\": 120, \"asm\": 80, \"insp\": 40},\n\n    # hours used per unit (rows = product & process pairs)\n    \"mfgA\": 20, \"asmA\": 5, \"inspA\": 3,\n    \"mfgB\": 0,  \"asmB\": 7, \"inspB\": 6,\n\n    # selling prices (yuan / unit) -> used for revenue\n    \"price_A\": 650,\n    \"price_B\": 725,\n\n    # hourly operation costs (yuan / hour) -> used to price idle time in p3\n    \"hourly_mfg\": 12,\n    \"hourly_asm\": 8,\n    \"hourly_insp\": 10,\n\n    # profit calculation uses per-unit cost of resources the hours represent\n    \"cost_units_mfg\": 12,\n    \"cost_units_asm\": 8,\n    \"cost_units_insp\": 10,\n\n    # GOALS\n    \"profit_target\": 3000,   # p1 : at least this total weekly profit\n    \"xmin_A\": 5,             # p2 : produce at least 5 of Type A weekly\n\n    # Process weighting (proportional to hourly costs) for p3-idle time goal.\n    # Normalise hourly cost / sum so the values are proportional () 12, 8, 10\n    \"sum_hour_cost\": 30,\n\n    # Lexicographic safety multipliers: W1 >> W2 >> W3 ensured via dict update.\n    \"p16\": 100000,   # p1 weight   (germane for total-profit shortfall)\n    \"p20\": 1000,     # p2 weight   (weight of either body-structure level)\n    \"p0\": 1000,\n\n    # p3 weighting scale = 1 => later exact by get_p3_w\n    \"eps_p3\": 1,   # avoid zero objective if needed\n}\n\n# clean the small redundancy above without touching problem values\nP3_WEIGHTS = {\n    \"mfg\":  DATA[\"hourly_mfg\"]  / DATA[\"sum_hour_cost\"],\n    \"asm\":  DATA[\"hourly_asm\"]  / DATA[\"sum_hour_cost\"],\n    \"insp\": DATA[\"hourly_insp\"] / DATA[\"sum_hour_cost\"],\n}\n\n\ndef the_profit_expression(m, d):\n    \"\"\"Model profit (weekly):\n    revenue - variable process cost incurred\n    (a unit needs its paying hours to be manufactured, assembled, inspected)\n    \"\"\"\n    rev = d[\"price_A\"] * m.x[\"A\"] + d[\"price_B\"] * m.x[\"B\"]\n    cost_mfg  = d[\"cost_units_mfg\"]  * d[\"mfgA\"]  * m.x[\"A\"] + d[\"cost_units_mfg\"]  * d[\"mfgB\"]  * m.x[\"B\"]\n    cost_asm  = d[\"cost_units_asm\"]  * d[\"asmA\"]  * m.x[\"A\"] + d[\"cost_units_asm\"]  * d[\"asmB\"]  * m.x[\"B\"]\n    cost_insp = d[\"cost_units_insp\"] * d[\"inspA\"] * m.x[\"A\"] + d[\"cost_units_insp\"] * d[\"inspB\"] * m.x[\"B\"]\n    return rev - (cost_mfg + cost_asm + cost_insp)\n\n\ndef build_model(data=None):\n    \"\"\"Return the objective-programming (goal-programming) Pyomo model.\"\"\"\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    # ------------------------ SETS ----------------------------------------\n    m.P = pyo.Set(initialize=[\"A\", \"B\"])        # product types\n    m.R = pyo.Set(initialize=[\"mfg\", \"asm\", \"insp\"])  # processes\n\n    # ------------------------ DECISION VARIABLES ---------------------------\n    # production qty weekly (motorcycle units are whole)\n    m.x = pyo.Var(m.P, within=pyo.NonNegativeIntegers)\n\n    # deviation variables: u = shortfall  v = excess\n    m.u = pyo.Var([\"p1\", \"p2\"], within=pyo.NonNegativeReals)\n    m.v = pyo.Var([\"p1\", \"p2\"], within=pyo.NonNegativeReals)\n\n    # idle-hours per process for p3 (unused of the available hours)\n    m.u3 = pyo.Var(m.R, within=pyo.NonNegativeReals)\n\n    # ------------------------ OBJECTIVE ------------------------------------\n    # p1 penalised (weight  1e5)  --> total profit at least 3000\n    # p2 penalised (weight  1e3)  --> Type A >= 5\n    # p3 weighted idle hours decomposed from the available minus used; total\n    #    idle is composed exactly from resource usage below (measure spent h)\n    goal = (\n        100000 * m.u[\"p1\"]\n        +    1000 * m.u[\"p2\"]\n        +       1 * (P3_WEIGHTS[\"mfg\"] * m.u3[\"mfg\"]\n                  + P3_WEIGHTS[\"asm\"] * m.u3[\"asm\"]\n                  + P3_WEIGHTS[\"insp\"] * m.u3[\"insp\"])\n    )\n\n    m.obj = pyo.Objective(expr=goal, sense=pyo.minimize)\n\n    # ----------- p1 : total-profit goal ------------------------------------\n    def profit_rule(m):\n        profit_expr = the_profit_expression(m, d)\n        return profit_expr + m.u[\"p1\"] - m.v[\"p1\"] == d[\"profit_target\"]\n    m.profit_goal = pyo.Constraint(rule=profit_rule)\n\n    # defensive: we ALSO impose the hard availability (no overtime)\n    m.use_mfg = pyo.Constraint(\n        expr=d[\"mfgA\"] * m.x[\"A\"] + d[\"mfgB\"] * m.x[\"B\"] <= d[\"capacity\"][\"mfg\"]\n    )\n    m.use_asm = pyo.Constraint(\n        expr=d[\"asmA\"] * m.x[\"A\"] + d[\"asmB\"] * m.x[\"B\"] <= d[\"capacity\"][\"asm\"]\n    )\n    m.use_insp = pyo.Constraint(\n        expr=d[\"inspA\"] * m.x[\"A\"] + d[\"inspB\"] * m.x[\"B\"] <= d[\"capacity\"][\"insp\"]\n    )\n\n    # p3 : relation \u201cidle = available - used\u201d\n    def idle_mfg_rule(m):\n        used = d[\"mfgA\"] * m.x[\"A\"] + d[\"mfgB\"] * m.x[\"B\"]\n        return m.u3[\"mfg\"] == d[\"capacity\"][\"mfg\"] - used\n    m.idle_mfg = pyo.Constraint(rule=idle_mfg_rule)\n\n    def idle_asm_rule(m):\n        used = d[\"asmA\"] * m.x[\"A\"] + d[\"asmB\"] * m.x[\"B\"]\n        return m.u3[\"asm\"] == d[\"capacity\"][\"asm\"] - used\n    m.idle_asm = pyo.Constraint(rule=idle_asm_rule)\n\n    def idle_insp_rule(m):\n        used = d[\"inspA\"] * m.x[\"A\"] + d[\"inspB\"] * m.x[\"B\"]\n        return m.u3[\"insp\"] == d[\"capacity\"][\"insp\"] - used\n    m.idle_insp = pyo.Constraint(rule=idle_insp_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1109,
+      "completion_tokens": 2753
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 13.07108736038208,
+   "position": 3,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Processes and their weekly capacity (hours)\n    \"processes\": [\"mfg\", \"asm\", \"insp\"],\n    \"cap\": {\"mfg\": 120, \"asm\": 80, \"insp\": 40},\n    # Hourly production cost (yuan), proportional weight for idle-time objective\n    \"hourly_cost\": {\"mfg\": 12, \"asm\": 8, \"insp\": 10},\n    # Products and hourly usage per unit\n    \"products\": [\"A\", \"B\"],\n    \"usage\": {\n        (\"mfg\", \"A\"): 20, (\"mfg\", \"B\"): 0,\n        (\"asm\", \"A\"): 5,  (\"asm\", \"B\"): 7,\n        (\"insp\", \"A\"): 3, (\"insp\", \"B\"): 6,\n    },\n    # Selling price (yuan per unit)\n    \"price\": {\"A\": 650, \"B\": 725},\n    # Priority weights decomposing the GP priorities\n    \"weight_p1\": 1_000_000.0,   # profit >= 3000\n    \"weight_p2\": 1_000.0,       # at least 5 units of A\n    \"weight_idle\": {\"mfg\": 12.0, \"asm\": 8.0, \"insp\": 10.0},  # ~ hourly costs\n\n    # Goal targets\n    \"profit_target\": 3000.0,\n    \"min_typeA\": 5,\n}\n\n# GOLD_ANSWER = None  (not used per contract)\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel(\"moto_gp\")\n\n    m.P = pyo.Set(initialize=d[\"products\"])\n    m.R = pyo.Set(initialize=d[\"processes\"])\n\n    # Decision variables: weekly production quantities (integer units)\n    m.x = pyo.Var(m.P, within=pyo.NonNegativeIntegers)\n\n    # Idle-time variables (hours not used) per process\n    m.u = pyo.Var(m.R, within=pyo.NonNegativeReals)\n\n    # Goal-programming deviational variables\n    m.dm1 = pyo.Var(within=pyo.NonNegativeReals)\n    m.dp1 = pyo.Var(within=pyo.NonNegativeReals)\n    m.dm2 = pyo.Var(within=pyo.NonNegativeReals)\n    m.dp2 = pyo.Var(within=pyo.NonNegativeReals)\n\n    # ---- Capacity / idle accounting (one row per process) ----\n    def cap_rule(mm, r):\n        return sum(mm.u[r] * 0 + d[\"usage\"][(r, p)] * mm.x[p] for p in mm.P) + mm.u[r] == d[\"cap\"][r]\n    m.capacity_idle = pyo.Constraint(m.R, rule=cap_rule)\n\n    # ---- Profit goal: revenue minus production cost, must reach 3000 ----\n    def profit_expr(mm):\n        revenue = sum(d[\"price\"][p] * mm.x[p] for p in mm.P)\n        cost = sum(d[\"hourly_cost\"][r] * d[\"usage\"][(r, p)] * mm.x[p]\n                   for p in mm.P for r in mm.R)\n        return revenue - cost\n\n    m.profit = pyo.Expression(expr=profit_expr(m))\n\n    def goal1_rule(mm):\n        return mm.profit + mm.dm1 - mm.dp1 == d[\"profit_target\"]\n    m.goal1_profit = pyo.Constraint(rule=goal1_rule)\n\n    # ---- Type A minimum goal: at least 5 units ----\n    def goal2_rule(mm):\n        return mm.x[\"A\"] + mm.dm2 - mm.dp2 == d[\"min_typeA\"]\n    m.goal2_typeA = pyo.Constraint(rule=goal2_rule)\n\n    # ---- Objective: minimizing (weighted) deviations + idle time ----\n    def objective_rule(mm):\n        idle_term = sum(d[\"weight_idle\"][r] * mm.u[r] for r in mm.R)\n        return (\n            d[\"weight_p1\"] * mm.dm1\n            + d[\"weight_p2\"] * mm.dm2\n            + idle_term\n        )\n    m.obj = pyo.Objective(rule=objective_rule, sense=pyo.minimize)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1109,
+      "completion_tokens": 1564
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.51223087310791,
+   "position": 4,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"A\", \"B\"],\n    \"processes\": [\"manu\", \"assembly\", \"inspection\"],\n    # hours per unit: use[product][process]\n    \"use\": {\n        \"A\": {\"manu\": 20, \"assembly\": 5, \"inspection\": 3},\n        \"B\": {\"manu\": 0,  \"assembly\": 7, \"inspection\": 6},\n    },\n    # selling price (yuan per unit)\n    \"price\": {\"A\": 650, \"B\": 725},\n    # hourly production cost (yuan per hour) per process\n    \"hourly_cost\": {\"manu\": 12, \"assembly\": 8, \"inspection\": 10},\n    # maximum weekly capacity (hours) per process\n    \"capacity\": {\"manu\": 120, \"assembly\": 80, \"inspection\": 40},\n    # goal targets\n    \"profit_target\": 3000,   # p1: total weekly profit >= 3000 yuan\n    \"min_A\": 5,              # p2: at least 5 units of Type A\n    # priority levels (lexicographic weights)\n    \"p1\": 1000000,\n    \"p2\": 10000,\n    \"p3\": 1,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    # ----- Sets -----\n    m.P = pyo.Set(initialize=d[\"products\"])       # products\n    m.R = pyo.Set(initialize=d[\"processes\"])      # processes\n\n    # ----- Variables -----\n    # weekly production quantities (units, integer)\n    m.x = pyo.Var(m.P, within=pyo.NonNegativeIntegers)\n\n    # p1 deviation: negative deviation of profit goal (shortfall)\n    m.d1 = pyo.Var(within=pyo.NonNegativeReals)\n\n    # p2 deviation: negative deviation of Type A production goal\n    m.d2 = pyo.Var(within=pyo.NonNegativeReals)\n\n    # p3 deviations: idle time of each process (slack)\n    m.d3 = pyo.Var(m.R, within=pyo.NonNegativeReals)\n\n    # ----- Derived linear expression: profit (revenue - variable cost) -----\n    def profit_expr(m):\n        revenue = sum(\n            d[\"price\"][p] * m.x[p] for p in m.P\n        )\n        cost = sum(\n            d[\"hourly_cost\"][r] * sum(d[\"use\"][p][r] for p in m.P) * 0 for r in m.R\n        )\n        # variable cost per product p = sum_r hourly_cost[r] * use[p][r]\n        varcost = sum(\n            m.x[p] * sum(d[\"hourly_cost\"][r] * d[\"use\"][p][r] for r in m.R)\n            for p in m.P\n        )\n        return revenue - varcost\n\n    m.profit = pyo.Expression(rule=profit_expr)\n\n    # ----- p1: total weekly profit + d1 >= 3000  (d1 = shortfall) -----\n    def rule_profit_goal(m):\n        return m.profit + m.d1 >= d[\"profit_target\"]\n    m.profit_goal = pyo.Constraint(rule=rule_profit_goal)\n\n    # ----- p2: Type A production + d2 >= 5  (d2 = shortfall) -----\n    def rule_typeA_goal(m):\n        return m.x[\"A\"] + m.d2 >= d[\"min_A\"]\n    m.typeA_goal = pyo.Constraint(rule=rule_typeA_goal)\n\n    # ----- p3: idle time = capacity - usage, no overtime (usage <= capacity) -----\n    # usage[r] + d3[r] == capacity[r]   =>  d3[r] is idle time of process r\n    def rule_idle(m, r):\n        usage = sum(d[\"use\"][p][r] * m.x[p] for p in m.P)\n        return usage + m.d3[r] == d[\"capacity\"][r]\n    m.idle = pyo.Constraint(m.R, rule=rule_idle)\n\n    # ----- Objective: lexicographic goal programming -----\n    # minimise p1*d1 + p2*d2 + p3 * sum_r(weight[r] * d3[r]),\n    # weights proportional to hourly costs.\n    def obj_rule(m):\n        return (\n            d[\"p1\"] * m.d1\n            + d[\"p2\"] * m.d2\n            + d[\"p3\"] * sum(\n                d[\"hourly_cost\"][r] * m.d3[r] for r in m.R\n            )\n        )\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1119,
+      "completion_tokens": 1492
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.99911642074585,
+   "position": 5,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"A\", \"B\"],\n    \"processes\": [\"manufacturing\", \"assembly\", \"inspection\"],\n    # hours per unit of each product in each process\n    \"hours\": {\n        \"A\": {\"manufacturing\": 20, \"assembly\": 5, \"inspection\": 3},\n        \"B\": {\"manufacturing\": 0,  \"assembly\": 7, \"inspection\": 6},\n    },\n    # weekly capacity (hours) per process\n    \"capacity\": {\"manufacturing\": 120, \"assembly\": 80, \"inspection\": 40},\n    # hourly production cost (yuan) per process\n    \"hourly_cost\": {\"manufacturing\": 12, \"assembly\": 8, \"inspection\": 10},\n    # selling price per unit (yuan)\n    \"price\": {\"A\": 650, \"B\": 725},\n    # goal targets\n    \"profit_target\": 3000,\n    \"typeA_target\": 5,\n    # priority weights (lexicographic surrogate)\n    \"w_profit\": 1000000,\n    \"w_typeA\": 10000,\n    \"w_idle_scale\": 1,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = d[\"products\"]\n    processes = d[\"processes\"]\n\n    # unit profit = selling price - sum of process costs * hours\n    unit_profit = {}\n    for p in products:\n        cost = sum(d[\"hourly_cost\"][r] * d[\"hours\"][p][r] for r in processes)\n        unit_profit[p] = d[\"price\"][p] - cost\n\n    m = pyo.ConcreteModel()\n\n    m.P = pyo.Set(initialize=products)\n    m.R = pyo.Set(initialize=processes)\n\n    # decision variables\n    m.production = pyo.Var(m.P, domain=pyo.NonNegativeIntegers)\n    m.idle = pyo.Var(m.R, domain=pyo.NonNegativeReals)\n\n    # goal deviation variables\n    m.under_profit = pyo.Var(domain=pyo.NonNegativeReals)\n    m.over_profit = pyo.Var(domain=pyo.NonNegativeReals)\n    m.under_typeA = pyo.Var(domain=pyo.NonNegativeReals)\n    m.over_typeA = pyo.Var(domain=pyo.NonNegativeReals)\n\n    # capacity / idle-time balance per process (no overtime)\n    def capacity_rule(m, r):\n        used = sum(d[\"hours\"][p][r] * m.production[p] for p in m.P)\n        return used + m.idle[r] == d[\"capacity\"][r]\n    m.capacity_balance = pyo.Constraint(m.R, rule=capacity_rule)\n\n    # profit goal: total profit + under - over = target\n    def profit_goal_rule(m):\n        profit = sum(unit_profit[p] * m.production[p] for p in m.P)\n        return profit + m.under_profit - m.over_profit == d[\"profit_target\"]\n    m.profit_goal = pyo.Constraint(rule=profit_goal_rule)\n\n    # Type A production goal\n    def typeA_goal_rule(m):\n        return m.production[\"A\"] + m.under_typeA - m.over_typeA == d[\"typeA_target\"]\n    m.typeA_goal = pyo.Constraint(rule=typeA_goal_rule)\n\n    # objective: weighted lexicographic surrogate\n    idle_weighted = sum(\n        d[\"hourly_cost\"][r] * m.idle[r] for r in m.R\n    )\n    m.obj = pyo.Objective(\n        expr=d[\"w_profit\"] * m.under_profit\n        + d[\"w_typeA\"] * m.under_typeA\n        + d[\"w_idle_scale\"] * idle_weighted,\n        sense=pyo.minimize,\n    )\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1103,
+      "completion_tokens": 1235
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.758876323699951,
+   "position": 6,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"A\", \"B\"],\n    \"processes\": [\"manufacturing\", \"assembly\", \"inspection\"],\n    # hours per unit: time[product][process]\n    \"time\": {\n        \"A\": {\"manufacturing\": 20, \"assembly\": 5, \"inspection\": 3},\n        \"B\": {\"manufacturing\": 0, \"assembly\": 7, \"inspection\": 6},\n    },\n    # weekly capacity (hours) per process\n    \"capacity\": {\"manufacturing\": 120, \"assembly\": 80, \"inspection\": 40},\n    # hourly production cost (yuan) per process\n    \"hourly_cost\": {\"manufacturing\": 12, \"assembly\": 8, \"inspection\": 10},\n    # selling price (yuan per unit)\n    \"price\": {\"A\": 650, \"B\": 725},\n    # goals\n    \"profit_goal\": 3000,\n    \"typeA_goal\": 5,\n    # priority weights (lexicographic surrogate: p1 >> p2 >> p3)\n    \"M1\": 1e6,\n    \"M2\": 1e3,\n    \"idle_weight_scale\": 1.0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.P = pyo.Set(initialize=d[\"products\"])\n    m.R = pyo.Set(initialize=d[\"processes\"])\n\n    # Decision variables\n    m.x = pyo.Var(m.P, domain=pyo.NonNegativeIntegers)\n    m.u = pyo.Var(m.R, domain=pyo.NonNegativeReals)\n    m.d1 = pyo.Var(domain=pyo.NonNegativeReals)   # shortfall vs profit goal\n    m.d2 = pyo.Var(domain=pyo.NonNegativeReals)   # shortfall vs Type A goal\n\n    # Idle time cannot exceed process capacity\n    def u_upper_rule(m, r):\n        return m.u[r] <= d[\"capacity\"][r]\n    m.u_upper = pyo.Constraint(m.R, rule=u_upper_rule)\n\n    # Profit expression: revenue - process costs\n    def revenue_expr(m):\n        return sum(d[\"price\"][p] * m.x[p] for p in m.P)\n\n    def cost_expr(m):\n        return sum(\n            d[\"hourly_cost\"][r] * d[\"time\"][p][r] * m.x[p]\n            for p in m.P for r in m.R\n        )\n\n    # p1: weekly profit at least profit_goal\n    def profit_goal_rule(m):\n        return revenue_expr(m) - cost_expr(m) + m.d1 >= d[\"profit_goal\"]\n    m.profit_goal = pyo.Constraint(rule=profit_goal_rule)\n\n    # p2: at least typeA_goal units of Type A\n    def typeA_goal_rule(m):\n        return m.x[\"A\"] + m.d2 >= d[\"typeA_goal\"]\n    m.typeA_goal = pyo.Constraint(rule=typeA_goal_rule)\n\n    # p3: capacity balance (no overtime) -> idle time per process\n    def capacity_rule(m, r):\n        return sum(d[\"time\"][p][r] * m.x[p] for p in m.P) + m.u[r] == d[\"capacity\"][r]\n    m.capacity_balance = pyo.Constraint(m.R, rule=capacity_rule)\n\n    # Objective: weighted lexicographic surrogate\n    def obj_rule(m):\n        idle = sum(\n            d[\"hourly_cost\"][r] * d[\"idle_weight_scale\"] * m.u[r] for r in m.R\n        )\n        return d[\"M1\"] * m.d1 + d[\"M2\"] * m.d2 + idle\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1103,
+      "completion_tokens": 1225
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.730913162231445,
+   "position": 7,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# All numeric constants, sourced from the problem statement / Table 3.2.\nDATA = {\n    # products\n    \"products\": [\"A\", \"B\"],\n    # processes\n    \"processes\": [\"manuf\", \"assembly\", \"inspection\"],\n\n    # Table 3.2: hours per unit of each product in each process\n    # Type A: manufacturing 20, assembly 5, inspection 3\n    \"hours\": {\n        (\"A\", \"manuf\"): 20,\n        (\"A\", \"assembly\"): 5,\n        (\"A\", \"inspection\"): 3,\n        # Type B: manufacturing 0, assembly 7, inspection 6\n        (\"B\", \"manuf\"): 0,\n        (\"B\", \"assembly\"): 7,\n        (\"B\", \"inspection\"): 6,\n    },\n\n    # Table 3.2: selling price (yuan/unit)\n    \"price\": {\"A\": 650, \"B\": 725},\n\n    # Table 3.2: maximum weekly production capacity (hours)\n    \"capacity\": {\"manuf\": 120, \"assembly\": 80, \"inspection\": 40},\n\n    # Table 3.2: hourly production cost (yuan/hour)\n    \"hourly_cost\": {\"manuf\": 12, \"assembly\": 8, \"inspection\": 10},\n\n    # Precomputed unit production cost = sum over processes of hours*cost\n    # Type A: 20*12 + 5*8 + 3*10 = 240+40+30 = 310\n    # Type B:  0*12 + 7*8 + 6*10 =   0+56+60 = 116\n    \"unit_cost\": {\"A\": 310, \"B\": 116},\n\n    # Priority goals\n    \"profit_target\": 3000,   # p1: total weekly profit at least 3000 yuan\n    \"min_type_A\": 5,         # p2: at least 5 units of Type A weekly\n\n    # Lexicographic weights for the weighted-sum surrogate\n    \"w1\": 1_000_000,   # p1 weight (highest priority)\n    \"w2\": 1_000,       # p2 weight\n    \"w3\": 1,           # p3 weight (idle time, already scaled by hourly cost)\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    # ----- Sets -----\n    m.P = pyo.Set(initialize=d[\"products\"])          # products A, B\n    m.R = pyo.Set(initialize=d[\"processes\"])         # processes\n\n    # ----- Decision variables -----\n    # Weekly production quantity of each product (integer units, nonnegative)\n    m.x = pyo.Var(m.P, within=pyo.NonNegativeIntegers)\n\n    # Idle time of each process (hours), nonnegative, bounded by capacity\n    m.idle = pyo.Var(\n        m.R,\n        within=pyo.NonNegativeReals,\n        bounds=lambda m, r: (0, d[\"capacity\"][r]),\n    )\n\n    # Deviation variables for goal programming (underachievement only,\n    # since overachievement of a \"at least\" goal is acceptable)\n    m.n1 = pyo.Var(within=pyo.NonNegativeReals)   # shortfall of profit goal\n    m.n2 = pyo.Var(within=pyo.NonNegativeReals)   # shortfall of Type A goal\n\n    # ----- Objective: lexicographic goal programming via weighted sum -----\n    # p1: minimize profit shortfall\n    # p2: minimize Type A shortfall\n    # p3: minimize weighted idle time (weights = hourly costs)\n    m.obj = pyo.Objective(\n        expr=(\n            d[\"w1\"] * m.n1\n            + d[\"w2\"] * m.n2\n            + d[\"w3\"] * sum(d[\"hourly_cost\"][r] * m.idle[r] for r in m.R)\n        ),\n        sense=pyo.minimize,\n    )\n\n    # ----- Constraints -----\n\n    # Process capacity: used hours + idle hours = available capacity\n    def cap_rule(m, r):\n        used = sum(d[\"hours\"][(p, r)] * m.x[p] for p in m.P)\n        return used + m.idle[r] == d[\"capacity\"][r]\n\n    m.capacity_con = pyo.Constraint(m.R, rule=cap_rule)\n\n    # p1: profit goal  profit + n1 >= profit_target\n    # profit per unit = price - unit_cost\n    def profit_rule(m):\n        profit = sum(\n            (d[\"price\"][p] - d[\"unit_cost\"][p]) * m.x[p] for p in m.P\n        )\n        return profit + m.n1 >= d[\"profit_target\"]\n\n    m.profit_goal = pyo.Constraint(rule=profit_rule)\n\n    # p2: Type A production goal  x_A + n2 >= min_type_A\n    def typeA_rule(m):\n        return m.x[\"A\"] + m.n2 >= d[\"min_type_A\"]\n\n    m.typeA_goal = pyo.Constraint(rule=typeA_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1107,
+      "completion_tokens": 1655
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.2264978885650635,
+   "position": 8,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"A\", \"B\"],\n    \"processes\": [\"manufacturing\", \"assembly\", \"inspection\"],\n    # hours required per unit: usage[product][process]\n    \"usage\": {\n        \"A\": {\"manufacturing\": 20, \"assembly\": 5, \"inspection\": 3},\n        \"B\": {\"manufacturing\": 0,  \"assembly\": 7, \"inspection\": 6},\n    },\n    \"capacity\": {\"manufacturing\": 120, \"assembly\": 80, \"inspection\": 40},\n    \"price\": {\"A\": 650, \"B\": 725},\n    \"hourly_cost\": {\"manufacturing\": 12, \"assembly\": 8, \"inspection\": 10},\n    # goals\n    \"profit_target\": 3000,\n    \"typeA_target\": 5,\n    # priority weights for the three goal levels (p1 >> p2 >> p3)\n    \"w_profit\": 10**6,\n    \"w_typeA\": 10**3,\n    # p3 weights proportional to hourly costs of the three processes\n    \"process_weight\": {\"manufacturing\": 12, \"assembly\": 8, \"inspection\": 10},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.P = pyo.Set(initialize=d[\"products\"], ordered=True)\n    m.R = pyo.Set(initialize=d[\"processes\"], ordered=True)\n    m.G = pyo.Set(initialize=[\"profit\", \"typeA\"], ordered=True)\n\n    # x[p]: weekly production quantity (integer units)\n    m.x = pyo.Var(m.P, domain=pyo.NonNegativeIntegers)\n\n    # u[r]: idle hours per process (continuous, cannot be negative)\n    m.u = pyo.Var(m.R, domain=pyo.NonNegativeReals)\n\n    # deviation variables for the two explicit goals\n    m.d_plus = pyo.Var(m.G, domain=pyo.NonNegativeReals)\n    m.d_minus = pyo.Var(m.G, domain=pyo.NonNegativeReals)\n\n    # Profit = revenue - production cost (linear in x)\n    def profit_expr(m):\n        revenue = sum(d[\"price\"][p] * m.x[p] for p in m.P)\n        cost = sum(\n            d[\"hourly_cost\"][r] * d[\"usage\"][p][r] * m.x[p]\n            for p in m.P for r in m.R\n        )\n        return revenue - cost\n\n    # Capacity: used hours + idle hours == capacity (no overtime, <= direction)\n    def cap_rule(m, r):\n        used = sum(d[\"usage\"][p][r] * m.x[p] for p in m.P)\n        return used + m.u[r] == d[\"capacity\"][r]\n    m.capacity_con = pyo.Constraint(m.R, rule=cap_rule)\n\n    # Goal p1: profit + d_minus - d_plus = 3000  (>= 3000 keeps d_minus = 0)\n    def goal_profit_rule(m):\n        return profit_expr(m) + m.d_minus[\"profit\"] - m.d_plus[\"profit\"] == d[\"profit_target\"]\n    m.goal_profit = pyo.Constraint(rule=goal_profit_rule)\n\n    # Goal p2: x[A] + d_minus - d_plus = 5  (>= 5 keeps d_minus = 0)\n    def goal_typeA_rule(m):\n        return m.x[\"A\"] + m.d_minus[\"typeA\"] - m.d_plus[\"typeA\"] == d[\"typeA_target\"]\n    m.goal_typeA = pyo.Constraint(rule=goal_typeA_rule)\n\n    # Objective: lexicographic-style weighting of unwanted deviations.\n    # p1: profit shortfall; p2: Type A shortfall; p3: weighted idle time.\n    def obj_rule(m):\n        return (\n            d[\"w_profit\"] * m.d_minus[\"profit\"]\n            + d[\"w_typeA\"] * m.d_minus[\"typeA\"]\n            + sum(d[\"process_weight\"][r] * m.u[r] for r in m.R)\n        )\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1119,
+      "completion_tokens": 1312
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.3239405155181885,
+   "position": 9,
+   "recipe_index": 2
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T10:00:19"
+}

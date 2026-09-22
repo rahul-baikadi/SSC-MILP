@@ -1,0 +1,277 @@
+{
+ "pid": "industryor_0086",
+ "question": "A factory needs to rent a warehouse to store materials for the next 4 months. The required warehouse area for each month is listed in Table 1-14.\nTable 1-14\n\\begin{tabular}{c|c|c|c|c}\n\\hline Month & 1 & 2 & 3 & 4 \\\\\n\\hline Required Warehouse Area $/ \\mathrm{m}^2$ & 1500 & 1000 & 2000 & 1200 \\\\\n\\hline\n\\end{tabular}\n\nThe longer the rental contract period, the greater the discount on warehouse rental fees. The specific data is listed in Table 1-15.\nTable 1-15\n\\begin{tabular}{c|c|c|c|c}\n\\hline Contract Rental Period $/$ months & 1 & 2 & 3 & 4 \\\\\n\\hline \\begin{tabular}{c} \nRental Fee for Warehouse \\\\\nArea within the Contract Period $/ \\mathrm{m}^2$\n\\end{tabular} & 28 & 45 & 60 & 73 \\\\\n\\hline\n\\end{tabular}\n\nThe warehouse rental contract can be processed at the beginning of each month, and each contract specifies the rental area and period. Therefore, the factory can rent a contract on any month, and each time, they can sign one contract or multiple contracts with different rental areas and rental periods. The overall goal is to minimize the rental fees paid. Try to establish a linear programming mathematical model based on the above requirements.",
+ "templates": [
+  "Inventory / Lot Sizing"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"months\": [1, 2, 3, 4],\n    \"lengths\": [1, 2, 3, 4],\n    \"required_area\": {1: 1500, 2: 1000, 3: 2000, 4: 1200},\n    \"price\": {1: 28, 2: 45, 3: 60, 4: 73},\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    months = list(d[\"months\"])\n    lengths = list(d[\"lengths\"])\n    horizon = max(months)\n\n    # Feasible (start month, contract length) pairs: contract must fit in horizon\n    feasible_pairs = [\n        (i, k) for i in months for k in lengths if i + k - 1 <= horizon\n    ]\n\n    model = pyo.ConcreteModel()\n\n    model.months = pyo.Set(initialize=months, ordered=True)\n    model.lengths = pyo.Set(initialize=lengths, ordered=True)\n    model.pairs = pyo.Set(initialize=feasible_pairs, dimen=2)\n\n    # area[i,k]: m^2 rented via a contract starting in month i of length k\n    model.area = pyo.Var(model.pairs, within=pyo.NonNegativeReals)\n\n    # Objective: minimize total rental fees\n    def obj_rule(m):\n        return sum(d[\"price\"][k] * m.area[i, k] for (i, k) in m.pairs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Coverage constraint: for each month, total rented area covering it >= requirement\n    def coverage_rule(m, t):\n        return sum(\n            m.area[i, k]\n            for (i, k) in m.pairs\n            if i <= t <= i + k - 1\n        ) >= d[\"required_area\"][t]\n\n    model.coverage = pyo.Constraint(model.months, rule=coverage_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1143,
+      "completion_tokens": 903
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.790760040283203,
+   "position": 0,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# All numeric constants from the problem statement\n# ---------------------------------------------------------------------------\nDATA = {\n    \"n_months\": 4,          # horizon in months\n    \"n_durations\": 4,       # longest contract period offered / allowed\n    # Table 1-14: required warehouse area per month (m^2)\n    \"demand\": {1: 1500, 2: 1000, 3: 2000, 4: 1200},\n    # Table 1-15: rental fee per m^2 for a contract of a given duration\n    \"cost_per_m2\": {1: 28, 2: 45, 3: 60, 4: 73},\n    \"big_m\": 1e6,           # unused safeguard bound\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n_months = d[\"n_months\"]\n    n_durations = d[\"n_durations\"]\n    demand = d[\"demand\"]\n    cost = d[\"cost_per_m2\"]\n\n    model = pyo.ConcreteModel()\n\n    # ---------------- Sets -------------------------------------------------\n    model.Months = pyo.RangeSet(1, n_months)\n    model.Durations = pyo.RangeSet(1, n_durations)\n    # Pairs (start month, duration) that fit inside the horizon,\n    # i.e. a rate contract starting in t of length k covers t .. t+k-1 <= n_months.\n    model.Pairs = pyo.Set(\n        initialize=[(t, k)\n                    for t in range(1, n_months + 1)\n                    for k in range(1, n_durations + 1)\n                    if t + k - 1 <= n_months],\n        dimen=2,\n    )\n\n    # ---------------- Variables -------------------------------------------\n    # Area (m^2) rented under a contract signed at the start of month t\n    # and running for exactly k months.\n    model.area = pyo.Var(\n        model.Pairs,\n        domain=pyo.NonNegativeReals,\n        bounds=(0, None),\n    )\n\n    model.big_m = pyo.Var(domain=pyo.NonNegativeReals, bounds=(0, None))\n\n    # ---------------- Objective -------------------------------------------\n    # A single unit of area under a (t,k) contract is held for k months\n    # and pays the k-month rate each month, hence contributes k*cost[k].\n    def obj_rule(m):\n        return sum(\n            k * cost[k] * m.area[t, k]\n            for (t, k) in m.Pairs\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---------------- Constraints -----------------------------------------\n    # For every month s, the total area held under all contracts covering s\n    # must at least equal the required warehouse area in that month.\n    # A contract (t,k) covers month s iff t <= s <= t+k-1; the membership test\n    # below uses data only, keeping the model strictly linear.\n    def cover_rule(m, s):\n        return sum(\n            m.area[t, k]\n            for (t, k) in m.Pairs\n            if t <= s <= t + k - 1\n        ) >= demand[s]\n\n    model.cover = pyo.Constraint(model.Months, rule=cover_rule)\n\n    # Safeguard index / artefact constraint so `model.big_m` stays meaningful\n    # (a declared but unconstrained variable is bad practice).\n    def big_m_link_rule(m):\n        return m.big_m <= d[\"big_m\"]\n\n    model.big_m_link = pyo.Constraint(rule=big_m_link_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1149,
+      "completion_tokens": 1464
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.690563678741455,
+   "position": 1,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ----------------------------------------------------------------------------\n# DATA: every numeric constant from the problem, with source sentence quoted.\n# ----------------------------------------------------------------------------\nDATA = {\n    # Table 1-14: \"Required Warehouse Area / m^2\" for months 1..4\n    \"req_area\": {1: 1500, 2: 1000, 3: 2000, 4: 1200},\n\n    # Table 1-15: \"Rental Fee for Warehouse Area within the Contract Period / m^2\"\n    # for contract rental periods of 1, 2, 3, 4 months respectively.\n    \"contract_fee\": {1: 28, 2: 45, 3: 60, 4: 73},\n\n    # \"for the next 4 months\" -> planning horizon length\n    \"horizon\": 4,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    horizon = d[\"horizon\"]\n    months = list(range(1, horizon + 1))\n    periods = list(range(1, horizon + 1))\n\n    # Feasible (start month i, length j) pairs: contract must fit in horizon.\n    cover_pairs = [\n        (i, j)\n        for i in months\n        for j in periods\n        if i + j - 1 <= horizon\n    ]\n\n    model = pyo.ConcreteModel()\n\n    # --- Sets ---------------------------------------------------------------\n    model.MONTHS = pyo.Set(initialize=months, ordered=True)\n    model.PERIODS = pyo.Set(initialize=periods, ordered=True)\n    model.COVER = pyo.Set(initialize=cover_pairs, dimen=2, ordered=True)\n\n    # --- Variables ----------------------------------------------------------\n    # Area (m^2) rented starting in month i for a contract of length j months.\n    model.x = pyo.Var(\n        model.COVER,\n        within=pyo.NonNegativeReals,\n        bounds=(0, None),\n    )\n\n    # --- Objective ----------------------------------------------------------\n    # Minimise total rental fees paid across all contracts.\n    def obj_rule(m):\n        return sum(\n            d[\"contract_fee\"][j] * m.x[i, j]\n            for (i, j) in m.COVER\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --- Constraints --------------------------------------------------------\n    # For each month t, the total rented area covering t (from every contract\n    # whose interval [i, i+j-1] contains t) must be at least the required area.\n    def coverage_rule(m, t):\n        return sum(\n            m.x[i, j]\n            for (i, j) in m.COVER\n            if i <= t <= i + j - 1\n        ) >= d[\"req_area\"][t]\n\n    model.coverage = pyo.Constraint(model.MONTHS, rule=coverage_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1147,
+      "completion_tokens": 1046
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.158331871032715,
+   "position": 2,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ----------------------------------------------------------------------\n# All numeric constants from the problem statement\n# ----------------------------------------------------------------------\nDATA = {\n    # Table 1-14: required warehouse area (m^2) in each month\n    \"required\": {1: 1500, 2: 1000, 3: 2000, 4: 1200},\n    # Table 1-15: rental fee per m^2 for a contract of given duration (months)\n    \"fee\": {1: 28, 2: 45, 3: 60, 4: 73},\n    # Planning horizon\n    \"months\": [1, 2, 3, 4],\n    # Possible contract durations\n    \"periods\": [1, 2, 3, 4],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    months = d[\"months\"]\n    periods = d[\"periods\"]\n    required = d[\"required\"]\n    fee = d[\"fee\"]\n    horizon = max(months)\n\n    model = pyo.ConcreteModel()\n\n    # ------------------------------------------------------------------\n    # Sets\n    # ------------------------------------------------------------------\n    model.months = pyo.Set(initialize=months, ordered=True)\n    model.periods = pyo.Set(initialize=periods, ordered=True)\n\n    # Feasible (start month, duration) pairs: contract must finish by horizon.\n    feasible_pairs = [\n        (t, k) for t in months for k in periods if t + k - 1 <= horizon\n    ]\n    model.pairs = pyo.Set(initialize=feasible_pairs, dimen=2)\n\n    # ------------------------------------------------------------------\n    # Variables\n    # ------------------------------------------------------------------\n    # area[t, k] = m^2 rented by a contract signed at start of month t\n    #              with duration k months.\n    model.area = pyo.Var(\n        model.pairs,\n        domain=pyo.NonNegativeReals,\n    )\n\n    # ------------------------------------------------------------------\n    # Objective: minimise total rental fees\n    # ------------------------------------------------------------------\n    def obj_rule(m):\n        return sum(fee[k] * m.area[t, k] for (t, k) in m.pairs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ------------------------------------------------------------------\n    # Constraints: monthly area requirement must be covered\n    # ------------------------------------------------------------------\n    def cover_rule(m, month):\n        return (\n            sum(\n                m.area[t, k]\n                for (t, k) in m.pairs\n                if t <= month <= t + k - 1\n            )\n            >= required[month]\n        )\n\n    model.cover = pyo.Constraint(model.months, rule=cover_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1143,
+      "completion_tokens": 1134
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.791622161865234,
+   "position": 3,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "# ------------------------------------------------------------------\n# Warehouse leasing LP (4 planning months, linear, pure Pyomo)\n# ------------------------------------------------------------------\n# Decision variables\n#   x[t, L] : area (m^2) rented at the beginning of month t with a\n#             contract of duration L months.\n#             t in {1,2,3,4}, L in {1,2,3,4}, and t+L-1 <= 4.\n#             Domain: NonNegativeReals.\n#\n# Objective (minimize): total rental fee paid\n#   sum over (t,L) of  price[L] * x[t,L]\n#   where price[L] is the fee per m^2 for a contract of length L.\n#\n# Constraints\n#   (1) For each month m, the total area covered by all contracts that\n#       are active during month m must be at least the required area\n#       demand[m].  A contract (t,L) is active in month m iff\n#       t <= m <= t+L-1.\n#       Source: \"The required warehouse area for each month is ...\"\n#   (2) Non-negativity is enforced by the variable domain.\n# ------------------------------------------------------------------\n\nimport pyomo.environ as pyo\n\n# ============ All numbers from the statement ==================\nDATA = {\n    # Required warehouse area per month (months 1..4)\n    \"demand\": {1: 1500, 2: 1000, 3: 2000, 4: 1200},\n    # Rental fee per m^2 for a contract of length L months\n    \"price\": {1: 28, 2: 45, 3: 60, 4: 73},\n    # Planning horizon\n    \"months\": [1, 2, 3, 4],\n    # Possible contract durations\n    \"durations\": [1, 2, 3, 4],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    months = d[\"months\"]\n    durations = d[\"durations\"]\n\n    model = pyo.ConcreteModel()\n\n    # Set of feasible (start month, duration) pairs: contract must fit\n    # entirely within the planning horizon.\n    feasible_pairs = [\n        (t, L) for t in months for L in durations if t + L - 1 <= max(months)\n    ]\n\n    model.PAIRS = pyo.Set(initialize=feasible_pairs, dimen=2)\n    model.MONTHS = pyo.Set(initialize=months)\n\n    # x[t, L] : area rented at start of month t for L months\n    model.x = pyo.Var(model.PAIRS, within=pyo.NonNegativeReals)\n\n    # Objective: minimize total rental fee\n    def obj_rule(m):\n        return sum(d[\"price\"][L] * m.x[t, L] for (t, L) in m.PAIRS)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint (1): coverage of demand in each month\n    def cover_rule(m, month):\n        return (\n            sum(\n                m.x[t, L]\n                for (t, L) in m.PAIRS\n                if t <= month <= t + L - 1\n            )\n            >= d[\"demand\"][month]\n        )\n\n    model.cover = pyo.Constraint(model.MONTHS, rule=cover_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1163,
+      "completion_tokens": 5999
+     },
+     "finish_reason": "length"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1854,
+      "completion_tokens": 768
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 50.81758141517639,
+   "position": 4,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Table 1-14: \"Required Warehouse Area / m^2\" for months 1..4\n    \"required_area\": {1: 1500, 2: 1000, 3: 2000, 4: 1200},\n    # Table 1-15: \"Rental Fee ... $/m^2\" for contract period of 1,2,3,4 months\n    \"fee_per_m2\": {1: 28, 2: 45, 3: 60, 4: 73},\n    # Planning horizon: \"next 4 months\"\n    \"months\": [1, 2, 3, 4],\n    # \"Contract Rental Period / months\" values offered\n    \"periods\": [1, 2, 3, 4],\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # --- Sets ---\n    model.Months = pyo.Set(initialize=d[\"months\"])        # contract start months / demand months\n    model.Periods = pyo.Set(initialize=d[\"periods\"])      # contract lengths\n\n    # Feasible (start month, period) pairs: contract must end within horizon\n    # start i, length k  => covers i .. i+k-1, needs i+k-1 <= max month\n    max_month = max(d[\"months\"])\n\n    def feasible_pairs_init(m):\n        pairs = []\n        for i in d[\"months\"]:\n            for k in d[\"periods\"]:\n                if i + k - 1 <= max_month:\n                    pairs.append((i, k))\n        return pairs\n\n    model.Pairs = pyo.Set(dimen=2, initialize=feasible_pairs_init)\n\n    # --- Decision variables ---\n    # x[i,k] = area (m^2) rented under a contract starting month i, period k\n    model.x = pyo.Var(model.Pairs, domain=pyo.NonNegativeReals)\n\n    # --- Objective: minimise total rental fee ---\n    def obj_rule(m):\n        return sum(d[\"fee_per_m2\"][k] * m.x[i, k] for (i, k) in m.Pairs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --- Constraints: area covering each month >= required area ---\n    def cover_rule(m, t):\n        return sum(\n            m.x[i, k]\n            for (i, k) in m.Pairs\n            if i <= t <= i + k - 1\n        ) >= d[\"required_area\"][t]\n\n    model.cover = pyo.Constraint(model.Months, rule=cover_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1147,
+      "completion_tokens": 1010
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.177952289581299,
+   "position": 5,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"requirements\": {1: 1500, 2: 1000, 3: 2000, 4: 1200},\n    \"fees\": {1: 28, 2: 45, 3: 60, 4: 73},\n    \"months\": [1, 2, 3, 4],\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.Months = pyo.Set(initialize=d[\"months\"])\n    pairs = [(s, u) for s in d[\"months\"] for u in d[\"months\"] if s <= u]\n    model.Contracts = pyo.Set(initialize=pairs, dimen=2)\n\n    # Decision variables: area rented under a contract starting month s, ending month u\n    model.x = pyo.Var(model.Contracts, within=pyo.NonNegativeReals)\n\n    # Objective: minimize total rental fee\n    def obj_rule(m):\n        return sum(d[\"fees\"][u - s + 1] * m.x[s, u] for (s, u) in m.Contracts)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint: coverage requirement for each month\n    def coverage_rule(m, t):\n        return sum(\n            m.x[s, u] for (s, u) in m.Contracts if s <= t <= u\n        ) >= d[\"requirements\"][t]\n    model.coverage = pyo.Constraint(model.Months, rule=coverage_rule)\n\n    return model\n\n\nif __name__ == \"__main__\":\n    model = build_model()\n    model.pprint()\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1149,
+      "completion_tokens": 702
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "disallowed_lambda_rule"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1483,
+      "completion_tokens": 402
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.950423002243042,
+   "position": 6,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# All numeric constants from the problem statement live here.\n# ---------------------------------------------------------------------------\nDATA = {\n    \"n_months\": 4,                          # horizon length (months 1..4)\n    \"months\": [1, 2, 3, 4],                 # set T of signing months\n    \"periods\": [1, 2, 3, 4],                # set P of contract lengths\n    \"req_area\": {1: 1500, 2: 1000, 3: 2000, 4: 1200},   # d_j  (m^2)\n    \"fee\": {1: 28, 2: 45, 3: 60, 4: 73},    # c_p  (yuan per m^2 for the period)\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # --- Sets -------------------------------------------------------------\n    model.T = pyo.Set(initialize=d[\"months\"], ordered=True)   # signing months\n    model.P = pyo.Set(initialize=d[\"periods\"], ordered=True)  # contract lengths\n\n    # Feasible contract pairs (i, p): contract must end by month n_months.\n    def feasible_init(m):\n        n = d[\"n_months\"]\n        return [(i, p) for i in m.T for p in m.P if i + p - 1 <= n]\n\n    model.CONTRACTS = pyo.Set(dimen=2, initialize=feasible_init,\n                              ordered=True)\n\n    # --- Variables --------------------------------------------------------\n    # x[i,p] : rented area (m^2) under a contract signed in month i for p months\n    model.x = pyo.Var(model.CONTRACTS, within=pyo.NonNegativeReals)\n\n    # --- Objective --------------------------------------------------------\n    # Minimize total rental fee: each contract costs c_p per m^2 over its period.\n    def obj_rule(m):\n        return sum(d[\"fee\"][p] * m.x[i, p] for (i, p) in m.CONTRACTS)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --- Constraints ------------------------------------------------------\n    # For each month j, total area of contracts covering j must be >= required\n    # area. Contract (i,p) covers month j iff i <= j <= i+p-1.\n    def cover_rule(m, j):\n        return sum(m.x[i, p] for (i, p) in m.CONTRACTS if i <= j <= i + p - 1) \\\n            >= d[\"req_area\"][j]\n    model.cover = pyo.Constraint(model.T, rule=cover_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1159,
+      "completion_tokens": 1138
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.995093584060669,
+   "position": 7,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "\"\"\"\nWarehouse rental contract planning over 4 months.\n\nDecision variables\n------------------\nx[i, L] : area (m^2) rented at the beginning of month i under a contract\n          whose rental period is L months.  Domain: NonNegativeReals.\n          Index set: i in MONTHS, L in PERIODS, with the feasibility\n          restriction i + L - 1 <= 4 (contract must end by month 4).\n\nObjective (minimize)\n--------------------\nTotal rental fee paid = sum over all (i, L) of\n    cost[L] * x[i, L]\nwhere cost[L] is the per-m^2 fee for a contract of length L.\n\nConstraints\n-----------\n(1) Area coverage, for each month t in MONTHS:\n    sum over contracts (i, L) that are active in month t of x[i, L]\n    >= required_area[t].\n    A contract signed at month i with period L covers months\n    i, i+1, ..., i+L-1.  Source: \"required warehouse area for each month\"\n    and \"each contract specifies the rental area and period\".\n\n(2) Feasibility of contract start/period (handled by index set):\n    a contract signed at month i with period L must satisfy\n    i + L - 1 <= 4.  Source: \"next 4 months\".\n\"\"\"\n\nimport pyomo.environ as pyo\n\nDATA = {\n    # Required warehouse area (m^2) for months 1..4  (Table 1-14)\n    \"required_area\": {1: 1500, 2: 1000, 3: 2000, 4: 1200},\n    # Rental fee per m^2 for a contract of length L months (Table 1-15)\n    \"cost\": {1: 28, 2: 45, 3: 60, 4: 73},\n    # Planning horizon in months\n    \"num_months\": 4,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    months = list(range(1, d[\"num_months\"] + 1))\n    periods = list(range(1, d[\"num_months\"] + 1))\n\n    model = pyo.ConcreteModel()\n\n    # Feasible (start month, contract length) pairs: contract must end by month 4\n    feasible_pairs = [\n        (i, L) for i in months for L in periods\n        if i + L - 1 <= d[\"num_months\"]\n    ]\n\n    model.MONTHS = pyo.Set(initialize=months, ordered=True)\n    model.PERIODS = pyo.Set(initialize=periods, ordered=True)\n    model.PAIRS = pyo.Set(initialize=feasible_pairs, dimen=2)\n\n    # x[i, L]: area rented at start of month i with contract length L\n    model.x = pyo.Var(model.PAIRS, within=pyo.NonNegativeReals)\n\n    # Objective: minimize total rental fee\n    def obj_rule(m):\n        return sum(d[\"cost\"][L] * m.x[i, L] for (i, L) in m.PAIRS)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint (1): area coverage for each month t\n    def cover_rule(m, t):\n        return sum(\n            m.x[i, L]\n            for (i, L) in m.PAIRS\n            if i <= t <= i + L - 1\n        ) >= d[\"required_area\"][t]\n\n    model.cover = pyo.Constraint(model.MONTHS, rule=cover_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1163,
+      "completion_tokens": 2438
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1216,
+      "completion_tokens": 825
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 21.29551386833191,
+   "position": 8,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Number of months in the planning horizon\n    \"months\": 4,\n    # Possible contract rental lengths (in months)\n    \"lengths\": [1, 2, 3, 4],\n    # Required warehouse area (m^2) per month, index 1..4\n    \"area\": {1: 1500, 2: 1000, 3: 2000, 4: 1200},\n    # Rental fee per m^2 for a contract of given length\n    \"fee\": {1: 28, 2: 45, 3: 60, 4: 73},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    # Set of months in which a contract may start\n    m.T = pyo.RangeSet(1, d[\"months\"])\n\n    # Set of feasible contract lengths\n    m.L = pyo.Set(initialize=d[\"lengths\"])\n\n    # Feasible (start_month, length) pairs: a contract of length l\n    # starting in month t must finish by month months+1, i.e. t+l-1 <= months.\n    def pairs_init(model):\n        return [\n            (t, l)\n            for t in model.T\n            for l in model.L\n            if t + l - 1 <= d[\"months\"]\n        ]\n\n    m.Pairs = pyo.Set(initialize=pairs_init, dimen=2)\n\n    # x[t, l] = area (m^2) rented via a contract starting at beginning of\n    # month t with rental length l months.  Continuous, non-negative.\n    m.x = pyo.Var(m.Pairs, domain=pyo.NonNegativeReals)\n\n    # Objective: minimize total rental fees.\n    def obj_rule(model):\n        return sum(\n            d[\"fee\"][l] * model.x[t, l]\n            for (t, l) in model.Pairs\n        )\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Coverage constraint: for each month r, the total rented area of\n    # contracts active in month r must be at least the required area.\n    # A contract (t, l) covers month r iff t <= r <= t + l - 1.\n    def cover_rule(model, r):\n        return sum(\n            model.x[t, l]\n            for (t, l) in model.Pairs\n            if t <= r <= t + l - 1\n        ) >= d[\"area\"][r]\n\n    m.Cover = pyo.Constraint(m.T, rule=cover_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1159,
+      "completion_tokens": 1017
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.350170850753784,
+   "position": 9,
+   "recipe_index": 2
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T10:38:40"
+}

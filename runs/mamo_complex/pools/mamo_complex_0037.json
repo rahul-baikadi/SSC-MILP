@@ -1,0 +1,279 @@
+{
+ "pid": "mamo_complex_0037",
+ "question": "Imagine a city that has a complex electrical network with 8 power stations (including source and the main receiving stations). The stations are connected with transmission lines, each capable of handling a certain amount of electricity.\n\nHere's the capacity of each transmission line, showing the maximum amount of electricity (in megawatts) that can flow from one station to another:\n\n- From Station 0 (Source): Can send electricity to Station 1 (9 MW), Station 2 (6 MW), Station 3 (1 MW), Station 4 (8 MW), Station 5 (14 MW), Station 6 (1 MW) and Station 7 (17 MW).\n- From Station 1: Can send electricity to Station 0 (1 MW), Station 2 (6 MW), Station 3 (14 MW), Station 4 (16 MW), Station 5 (8 MW), Station 6 (19 MW) and Station 7 (15 MW).\n- From Station 2: Can send electricity to Station 0 (4 MW), Station 1 (7 MW), Station 3 (9 MW), Station 4 (1 MW), Station 5 (2 MW), Station 6 (9 MW) and Station 7 (4 MW).\n- From Station 3: Can send electricity to Station 0 (11 MW), Station 1 (5 MW), Station 2 (14 MW), Station 4 (17 MW), Station 5 (6 MW), Station 6 (20 MW) and Station 7 (13 MW).\n- From Station 4: Can send electricity to Station 0 (8 MW), Station 1 (5 MW), Station 2 (20 MW), Station 3 (0 MW), Station 5 (16 MW), Station 6 (5 MW) and Station 7 (5 MW).\n- From Station 5: Can send electricity to Station 0 (15 MW), Station 1 (18 MW), Station 2 (9 MW), Station 3 (1 MW), Station 4 (19 MW), Station 6 (16 MW) and Station 7 (0 MW).\n- From Station 6: Can send electricity to Station 0 (20 MW), Station 1 (15 MW), Station 2 (1 MW), Station 3 (0 MW), Station 4 (11 MW), Station 5 (6 MW) and Station 7 (19 MW).\n- From Station 7 (Destination): Can send electricity back to Station 0 (4 MW), Station 1 (18 MW), Station 2 (10 MW), Station 3 (2 MW), Station 4 (1 MW), Station 5 (20 MW) and Station 6 (14 MW).\n\nIn this network, a capacity of \"0\" means there is no direct transmission line between those two stations.\n\nThe challenge is to calculate the maximum amount of electricity that can be transmitted from Station 0 (the source) to Station 7 (the main receiving station), ensuring that the flow through each transmission line does not exceed its capacity. What is the maximum amount of electricity that can be transmitted from the source to the destination in megawatts?",
+ "templates": [
+  "Transportation",
+  "Set Covering / Location Covering",
+  "Network Flow"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------\n# DATA: all numeric constants from the problem\n# ---------------------------------------------------------------\nDATA = {\n    \"nodes\": [0, 1, 2, 3, 4, 5, 6, 7],\n    \"source\": 0,\n    \"sink\": 7,\n    # cap[(i, j)] = capacity in MW from i to j  (0 => no line)\n    \"cap\": {\n        (0, 1): 9,  (0, 2): 6,  (0, 3): 1,  (0, 4): 8,  (0, 5): 14, (0, 6): 1,  (0, 7): 17,\n        (1, 0): 1,  (1, 2): 6,  (1, 3): 14, (1, 4): 16, (1, 5): 8,  (1, 6): 19, (1, 7): 15,\n        (2, 0): 4,  (2, 1): 7,  (2, 3): 9,  (2, 4): 1,  (2, 5): 2,  (2, 6): 9,  (2, 7): 4,\n        (3, 0): 11, (3, 1): 5,  (3, 2): 14, (3, 4): 17, (3, 5): 6,  (3, 6): 20, (3, 7): 13,\n        (4, 0): 8,  (4, 1): 5,  (4, 2): 20, (4, 3): 0,  (4, 5): 16, (4, 6): 5,  (4, 7): 5,\n        (5, 0): 15, (5, 1): 18, (5, 2): 9,  (5, 3): 1,  (5, 4): 19, (5, 6): 16, (5, 7): 0,\n        (6, 0): 20, (6, 1): 15, (6, 2): 1,  (6, 3): 0,  (6, 4): 11, (6, 5): 6,  (6, 7): 19,\n        (7, 0): 4,  (7, 1): 18, (7, 2): 10, (7, 3): 2,  (7, 4): 1,  (7, 5): 20, (7, 6): 14,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    # ----- 1. Sets ---------------------------------------------------\n    model = pyo.ConcreteModel()\n    model.N = pyo.Set(initialize=d[\"nodes\"], ordered=True)\n\n    # Only keep arcs that have a positive capacity (0 => no line)\n    arcs = [(i, j) for (i, j), c in d[\"cap\"].items() if c > 0]\n    model.A = pyo.Set(dimen=2, initialize=arcs, ordered=True)\n\n    src = d[\"source\"]\n    snk = d[\"sink\"]\n\n    in_arcs = {n: [a for a in arcs if a[1] == n] for n in d[\"nodes\"]}\n    out_arcs = {n: [a for a in arcs if a[0] == n] for n in d[\"nodes\"]}\n\n    # ----- 2. Variables: flow on each directed line ------------------\n    def f_bounds(m, i, j):\n        return (0, d[\"cap\"][(i, j)])\n\n    model.f = pyo.Var(model.A, domain=pyo.NonNegativeReals,\n                      bounds=f_bounds)\n\n    # ----- 3. Objective: maximize net flow out of the source ---------\n    #         (= flow out of source minus any flow back into source)\n    def obj_expr(m):\n        out = sum(m.f[i, j] for (i, j) in out_arcs[src])\n        back = sum(m.f[i, j] for (i, j) in in_arcs[src])\n        return out - back\n\n    model.obj = pyo.Objective(rule=obj_expr, sense=pyo.maximize)\n\n    # ----- 4. Constraints --------------------------------------------\n    # (a) Conservation at every transit node (not source, not sink):\n    #     flow in == flow out\n    transit = [n for n in d[\"nodes\"] if n not in (src, snk)]\n\n    def conservation_rule(m, n):\n        inflow = sum(m.f[i, j] for (i, j) in in_arcs[n])\n        outflow = sum(m.f[i, j] for (i, j) in out_arcs[n])\n        return inflow == outflow\n\n    model.conservation = pyo.Constraint(transit, rule=conservation_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1782,
+      "completion_tokens": 1502
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.320765733718872,
+   "position": 0,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_stations\": 8,\n    \"source\": 0,\n    \"sink\": 7,\n    \"capacity\": [\n        [0,   9,   6,   1,   8,  14,   1,  17],   # from 0\n        [1,   0,   6,  14,  16,   8,  19,  15],   # from 1\n        [4,   7,   0,   9,   1,   2,   9,   4],   # from 2\n        [11,  5,  14,   0,  17,   6,  20,  13],   # from 3\n        [8,   5,  20,   0,   0,  16,   5,   5],   # from 4\n        [15, 18,   9,   1,  19,   0,  16,   0],   # from 5\n        [20, 15,   1,   0,  11,   6,   0,  19],   # from 6\n        [4,  18,  10,   2,   1,  20,  14,   0],   # from 7\n    ],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"num_stations\"]\n    src = d[\"source\"]\n    snk = d[\"sink\"]\n    cap = d[\"capacity\"]\n\n    model = pyo.ConcreteModel()\n\n    # --- Sets -------------------------------------------------------------\n    model.N = pyo.RangeSet(0, n - 1)\n\n    arcs = [(i, j) for i in range(n) for j in range(n)\n            if i != j and cap[i][j] > 0]\n    model.A = pyo.Set(initialize=arcs, dimen=2)\n\n    # Nodes where flow conservation must hold: everything except source & sink\n    model.Inter = pyo.Set(\n        initialize=[i for i in range(n) if i != src and i != snk]\n    )\n\n    # --- Variables --------------------------------------------------------\n    def flow_bounds(m, i, j):\n        return (0, cap[i][j])\n\n    model.flow = pyo.Var(\n        model.A,\n        domain=pyo.NonNegativeReals,\n        bounds=flow_bounds,\n    )\n\n    # --- Objective: maximise total flow leaving the source ----------------\n    def obj_rule(m):\n        return sum(m.flow[src, j] for j in range(n) if (src, j) in arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # --- Constraints ------------------------------------------------------\n\n    # Flow conservation at intermediate nodes: inflow == outflow\n    def conserve_rule(m, k):\n        inflow = sum(m.flow[i, k] for i in range(n) if (i, k) in arcs)\n        outflow = sum(m.flow[k, j] for j in range(n) if (k, j) in arcs)\n        return inflow - outflow == 0\n\n    model.conserve = pyo.Constraint(model.Inter, rule=conserve_rule)\n\n    # Destination balance: total inflow to sink equals total outflow from sink\n    # (the sink may forward flow onward, but nothing is injected there)\n    def sink_rule(m):\n        inflow = sum(m.flow[i, snk] for i in range(n) if (i, snk) in arcs)\n        outflow = sum(m.flow[snk, j] for j in range(n) if (snk, j) in arcs)\n        return inflow - outflow == 0\n\n    model.sink_balance = pyo.Constraint(rule=sink_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1776,
+      "completion_tokens": 2367
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.985183238983154,
+   "position": 1,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"nodes\": [0, 1, 2, 3, 4, 5, 6, 7],\n    \"source\": 0,\n    \"sink\": 7,\n    # capacity[i][j] = max MW that can flow from station i to station j\n    \"capacity\": {\n        0: {1: 9,  2: 6,  3: 1,  4: 8,  5: 14, 6: 1,  7: 17},\n        1: {0: 1,  2: 6,  3: 14, 4: 16, 5: 8,  6: 19, 7: 15},\n        2: {0: 4,  1: 7,  3: 9,  4: 1,  5: 2,  6: 9,  7: 4},\n        3: {0: 11, 1: 5,  2: 14, 4: 17, 5: 6,  6: 20, 7: 13},\n        4: {0: 8,  1: 5,  2: 20, 3: 0,  5: 16, 6: 5,  7: 5},\n        5: {0: 15, 1: 18, 2: 9,  3: 1,  4: 19, 6: 16, 7: 0},\n        6: {0: 20, 1: 15, 2: 1,  3: 0,  4: 11, 5: 6,  7: 19},\n        7: {0: 4,  1: 18, 2: 10, 3: 2,  4: 1,  5: 20, 6: 14},\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    nodes = d[\"nodes\"]\n    source = d[\"source\"]\n    sink = d[\"sink\"]\n    cap = d[\"capacity\"]\n\n    # Directed arcs: ordered pairs (i, j), i != j, with capacity > 0\n    arcs = [\n        (i, j)\n        for i in nodes\n        for j in nodes\n        if i != j and cap[i][j] > 0\n    ]\n\n    model = pyo.ConcreteModel()\n\n    model.N = pyo.Set(initialize=nodes, ordered=True)\n    model.A = pyo.Set(initialize=arcs, dimen=2)\n\n    # flow[i,j]: MW sent along arc (i,j)\n    def flow_bounds(m, i, j):\n        return (0, cap[i][j])\n\n    model.flow = pyo.Var(\n        model.A, domain=pyo.NonNegativeReals, bounds=flow_bounds\n    )\n\n    # Objective: maximise total flow leaving the source\n    def obj_rule(m):\n        return sum(m.flow[source, j] for j in nodes if (source, j) in arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Capacity constraints (explicit, one per arc)\n    def cap_rule(m, i, j):\n        return m.flow[i, j] <= cap[i][j]\n\n    model.capacity_limit = pyo.Constraint(model.A, rule=cap_rule)\n\n    # Flow conservation at every intermediate node (exclude source & sink)\n    intermediate = [n for n in nodes if n != source and n != sink]\n\n    def conserve_rule(m, n):\n        inflow = sum(m.flow[i, n] for i in nodes if (i, n) in arcs)\n        outflow = sum(m.flow[n, j] for j in nodes if (n, j) in arcs)\n        return inflow == outflow\n\n    model.conservation = pyo.Constraint(intermediate, rule=conserve_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1776,
+      "completion_tokens": 1224
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.392549753189087,
+   "position": 2,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"nodes\": [0, 1, 2, 3, 4, 5, 6, 7],\n    \"source\": 0,\n    \"sink\": 7,\n    # cap[i][j] = capacity (MW) of line i -> j; 0 means no line\n    \"cap\": [\n        [0, 9, 6, 1, 8, 14, 1, 17],   # from 0\n        [1, 0, 6, 14, 16, 8, 19, 15],  # from 1\n        [4, 7, 0, 9, 1, 2, 9, 4],      # from 2\n        [11, 5, 14, 0, 17, 6, 20, 13], # from 3\n        [8, 5, 20, 0, 0, 16, 5, 5],    # from 4\n        [15, 18, 9, 1, 19, 0, 16, 0],  # from 5\n        [20, 15, 1, 0, 11, 6, 0, 19],  # from 6\n        [4, 18, 10, 2, 1, 20, 14, 0],  # from 7\n    ],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    nodes = d[\"nodes\"]\n    src = d[\"source\"]\n    snk = d[\"sink\"]\n    cap = d[\"cap\"]\n\n    model = pyo.ConcreteModel()\n\n    model.N = pyo.Set(initialize=nodes)\n    # directed arcs between distinct nodes\n    model.A = pyo.Set(\n        initialize=[(i, j) for i in nodes for j in nodes if i != j],\n        dimen=2,\n    )\n\n    def cap_bound(m, i, j):\n        return (0, cap[i][j])\n\n    model.x = pyo.Var(model.A, domain=pyo.NonNegativeReals, bounds=cap_bound)\n\n    # Objective: maximize power delivered = net outflow from source toward sink.\n    # Maximizing total flow leaving the source equals flow reaching the sink\n    # once conservation holds at all transshipment nodes.\n    def obj_rule(m):\n        return sum(m.x[src, j] for j in nodes if j != src)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Flow conservation at every non-source, non-sink node: inflow = outflow.\n    def conserve_rule(m, n):\n        inflow = sum(m.x[i, n] for i in nodes if i != n)\n        outflow = sum(m.x[n, j] for j in nodes if j != n)\n        return inflow - outflow == 0\n\n    model.conserve = pyo.Constraint(\n        [n for n in nodes if n != src and n != snk], rule=conserve_rule\n    )\n\n    # Capacity limits are enforced by variable bounds; add explicit\n    # constraint for clarity that x[i,j] <= cap[i][j].\n    def cap_rule(m, i, j):\n        return m.x[i, j] <= cap[i][j]\n\n    model.capacity = pyo.Constraint(model.A, rule=cap_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1792,
+      "completion_tokens": 1121
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.40862250328064,
+   "position": 3,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem statement.\n# Node set: 0 = source, 7 = destination (sink).\n# capacity[i][j] = max MW on the directed line from station i to station j.\n# A capacity of 0 means there is NO direct transmission line on that arc.\n# ---------------------------------------------------------------------------\nDATA = {\n    \"source\": 0,\n    \"sink\": 7,\n    \"nodes\": [0, 1, 2, 3, 4, 5, 6, 7],\n    # directed arc capacities (row = from, col = to)\n    \"capacity\": {\n        (0, 1): 9,  (0, 2): 6,  (0, 3): 1,  (0, 4): 8,  (0, 5): 14, (0, 6): 1,  (0, 7): 17,\n        (1, 0): 1,  (1, 2): 6,  (1, 3): 14, (1, 4): 16, (1, 5): 8,  (1, 6): 19, (1, 7): 15,\n        (2, 0): 4,  (2, 1): 7,  (2, 3): 9,  (2, 4): 1,  (2, 5): 2,  (2, 6): 9,  (2, 7): 4,\n        (3, 0): 11, (3, 1): 5,  (3, 2): 14, (3, 4): 17, (3, 5): 6,  (3, 6): 20, (3, 7): 13,\n        (4, 0): 8,  (4, 1): 5,  (4, 2): 20, (4, 3): 0,  (4, 5): 16, (4, 6): 5,  (4, 7): 5,\n        (5, 0): 15, (5, 1): 18, (5, 2): 9,  (5, 3): 1,  (5, 4): 19, (5, 6): 16, (5, 7): 0,\n        (6, 0): 20, (6, 1): 15, (6, 2): 1,  (6, 3): 0,  (6, 4): 11, (6, 5): 6,  (6, 7): 19,\n        (7, 0): 4,  (7, 1): 18, (7, 2): 10, (7, 3): 2,  (7, 4): 1,  (7, 5): 20, (7, 6): 14,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    nodes = list(d[\"nodes\"])\n    source = d[\"source\"]\n    sink = d[\"sink\"]\n    cap = d[\"capacity\"]\n\n    # --- Sets -------------------------------------------------------------\n    model.N = pyo.Set(initialize=nodes, ordered=True)\n\n    # Arcs = directed pairs with a strictly positive capacity (0 => no line).\n    arcs = [(i, j) for (i, j) in cap if i != j and cap[(i, j)] > 0]\n    model.A = pyo.Set(initialize=arcs, dimen=2, ordered=True)\n\n    # Interior nodes: conservation applies everywhere except source and sink.\n    model.I = pyo.Set(\n        initialize=[n for n in nodes if n != source and n != sink],\n        ordered=True,\n    )\n\n    # --- Variables --------------------------------------------------------\n    # Flow on each usable directed arc, bounded by its line capacity.\n    def x_bounds(m, i, j):\n        return (0, cap[(i, j)])\n\n    model.x = pyo.Var(\n        model.A,\n        domain=pyo.NonNegativeReals,\n        bounds=x_bounds,\n    )\n\n    # --- Objective --------------------------------------------------------\n    # Maximize total electricity leaving the source (equivalently entering sink).\n    model.obj = pyo.Objective(\n        expr=sum(model.x[i, j] for (i, j) in model.A if i == source),\n        sense=pyo.maximize,\n    )\n\n    # --- Constraints ------------------------------------------------------\n\n    # Flow conservation at each interior node: inflow == outflow  (==).\n    def conserve_rule(m, n):\n        inflow = sum(m.x[i, j] for (i, j) in m.A if j == n)\n        outflow = sum(m.x[i, j] for (i, j) in m.A if i == n)\n        return inflow == outflow\n\n    model.conserve = pyo.Constraint(model.I, rule=conserve_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1792,
+      "completion_tokens": 1409
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.984476327896118,
+   "position": 4,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_stations\": 8,\n    \"source\": 0,\n    \"sink\": 7,\n    # capacity[i][j] = MW transmittable directly from station i to station j\n    \"capacity\": {\n        0: {1: 9, 2: 6, 3: 1, 4: 8, 5: 14, 6: 1, 7: 17},\n        1: {0: 1, 2: 6, 3: 14, 4: 16, 5: 8, 6: 19, 7: 15},\n        2: {0: 4, 1: 7, 3: 9, 4: 1, 5: 2, 6: 9, 7: 4},\n        3: {0: 11, 1: 5, 2: 14, 4: 17, 5: 6, 6: 20, 7: 13},\n        4: {0: 8, 1: 5, 2: 20, 3: 0, 5: 16, 6: 5, 7: 5},\n        5: {0: 15, 1: 18, 2: 9, 3: 1, 4: 19, 6: 16, 7: 0},\n        6: {0: 20, 1: 15, 2: 1, 3: 0, 4: 11, 5: 6, 7: 19},\n        7: {0: 4, 1: 18, 2: 10, 3: 2, 4: 1, 5: 20, 6: 14},\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cap = d[\"capacity\"]\n    stations = list(range(d[\"num_stations\"]))\n    source = d[\"source\"]\n    sink = d[\"sink\"]\n\n    model = pyo.ConcreteModel()\n\n    # Set of directed arcs: i != j and capacity > 0\n    arc_list = [\n        (i, j)\n        for i in stations\n        for j in stations\n        if i != j and cap.get(i, {}).get(j, 0) > 0\n    ]\n    intermediates = [n for n in stations if n != source and n != sink]\n\n    model.NODES = pyo.Set(initialize=stations)\n    model.ARCS = pyo.Set(initialize=arc_list, dimen=2)\n    model.INTER = pyo.Set(initialize=intermediates)\n\n    def cap_bounds(m, i, j):\n        return (0, cap[i][j])\n\n    # Flow variables (MW) bounded by line capacity\n    model.flow = pyo.Var(model.ARCS, bounds=cap_bounds, within=pyo.NonNegativeReals)\n\n    # Objective: maximise total electricity leaving the source (== entering sink)\n    def obj_rule(m):\n        return sum(m.flow[source, j] for j in stations if (source, j) in m.ARCS)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Capacity constraints stated as explicit constraints\n    def cap_rule(m, i, j):\n        return m.flow[i, j] <= cap[i][j]\n\n    model.capacity_limit = pyo.Constraint(model.ARCS, rule=cap_rule)\n\n    # Flow conservation at each intermediate station: inflow == outflow\n    def conserve_rule(m, n):\n        inflow = sum(m.flow[i, n] for i in stations if (i, n) in m.ARCS)\n        outflow = sum(m.flow[n, j] for j in stations if (n, j) in m.ARCS)\n        return inflow == outflow\n\n    model.conservation = pyo.Constraint(model.INTER, rule=conserve_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1782,
+      "completion_tokens": 1209
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.369950294494629,
+   "position": 5,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Problem: Maximum flow from Station 0 (source) to Station 7 (sink)\n#          in a directed network of 8 stations with arc capacities.\n#\n# Decision variables\n#   f[i, j] : flow (MW) on directed arc i -> j, domain NonNegativeReals,\n#             bounded above by the arc capacity cap[i][j].\n#\n# Objective (maximize)\n#   Maximize the total flow leaving the source (equivalently entering the sink).\n#\n# Constraints\n#   (1) Capacity:      f[i,j] <= cap[i,j]                       for all arcs\n#   (2) Conservation:  sum_j f[i,j] - sum_j f[j,i] = 0          for all i not in {source, sink}\n#   (3) Source balance: sum_j f[source,j] - sum_j f[j,source] = F\n#   (4) Sink balance:   sum_j f[j,sink] - sum_j f[sink,j] = F\n#   where F is the total flow value (a decision variable).\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"num_stations\": 8,\n    \"source\": 0,\n    \"sink\": 7,\n    # cap[i][j] = capacity of arc i -> j (0 means no arc)\n    \"cap\": [\n        [0,  9,  6,  1,  8, 14,  1, 17],  # from 0\n        [1,  0,  6, 14, 16,  8, 19, 15],  # from 1\n        [4,  7,  0,  9,  1,  2,  9,  4],  # from 2\n        [11, 5, 14,  0, 17,  6, 20, 13],  # from 3\n        [8,  5, 20,  0,  0, 16,  5,  5],  # from 4\n        [15, 18, 9,  1, 19,  0, 16,  0],  # from 5\n        [20, 15, 1,  0, 11,  6,  0, 19],  # from 6\n        [4, 18, 10,  2,  1, 20, 14,  0],  # from 7\n    ],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"num_stations\"]\n    src = d[\"source\"]\n    snk = d[\"sink\"]\n    cap = d[\"cap\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.N = pyo.RangeSet(0, n - 1)\n    model.A = pyo.Set(\n        dimen=2,\n        initialize=[(i, j) for i in range(n) for j in range(n) if cap[i][j] > 0],\n    )\n\n    # Decision variables\n    def cap_bound(m, i, j):\n        return (0, cap[i][j])\n\n    model.f = pyo.Var(model.A, domain=pyo.NonNegativeReals, bounds=cap_bound)\n    model.F = pyo.Var(domain=pyo.NonNegativeReals)\n\n    # Objective: maximize total flow from source to sink\n    def obj_rule(m):\n        return sum(m.f[src, j] for j in range(n) if cap[src][j] > 0)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # (2) Flow conservation at intermediate nodes\n    def conservation_rule(m, i):\n        if i == src or i == snk:\n            return pyo.Constraint.Skip\n        outflow = sum(m.f[i, j] for j in range(n) if cap[i][j] > 0)\n        inflow = sum(m.f[j, i] for j in range(n) if cap[j][i] > 0)\n        return outflow - inflow == 0\n\n    model.conservation = pyo.Constraint(model.N, rule=conservation_rule)\n\n    # (3) Source balance: net outflow equals F\n    def source_balance_rule(m):\n        outflow = sum(m.f[src, j] for j in range(n) if cap[src][j] > 0)\n        inflow = sum(m.f[j, src] for j in range(n) if cap[j][src] > 0)\n        return outflow - inflow == m.F\n\n    model.source_balance = pyo.Constraint(rule=source_balance_rule)\n\n    # (4) Sink balance: net inflow equals F\n    def sink_balance_rule(m):\n        inflow = sum(m.f[j, snk] for j in range(n) if cap[j][snk] > 0)\n        outflow = sum(m.f[snk, j] for j in range(n) if cap[snk][j] > 0)\n        return inflow - outflow == m.F\n\n    model.sink_balance = pyo.Constraint(rule=sink_balance_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1796,
+      "completion_tokens": 4683
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1768,
+      "completion_tokens": 1160
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 39.34309148788452,
+   "position": 6,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# All numeric constants from the problem statement.\n# capacity[(i, j)] = MW capacity of the directed line from station i to j.\n# Source sentence: \"From Station k: Can send electricity to Station m (X MW) ...\"\n# ---------------------------------------------------------------------------\nDATA = {\n    \"nodes\": [0, 1, 2, 3, 4, 5, 6, 7],          # 8 power stations\n    \"source\": 0,                                  # \"Station 0 (Source)\"\n    \"sink\": 7,                                    # \"Station 7 (Destination)\"\n    \"capacity\": {\n        # From Station 0 (Source)\n        (0, 1): 9, (0, 2): 6, (0, 3): 1, (0, 4): 8,\n        (0, 5): 14, (0, 6): 1, (0, 7): 17,\n        # From Station 1\n        (1, 0): 1, (1, 2): 6, (1, 3): 14, (1, 4): 16,\n        (1, 5): 8, (1, 6): 19, (1, 7): 15,\n        # From Station 2\n        (2, 0): 4, (2, 1): 7, (2, 3): 9, (2, 4): 1,\n        (2, 5): 2, (2, 6): 9, (2, 7): 4,\n        # From Station 3\n        (3, 0): 11, (3, 1): 5, (3, 2): 14, (3, 4): 17,\n        (3, 5): 6, (3, 6): 20, (3, 7): 13,\n        # From Station 4\n        (4, 0): 8, (4, 1): 5, (4, 2): 20, (4, 3): 0,\n        (4, 5): 16, (4, 6): 5, (4, 7): 5,\n        # From Station 5\n        (5, 0): 15, (5, 1): 18, (5, 2): 9, (5, 3): 1,\n        (5, 4): 19, (5, 6): 16, (5, 7): 0,\n        # From Station 6\n        (6, 0): 20, (6, 1): 15, (6, 2): 1, (6, 3): 0,\n        (6, 4): 11, (6, 5): 6, (6, 7): 19,\n        # From Station 7 (Destination)\n        (7, 0): 4, (7, 1): 18, (7, 2): 10, (7, 3): 2,\n        (7, 4): 1, (7, 5): 20, (7, 6): 14,\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    nodes = list(d[\"nodes\"])\n    source = d[\"source\"]\n    sink = d[\"sink\"]\n    capacity = d[\"capacity\"]\n\n    arcs = [(i, j) for i in nodes for j in nodes if i != j]\n\n    model = pyo.ConcreteModel()\n\n    model.N = pyo.Set(initialize=nodes, ordered=True)\n    model.A = pyo.Set(initialize=arcs, dimen=2)\n    # Intermediate nodes: all nodes except source and sink\n    model.Inter = pyo.Set(\n        initialize=[n for n in nodes if n != source and n != sink],\n        ordered=True,\n    )\n\n    # Variable: MW flowing on each directed line, bounded by its capacity.\n    def flow_bounds(m, i, j):\n        return (0.0, float(capacity[(i, j)]))\n\n    model.f = pyo.Var(model.A, domain=pyo.NonNegativeReals, bounds=flow_bounds)\n\n    # Flow conservation at every intermediate node: inflow == outflow.\n    def conserv_rule(m, n):\n        inflow = sum(m.f[i, n] for i in nodes if i != n)\n        outflow = sum(m.f[n, j] for j in nodes if j != n)\n        return inflow == outflow\n\n    model.conservation = pyo.Constraint(model.Inter, rule=conserv_rule)\n\n    # Objective: maximise net flow out of the source (= flow into the sink).\n    def obj_rule(m):\n        out_s = sum(m.f[source, j] for j in nodes if j != source)\n        in_s = sum(m.f[i, source] for i in nodes if i != source)\n        return out_s - in_s\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1780,
+      "completion_tokens": 1498
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.664814472198486,
+   "position": 7,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Problem: Maximum flow from Station 0 (source) to Station 7 (sink) in a\n# directed capacitated network of 8 power stations.\n#\n# Decision variables\n#   f[i,j] : electricity flow (MW) on directed arc (i,j), i != j\n#            domain NonNegativeReals, bounds (0, capacity[i,j])\n#\n# Objective (maximize)\n#   Total flow leaving the source = sum_j f[0,j]\n#\n# Constraints\n#   1. Capacity: 0 <= f[i,j] <= cap[i,j]  (handled via variable bounds)\n#   2. Flow conservation at every node except source (0) and sink (7):\n#        inflow(i) - outflow(i) = 0\n#      Source and sink are left free (source produces, sink absorbs).\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"nodes\": [0, 1, 2, 3, 4, 5, 6, 7],\n    \"source\": 0,\n    \"sink\": 7,\n    # capacity[i][j] = max MW on arc i -> j (0 means no line)\n    \"capacity\": {\n        0: {1: 9,  2: 6,  3: 1,  4: 8,  5: 14, 6: 1,  7: 17},\n        1: {0: 1,  2: 6,  3: 14, 4: 16, 5: 8,  6: 19, 7: 15},\n        2: {0: 4,  1: 7,  3: 9,  4: 1,  5: 2,  6: 9,  7: 4},\n        3: {0: 11, 1: 5,  2: 14, 4: 17, 5: 6,  6: 20, 7: 13},\n        4: {0: 8,  1: 5,  2: 20, 3: 0,  5: 16, 6: 5,  7: 5},\n        5: {0: 15, 1: 18, 2: 9,  3: 1,  4: 19, 6: 16, 7: 0},\n        6: {0: 20, 1: 15, 2: 1,  3: 0,  4: 11, 5: 6,  7: 19},\n        7: {0: 4,  1: 18, 2: 10, 3: 2,  4: 1,  5: 20, 6: 14},\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    nodes = d[\"nodes\"]\n    source = d[\"source\"]\n    sink = d[\"sink\"]\n    cap = d[\"capacity\"]\n\n    model = pyo.ConcreteModel()\n\n    # Set of directed arcs (i, j) with i != j\n    arcs = [(i, j) for i in nodes for j in nodes if i != j]\n    model.A = pyo.Set(initialize=arcs, dimen=2)\n\n    # Decision variable: flow on each arc, bounded by capacity\n    def flow_bounds(m, i, j):\n        return (0, cap[i][j])\n\n    model.f = pyo.Var(model.A, domain=pyo.NonNegativeReals, bounds=flow_bounds)\n\n    # Objective: maximize total flow leaving the source\n    def obj_rule(m):\n        return sum(m.f[source, j] for j in nodes if j != source)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Flow conservation at intermediate nodes (all except source and sink)\n    intermediate = [n for n in nodes if n != source and n != sink]\n    model.N = pyo.Set(initialize=intermediate)\n\n    def conservation_rule(m, n):\n        inflow = sum(m.f[i, n] for i in nodes if i != n)\n        outflow = sum(m.f[n, j] for j in nodes if j != n)\n        return inflow - outflow == 0\n\n    model.conservation = pyo.Constraint(model.N, rule=conservation_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1796,
+      "completion_tokens": 474
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2192,
+      "completion_tokens": 993
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2902,
+      "completion_tokens": 993
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 11.979902744293213,
+   "position": 8,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem, with source comments.\n# cap[i][j] = capacity (MW) of the directed line from station i to station j.\n# \"0\" means no direct transmission line.\n# ---------------------------------------------------------------------------\nDATA = {\n    \"num_stations\": 8,          # 8 power stations\n    \"source\": 0,                # Station 0 (Source)\n    \"sink\": 7,                  # Station 7 (Destination)\n    # From Station 0 (Source)\n    #   -> 1:9, 2:6, 3:1, 4:8, 5:14, 6:1, 7:17\n    # From Station 1\n    #   -> 0:1, 2:6, 3:14, 4:16, 5:8, 6:19, 7:15\n    # From Station 2\n    #   -> 0:4, 1:7, 3:9, 4:1, 5:2, 6:9, 7:4\n    # From Station 3\n    #   -> 0:11, 1:5, 2:14, 4:17, 5:6, 6:20, 7:13\n    # From Station 4\n    #   -> 0:8, 1:5, 2:20, 3:0, 5:16, 6:5, 7:5\n    # From Station 5\n    #   -> 0:15, 1:18, 2:9, 3:1, 4:19, 6:16, 7:0\n    # From Station 6\n    #   -> 0:20, 1:15, 2:1, 3:0, 4:11, 5:6, 7:19\n    # From Station 7 (Destination)\n    #   -> 0:4, 1:18, 2:10, 3:2, 4:1, 5:20, 6:14\n    \"cap\": {\n        0: {1: 9,  2: 6,  3: 1,  4: 8,  5: 14, 6: 1,  7: 17},\n        1: {0: 1,  2: 6,  3: 14, 4: 16, 5: 8,  6: 19, 7: 15},\n        2: {0: 4,  1: 7,  3: 9,  4: 1,  5: 2,  6: 9,  7: 4},\n        3: {0: 11, 1: 5,  2: 14, 4: 17, 5: 6,  6: 20, 7: 13},\n        4: {0: 8,  1: 5,  2: 20, 3: 0,  5: 16, 6: 5,  7: 5},\n        5: {0: 15, 1: 18, 2: 9,  3: 1,  4: 19, 6: 16, 7: 0},\n        6: {0: 20, 1: 15, 2: 1,  3: 0,  4: 11, 5: 6,  7: 19},\n        7: {0: 4,  1: 18, 2: 10, 3: 2,  4: 1,  5: 20, 6: 14},\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"num_stations\"]\n    src = d[\"source\"]\n    snk = d[\"sink\"]\n    cap = d[\"cap\"]\n\n    # Build the list of directed arcs (i, j) with i != j.\n    arcs = [(i, j) for i in range(n) for j in range(n) if i != j]\n\n    model = pyo.ConcreteModel()\n\n    model.N = pyo.RangeSet(0, n - 1)\n    model.A = pyo.Set(initialize=arcs, dimen=2)\n\n    def cap_bounds(m, i, j):\n        return (0, cap[i][j])\n\n    model.f = pyo.Var(model.A, domain=pyo.NonNegativeReals,\n                      bounds=cap_bounds)\n\n    # Objective: maximize net flow out of the source (== flow into sink).\n    def obj_rule(m):\n        out_src = sum(m.f[src, j] for j in range(n) if j != src)\n        in_src = sum(m.f[j, src] for j in range(n) if j != src)\n        return out_src - in_src\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Flow conservation at every intermediate node (not source, not sink).\n    intermediate = [k for k in range(n) if k != src and k != snk]\n\n    def conserve_rule(m, k):\n        out_flow = sum(m.f[k, j] for j in range(n) if j != k)\n        in_flow = sum(m.f[j, k] for j in range(n) if j != k)\n        return out_flow - in_flow == 0\n\n    model.conserve = pyo.Constraint(intermediate, rule=conserve_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1780,
+      "completion_tokens": 1567
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.182387828826904,
+   "position": 9,
+   "recipe_index": 6
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:53:51"
+}

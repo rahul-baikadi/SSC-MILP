@@ -1,0 +1,290 @@
+{
+ "pid": "industryor_0060",
+ "question": "A certain brand of wine is made by blending three grades of wine. The daily supply and unit cost of these three grades of wine are shown in Table 4-8.\nTable 4-8\n\\begin{tabular}{c|c|c}\n\\hline Grade & Daily Supply (kg) & Cost (\u5143/kg) \\\\\n\\hline I & 1500 & 6 \\\\\nI & 2000 & 4.5 \\\\\nII & 1000 & 3 \\\\\n\\hline\n\\end{tabular}\n\nAssume that there are three brands (red, yellow, blue) for this type of wine, and the blending ratios and selling prices for each brand are shown in Table 4-9. The decision maker specifies that the wines for each brand must be blended strictly according to the specified ratios, followed by maximizing profit, and ensuring that the red brand produces at least 2000 kg per day. Formulate the mathematical model.\nTable 4-9\n\\begin{tabular}{c|c|c}\n\\hline Brand & Blending Requirements & Selling Price (\u5143/kg) \\\\\n\\hline Red & \\begin{tabular}{l} \nI less than 10\\% \\\\\nI more than 50\\%\n\\end{tabular} & 5.5 \\\\\n\\hline Yellow & \\begin{tabular}{l} \nII less than 70\\% \\\\\nI more than 20\\%\n\\end{tabular} & 5.0 \\\\\n\\hline Blue & \\begin{tabular}{l} \nI less than 50\\% \\\\\nI more than 10\\%\n\\end{tabular} & 4.8 \\\\\n\\hline\n\\end{tabular}",
+ "templates": [
+  "Blending / Diet",
+  "Production Planning / Product Mix"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Sources: 0=\"Grade I supply A\", 1=\"Grade I supply B\", 2=\"Grade II\"\n    \"sources\": [0, 1, 2],\n    \"supply\":  {0: 1500.0, 1: 2000.0, 2: 1000.0},\n    \"cost\":    {0: 6.0,    1: 4.5,    2: 3.0},\n    # Grade I sources are 0,1 ; Grade II source is 2\n    \"grade1_sources\": [0, 1],\n    \"grade2_sources\": [2],\n    \"brands\": [\"red\", \"yellow\", \"blue\"],\n    \"price\":   {\"red\": 5.5, \"yellow\": 5.0, \"blue\": 4.8},\n    \"red_min_load\": 2000.0,\n    # ratio bounds: (min, max) fraction for the graded component of interest\n    \"red_grade1_min\": 0.5,     # >50% Grade I\n    \"red_grade1_max\": 1.0,\n    \"yellow_grade2_max\": 0.7,  # <70% Grade II\n    \"yellow_grade1_min\": 0.2,  # >20% Grade I\n    \"blue_grade1_max\": 0.5,    # <50% Grade I\n    \"blue_grade1_min\": 0.1,    # >10% Grade I\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.S = pyo.Set(initialize=sorted(d[\"sources\"]))\n    m.BRD = pyo.Set(initialize=d[\"brands\"])\n    m.G1 = pyo.Set(initialize=sorted(d[\"grade1_sources\"]))\n    m.G2 = pyo.Set(initialize=sorted(d[\"grade2_sources\"]))\n    m.Index = pyo.Set(dimen=2, initialize=[\n        (b, s) for b in d[\"brands\"] for s in sorted(d[\"sources\"])\n    ])\n\n    # ---- Variables ----\n    m.x = pyo.Var(m.Index, domain=pyo.NonNegativeReals)\n\n    # ---- Constraints ----\n    def supply_rule(m, s):\n        return sum(m.x[b, s] for b in m.BRD) <= d[\"supply\"][s]\n    m.SupplyLimit = pyo.Constraint(m.S, rule=supply_rule)\n\n    def red_load_rule(m):\n        return sum(m.x[\"red\", s] for s in m.S) >= d[\"red_min_load\"]\n    m.RedMinLoad = pyo.Constraint(rule=red_load_rule)\n\n    def red_g1_min_rule(m):\n        return (sum(m.x[\"red\", s] for s in m.G1)\n                >= d[\"red_grade1_min\"] * sum(m.x[\"red\", s] for s in m.S))\n    m.RedG1Min = pyo.Constraint(rule=red_g1_min_rule)\n\n    def red_g1_max_rule(m):\n        return (sum(m.x[\"red\", s] for s in m.G1)\n                <= d[\"red_grade1_max\"] * sum(m.x[\"red\", s] for s in m.S))\n    m.RedG1Max = pyo.Constraint(rule=red_g1_max_rule)\n\n    def yellow_g2_max_rule(m):\n        return (sum(m.x[\"yellow\", s] for s in m.G2)\n                <= d[\"yellow_grade2_max\"] * sum(m.x[\"yellow\", s] for s in m.S))\n    m.YellowG2Max = pyo.Constraint(rule=yellow_g2_max_rule)\n\n    def yellow_g1_min_rule(m):\n        return (sum(m.x[\"yellow\", s] for s in m.G1)\n                >= d[\"yellow_grade1_min\"] * sum(m.x[\"yellow\", s] for s in m.S))\n    m.YellowG1Min = pyo.Constraint(rule=yellow_g1_min_rule)\n\n    def blue_g1_max_rule(m):\n        return (sum(m.x[\"blue\", s] for s in m.G1)\n                <= d[\"blue_grade1_max\"] * sum(m.x[\"blue\", s] for s in m.S))\n    m.BlueG1Max = pyo.Constraint(rule=blue_g1_max_rule)\n\n    def blue_g1_min_rule(m):\n        return (sum(m.x[\"blue\", s] for s in m.G1)\n                >= d[\"blue_grade1_min\"] * sum(m.x[\"blue\", s] for s in m.S))\n    m.BlueG1Min = pyo.Constraint(rule=blue_g1_min_rule)\n\n    # ---- Objective ----\n    def objective_rule(m):\n        revenue = sum(\n            d[\"price\"][b] * sum(m.x[b, s] for s in m.S) for b in m.BRD\n        )\n        raw_cost = sum(\n            d[\"cost\"][s] * sum(m.x[b, s] for b in m.BRD) for s in m.S\n        )\n        return revenue - raw_cost\n    m.obj = pyo.Objective(rule=objective_rule, sense=pyo.maximize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1299,
+      "completion_tokens": 1872
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2627,
+      "completion_tokens": 1203
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 12.637347221374512,
+   "position": 0,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # grade sources: index -> (supply kg, cost yuan/kg)\n    # two rows of grade I (1500 @ 6, 2000 @ 4.5) and one row of grade II (1000 @ 3)\n    \"supply\":     [1500, 2000, 1000],\n    \"cost\":       [6.0, 4.5, 3.0],\n    # brand index: 0 red, 1 yellow, 2 blue\n    \"price\":      [5.5, 5.0, 4.8],\n    # minimum daily production of the red brand (kg)\n    \"red_min\":    2000.0,\n    # ratio bounds for grade-I content in each brand\n    \"red_I_lo\":   0.50,\n    \"red_I_hi\":   0.10,\n    \"yellow_II_hi\": 0.70,\n    \"yellow_I_lo\":  0.20,\n    \"blue_I_hi\":    0.50,\n    \"blue_I_lo\":    0.10,\n    # mapping of which source indices correspond to grade I / II\n    \"grade_I_sources\":  [0, 1],\n    \"grade_II_sources\": [2],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # --- Sets (0-based) ---\n    model.G = pyo.RangeSet(0, len(d[\"supply\"]) - 1)   # grade sources\n    model.B = pyo.RangeSet(0, len(d[\"price\"]) - 1)    # brands\n\n    I_src = list(d[\"grade_I_sources\"])\n    II_src = list(d[\"grade_II_sources\"])\n\n    # --- Variables ---\n    # x[g,b] = kg of grade-source g used in brand b\n    def x_bounds(m, g, b):\n        return (0.0, d[\"supply\"][g])\n    model.x = pyo.Var(model.G, model.B, domain=pyo.NonNegativeReals, bounds=x_bounds)\n\n    # y[b] = total kg produced of brand b\n    total_supply = float(sum(d[\"supply\"]))\n    model.y = pyo.Var(model.B, domain=pyo.NonNegativeReals, bounds=(0.0, total_supply))\n\n    # --- Objective: maximize revenue - raw material cost ---\n    def obj_rule(m):\n        revenue = sum(d[\"price\"][b] * m.y[b] for b in m.B)\n        cost = sum(d[\"cost\"][g] * m.x[g, b] for g in m.G for b in m.B)\n        return revenue - cost\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # --- Constraints ---\n\n    # supply limit per grade source: sum_b x[g,b] <= supply[g]\n    def supply_rule(m, g):\n        return sum(m.x[g, b] for b in m.B) <= d[\"supply\"][g]\n    model.supply = pyo.Constraint(model.G, rule=supply_rule)\n\n    # definition of y: y[b] = sum_g x[g,b]\n    def y_def_rule(m, b):\n        return m.y[b] == sum(m.x[g, b] for g in m.G)\n    model.y_def = pyo.Constraint(model.B, rule=y_def_rule)\n\n    # red brand minimum output: y[0] >= red_min\n    def red_min_rule(m):\n        return m.y[0] >= d[\"red_min\"]\n    model.red_min = pyo.Constraint(rule=red_min_rule)\n\n    # red composition: grade I content between red_I_hi (upper) and red_I_lo (lower)\n    def red_I_hi_rule(m):\n        return sum(m.x[g, 0] for g in I_src) <= d[\"red_I_hi\"] * m.y[0]\n    model.red_I_hi = pyo.Constraint(rule=red_I_hi_rule)\n\n    def red_I_lo_rule(m):\n        return sum(m.x[g, 0] for g in I_src) >= d[\"red_I_lo\"] * m.y[0]\n    model.red_I_lo = pyo.Constraint(rule=red_I_lo_rule)\n\n    # yellow composition (brand index 1)\n    def yellow_II_hi_rule(m):\n        return sum(m.x[g, 1] for g in II_src) <= d[\"yellow_II_hi\"] * m.y[1]\n    model.yellow_II_hi = pyo.Constraint(rule=yellow_II_hi_rule)\n\n    def yellow_I_lo_rule(m):\n        return sum(m.x[g, 1] for g in I_src) >= d[\"yellow_I_lo\"] * m.y[1]\n    model.yellow_I_lo = pyo.Constraint(rule=yellow_I_lo_rule)\n\n    # blue composition (brand index 2)\n    def blue_I_hi_rule(m):\n        return sum(m.x[g, 2] for g in I_src) <= d[\"blue_I_hi\"] * m.y[2]\n    model.blue_I_hi = pyo.Constraint(rule=blue_I_hi_rule)\n\n    def blue_I_lo_rule(m):\n        return sum(m.x[g, 2] for g in I_src) >= d[\"blue_I_lo\"] * m.y[2]\n    model.blue_I_lo = pyo.Constraint(rule=blue_I_lo_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1309,
+      "completion_tokens": 2190
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3065,
+      "completion_tokens": 1282
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 13.26862382888794,
+   "position": 1,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Raw wine sources: (daily supply kg, cost yuan/kg)\n    \"grades\": [\"I1\", \"I2\", \"II\"],\n    \"supply\": {\"I1\": 1500, \"I2\": 2000, \"II\": 1000},\n    \"cost\": {\"I1\": 6.0, \"I2\": 4.5, \"II\": 3.0},\n    # Brands\n    \"brands\": [\"red\", \"yellow\", \"blue\"],\n    \"price\": {\"red\": 5.5, \"yellow\": 5.0, \"blue\": 4.8},\n    # Minimum production for red brand (kg/day)\n    \"red_min_production\": 2000,\n    # Blending ratio bounds: for each brand, max/min fraction of Grade I (I1+I2) and Grade II\n    # Represent as (numerator_group, upper_bound) and (numerator_group, lower_bound)\n    # Grade I group = {\"I1\",\"I2\"}, Grade II group = {\"II\"}\n    \"grade_I_group\": [\"I1\", \"I2\"],\n    \"grade_II_group\": [\"II\"],\n    # Red: Grade I <= 10%, Grade I >= 50%\n    \"red_gradeI_max\": 0.10,\n    \"red_gradeI_min\": 0.50,\n    # Yellow: Grade II <= 70%, Grade I >= 20%\n    \"yellow_gradeII_max\": 0.70,\n    \"yellow_gradeI_min\": 0.20,\n    # Blue: Grade I <= 50%, Grade I >= 10%\n    \"blue_gradeI_max\": 0.50,\n    \"blue_gradeI_min\": 0.10,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.grades = pyo.Set(initialize=d[\"grades\"])\n    m.brands = pyo.Set(initialize=d[\"brands\"])\n\n    # Decision variables\n    m.blend = pyo.Var(m.grades, m.brands, within=pyo.NonNegativeReals)\n    m.produce = pyo.Var(m.brands, within=pyo.NonNegativeReals)\n\n    # Linking: total produced per brand equals sum of blended grades\n    def produce_link_rule(m, b):\n        return m.produce[b] == sum(m.blend[g, b] for g in m.grades)\n    m.produce_link = pyo.Constraint(m.brands, rule=produce_link_rule)\n\n    # Supply constraints per grade source\n    def supply_rule(m, g):\n        return sum(m.blend[g, b] for b in m.brands) <= d[\"supply\"][g]\n    m.supply_limit = pyo.Constraint(m.grades, rule=supply_rule)\n\n    # Red brand minimum production\n    def red_min_rule(m):\n        return m.produce[\"red\"] >= d[\"red_min_production\"]\n    m.red_min = pyo.Constraint(rule=red_min_rule)\n\n    # Red: Grade I (I1+I2) <= 10% of red\n    def red_gradeI_max_rule(m):\n        return sum(m.blend[g, \"red\"] for g in d[\"grade_I_group\"]) <= d[\"red_gradeI_max\"] * m.produce[\"red\"]\n    m.red_gradeI_max = pyo.Constraint(rule=red_gradeI_max_rule)\n\n    # Red: Grade I (I1+I2) >= 50% of red\n    def red_gradeI_min_rule(m):\n        return sum(m.blend[g, \"red\"] for g in d[\"grade_I_group\"]) >= d[\"red_gradeI_min\"] * m.produce[\"red\"]\n    m.red_gradeI_min = pyo.Constraint(rule=red_gradeI_min_rule)\n\n    # Yellow: Grade II <= 70% of yellow\n    def yellow_gradeII_max_rule(m):\n        return sum(m.blend[g, \"yellow\"] for g in d[\"grade_II_group\"]) <= d[\"yellow_gradeII_max\"] * m.produce[\"yellow\"]\n    m.yellow_gradeII_max = pyo.Constraint(rule=yellow_gradeII_max_rule)\n\n    # Yellow: Grade I (I1+I2) >= 20% of yellow\n    def yellow_gradeI_min_rule(m):\n        return sum(m.blend[g, \"yellow\"] for g in d[\"grade_I_group\"]) >= d[\"yellow_gradeI_min\"] * m.produce[\"yellow\"]\n    m.yellow_gradeI_min = pyo.Constraint(rule=yellow_gradeI_min_rule)\n\n    # Blue: Grade I (I1+I2) <= 50% of blue\n    def blue_gradeI_max_rule(m):\n        return sum(m.blend[g, \"blue\"] for g in d[\"grade_I_group\"]) <= d[\"blue_gradeI_max\"] * m.produce[\"blue\"]\n    m.blue_gradeI_max = pyo.Constraint(rule=blue_gradeI_max_rule)\n\n    # Blue: Grade I (I1+I2) >= 10% of blue\n    def blue_gradeI_min_rule(m):\n        return sum(m.blend[g, \"blue\"] for g in d[\"grade_I_group\"]) >= d[\"blue_gradeI_min\"] * m.produce[\"blue\"]\n    m.blue_gradeI_min = pyo.Constraint(rule=blue_gradeI_min_rule)\n\n    # Objective: maximize revenue - raw material cost\n    def obj_rule(m):\n        revenue = sum(d[\"price\"][b] * m.produce[b] for b in m.brands)\n        raw_cost = sum(d[\"cost\"][g] * m.blend[g, b] for g in m.grades for b in m.brands)\n        return revenue - raw_cost\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1293,
+      "completion_tokens": 1815
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.177627801895142,
+   "position": 2,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # raw grades: keys are the three supply rows\n    \"grades\": [\"I1\", \"I2\", \"II\"],\n    \"supply\": {\"I1\": 1500.0, \"I2\": 2000.0, \"II\": 1000.0},   # kg/day\n    \"cost\":   {\"I1\": 6.0,    \"I2\": 4.5,    \"II\": 3.0},       # yuan/kg\n    # brands\n    \"brands\": [\"red\", \"yellow\", \"blue\"],\n    \"price\": {\"red\": 5.5, \"yellow\": 5.0, \"blue\": 4.8},       # yuan/kg\n    # which grade each blend percentage refers to\n    # red:    grade \"II\" <= 10%, grade \"I\" >= 50%  (grade I = I1 + I2)\n    # yellow: grade \"II\" <= 70%, grade \"I\" >= 20%\n    # blue:   grade \"I\"  <= 50%, grade \"I\" >= 10%\n    \"red_II_max\": 0.10,\n    \"red_I_min\": 0.50,\n    \"yellow_II_max\": 0.70,\n    \"yellow_I_min\": 0.20,\n    \"blue_I_max\": 0.50,\n    \"blue_I_min\": 0.10,\n    \"red_min\": 2000.0,     # red brand must produce at least this many kg/day\n    \"grades_I\": [\"I1\", \"I2\"],   # the two grade-I supply rows\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ---- sets ----\n    model.G = pyo.Set(initialize=d[\"grades\"], ordered=True)   # raw grades\n    model.P = pyo.Set(initialize=d[\"brands\"], ordered=True)   # brands\n    model.GI = pyo.Set(initialize=d[\"grades_I\"], ordered=True)  # grade-I rows\n\n    # ---- variables ----\n    # x[g, p] = kg of raw grade g used in brand p\n    model.x = pyo.Var(model.G, model.P, within=pyo.NonNegativeReals)\n    # y[p] = total kg produced of brand p\n    model.y = pyo.Var(model.P, within=pyo.NonNegativeReals)\n\n    # ---- objective: maximize profit = revenue - raw material cost ----\n    def obj_rule(m):\n        revenue = sum(d[\"price\"][p] * m.y[p] for p in m.P)\n        cost = sum(d[\"cost\"][g] * sum(m.x[g, p] for p in m.P) for g in m.G)\n        return revenue - cost\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # ---- constraints ----\n\n    # supply limit per raw grade:  sum_p x[g,p] <= supply[g]\n    def supply_rule(m, g):\n        return sum(m.x[g, p] for p in m.P) <= d[\"supply\"][g]\n\n    model.supply = pyo.Constraint(model.G, rule=supply_rule)\n\n    # mass balance per brand:  y[p] = sum_g x[g,p]\n    def balance_rule(m, p):\n        return m.y[p] == sum(m.x[g, p] for g in m.G)\n\n    model.balance = pyo.Constraint(model.P, rule=balance_rule)\n\n    # ---- red brand blending: grade II <= 10%, grade I >= 50% ----\n    def red_II_max_rule(m):\n        return sum(m.x[g, \"red\"] for g in m.G if g == \"II\") <= d[\"red_II_max\"] * m.y[\"red\"]\n\n    model.red_II_max = pyo.Constraint(rule=red_II_max_rule)\n\n    def red_I_min_rule(m):\n        return sum(m.x[g, \"red\"] for g in m.GI) >= d[\"red_I_min\"] * m.y[\"red\"]\n\n    model.red_I_min = pyo.Constraint(rule=red_I_min_rule)\n\n    # ---- yellow brand blending: grade II <= 70%, grade I >= 20% ----\n    def yellow_II_max_rule(m):\n        return sum(m.x[g, \"yellow\"] for g in m.G if g == \"II\") <= d[\"yellow_II_max\"] * m.y[\"yellow\"]\n\n    model.yellow_II_max = pyo.Constraint(rule=yellow_II_max_rule)\n\n    def yellow_I_min_rule(m):\n        return sum(m.x[g, \"yellow\"] for g in m.GI) >= d[\"yellow_I_min\"] * m.y[\"yellow\"]\n\n    model.yellow_I_min = pyo.Constraint(rule=yellow_I_min_rule)\n\n    # ---- blue brand blending: grade I <= 50%, grade I >= 10% ----\n    def blue_I_max_rule(m):\n        return sum(m.x[g, \"blue\"] for g in m.GI) <= d[\"blue_I_max\"] * m.y[\"blue\"]\n\n    model.blue_I_max = pyo.Constraint(rule=blue_I_max_rule)\n\n    def blue_I_min_rule(m):\n        return sum(m.x[g, \"blue\"] for g in m.GI) >= d[\"blue_I_min\"] * m.y[\"blue\"]\n\n    model.blue_I_min = pyo.Constraint(rule=blue_I_min_rule)\n\n    # ---- red brand minimum production: y[\"red\"] >= 2000 ----\n    def red_min_rule(m):\n        return m.y[\"red\"] >= d[\"red_min\"]\n\n    model.red_min = pyo.Constraint(rule=red_min_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1309,
+      "completion_tokens": 2030
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.421109676361084,
+   "position": 3,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"ingredients\": [\"b1\", \"b2\", \"b3\"],\n    \"batches\": {\"b1\": 1},\n    \"batch_supply\": {\"b1\": 1500.0, \"b2\": 2000.0, \"b3\": 1000.0},\n    \"batch_cost\":   {\"b1\": 6.0,   \"b2\": 4.5,   \"b3\": 3.0},\n    \"batch_grade\":  {\"b1\": \"I\",   \"b2\": \"I\",   \"b3\": \"II\"},\n    \"grades\": [\"I\", \"II\"],\n    \"brands\": [\"red\", \"yellow\", \"blue\"],\n    \"price\": {\"red\": 5.5, \"yellow\": 5.0, \"blue\": 4.8},\n    \"min_shI\": {\"red\": 0.50, \"yellow\": 0.20, \"blue\": 0.10},\n    \"max_shI\": {\"red\": None, \"yellow\": None, \"blue\": 0.50},\n    \"max_shII\": {\"red\": 0.10, \"yellow\": 0.70, \"blue\": None},\n    \"eps_shI_min\": {\"red\": 0.001, \"yellow\": 0.001, \"blue\": 0.001},\n    \"eps_shII_max\": {\"red\": 0.001, \"yellow\": 0.001, \"blue\": 0.001},\n    \"red_min_output\": 2000.0,\n    \"bigM\": 1.0e6,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    ing = d[\"ingredients\"]\n    brands = d[\"brands\"]\n    pairs = [(b, i) for b in brands for i in ing]\n    ig_by_grade = {g: [i for i in ing if d[\"batch_grade\"][i] == g] for g in d[\"grades\"]}\n\n    m = pyo.ConcreteModel()\n\n    m.I = pyo.Set(initialize=ing)\n    m.B = pyo.Set(initialize=brands)\n    m.BI = pyo.Set(initialize=pairs, dimen=2)\n\n    # x[b,i] kg of ingredient i used in brand b\n    m.x = pyo.Var(m.B, m.I, domain=pyo.NonNegativeReals, bounds=(0, None))\n    # y[b] total kg of brand b produced\n    m.y = pyo.Var(m.B, domain=pyo.NonNegativeReals, bounds=(0, None))\n\n    # bin_more[b]: 1 if grade I share exceeds min_shI + eps exactly with strict feeling\n    m.flagI = pyo.Var(m.B, domain=pyo.Binary)\n    m.flagII = pyo.Var(m.B, domain=pyo.Binary)\n\n    q = {}\n\n    def total_rule(mb, b):\n        return mb.y[b] == sum(mb.x[b, i] for i in mb.I)\n    m.total_brand = pyo.Constraint(m.B, rule=total_rule)\n\n    def red_demand_rule(mb):\n        return mb.y[\"red\"] >= d[\"red_min_output\"]\n    m.red_demand = pyo.Constraint(rule=red_demand_rule)\n\n    def supply_rule(mb, i):\n        return sum(mb.x[b, i] for b in mb.B) <= d[\"batch_supply\"][i]\n    m.supply_limit = pyo.Constraint(m.I, rule=supply_rule)\n\n    def shI_min_rule(mb, b):\n        lhs = sum(mb.x[b, i] for i in ig_by_grade[\"I\"])\n        rhs = (d[\"min_shI\"][b] + d[\"eps_shI_min\"][b]) * mb.y[b]\n        # if flagI[b]=1 => enforce (strict-feeling \"more than\")\n        return lhs >= rhs - d[\"bigM\"] * (1 - mb.flagI[b])\n    m.shI_min = pyo.Constraint(m.B, rule=shI_min_rule)\n\n    def shI_max_rule(mb, b):\n        cap = d[\"max_shI\"][b]\n        if cap is None:\n            return pyo.Constraint.Feasible\n        lhs = sum(mb.x[b, i] for i in ig_by_grade[\"I\"])\n        rhs = (cap - d[\"eps_shI_min\"][b]) * mb.y[b]\n        return lhs <= rhs + d[\"bigM\"] * (1 - 1)\n    def shI_max_rule_builder(mb, b):\n        cap = d[\"max_shI\"][b]\n        if cap is None:\n            return pyo.Constraint.Skip\n        lhs = sum(mb.x[b, i] for i in ig_by_grade[\"I\"])\n        rhs = (cap - d[\"eps_shI_min\"][b]) * mb.y[b]\n        return lhs <= rhs\n    m.shI_max = pyo.Constraint(m.B, rule=shI_max_rule_builder)\n\n    def shII_max_rule(mb, b):\n        cap = d[\"max_shII\"][b]\n        if cap is None:\n            return pyo.Constraint.Skip\n        lhs = sum(mb.x[b, i] for i in ig_by_grade[\"II\"])\n        rhs = (cap - d[\"eps_shII_max\"][b]) * mb.y[b]\n        return lhs <= rhs - d[\"bigM\"] * (1 - mb.flagII[b])\n    m.shII_max = pyo.Constraint(m.B, rule=shII_max_rule)\n\n    # at least one requirement flag active per brand ensures the caps can be off only\n    # when a feasible ratio exists; simplest tie: sum of flags >= 1\n    def flag_link_rule(mb, b):\n        return mb.flagI[b] + mb.flagII[b] >= 1\n    m.flag_link = pyo.Constraint(m.B, rule=flag_link_rule)\n\n    def obj_rule(mb):\n        revenue = sum(d[\"price\"][b] * mb.y[b] for b in mb.B)\n        cost = sum(d[\"batch_cost\"][i] * mb.x[b, i] for b in mb.B for i in mb.I)\n        return revenue - cost\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1299,
+      "completion_tokens": 2959
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 13.017717599868774,
+   "position": 4,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # sources: two rows of grade I plus one row of grade II\n    \"sources\": [\"I1\", \"I2\", \"II\"],\n    \"source_grade\": {\"I1\": \"I\", \"I2\": \"I\", \"II\": \"II\"},\n    \"supply\": {\"I1\": 1500, \"I2\": 2000, \"II\": 1000},\n    \"cost\":   {\"I1\": 6.0,  \"I2\": 4.5,  \"II\": 3.0},\n\n    \"brands\": [\"red\", \"yellow\", \"blue\"],\n    \"price\": {\"red\": 5.5, \"yellow\": 5.0, \"blue\": 4.8},\n\n    \"grades\": [\"I\", \"II\"],\n\n    # red: grade I < 10%  and grade I > 50%\n    \"red_gradeI_max_frac\": 0.10,\n    \"red_gradeI_min_frac\": 0.50,\n    \"red_min_total\": 2000,\n\n    # yellow: grade II < 70%  and grade I > 20%\n    \"yellow_gradeII_max_frac\": 0.70,\n    \"yellow_gradeI_min_frac\": 0.20,\n\n    # blue: grade I < 50%  and grade I > 10%\n    \"blue_gradeI_max_frac\": 0.50,\n    \"blue_gradeI_min_frac\": 0.10,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.S = pyo.Set(initialize=d[\"sources\"])\n    m.B = pyo.Set(initialize=d[\"brands\"])\n\n    # x[s,b]: kg of source s blended into brand b\n    m.x = pyo.Var(m.S, m.B, within=pyo.NonNegativeReals)\n\n    # total[b]: total kg produced of brand b\n    m.total = pyo.Var(m.B, within=pyo.NonNegativeReals)\n\n    # --- objective: maximize revenue minus raw material cost ---\n    def obj_rule(m):\n        revenue = sum(d[\"price\"][b] * m.total[b] for b in m.B)\n        cost = sum(d[\"cost\"][s] * m.x[s, b] for s in m.S for b in m.B)\n        return revenue - cost\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # --- supply limits per source ---\n    def supply_rule(m, s):\n        return sum(m.x[s, b] for b in m.B) <= d[\"supply\"][s]\n    m.supply_limit = pyo.Constraint(m.S, rule=supply_rule)\n\n    # --- total per brand equals sum of its ingredients ---\n    def total_rule(m, b):\n        return m.total[b] == sum(m.x[s, b] for s in m.S)\n    m.total_def = pyo.Constraint(m.B, rule=total_rule)\n\n    # --- red must be at least 2000 kg/day ---\n    def red_min_rule(m):\n        return m.total[\"red\"] >= d[\"red_min_total\"]\n    m.red_min = pyo.Constraint(rule=red_min_rule)\n\n    # --- red: grade I less than 10% ---\n    def red_I_max_rule(m):\n        gradeI = sum(m.x[s, \"red\"] for s in m.S if d[\"source_grade\"][s] == \"I\")\n        return gradeI <= d[\"red_gradeI_max_frac\"] * m.total[\"red\"]\n    m.red_I_max = pyo.Constraint(rule=red_I_max_rule)\n\n    # --- red: grade I more than 50% ---\n    def red_I_min_rule(m):\n        gradeI = sum(m.x[s, \"red\"] for s in m.S if d[\"source_grade\"][s] == \"I\")\n        return gradeI >= d[\"red_gradeI_min_frac\"] * m.total[\"red\"]\n    m.red_I_min = pyo.Constraint(rule=red_I_min_rule)\n\n    # --- yellow: grade II less than 70% ---\n    def yellow_II_max_rule(m):\n        gradeII = sum(m.x[s, \"yellow\"] for s in m.S if d[\"source_grade\"][s] == \"II\")\n        return gradeII <= d[\"yellow_gradeII_max_frac\"] * m.total[\"yellow\"]\n    m.yellow_II_max = pyo.Constraint(rule=yellow_II_max_rule)\n\n    # --- yellow: grade I more than 20% ---\n    def yellow_I_min_rule(m):\n        gradeI = sum(m.x[s, \"yellow\"] for s in m.S if d[\"source_grade\"][s] == \"I\")\n        return gradeI >= d[\"yellow_gradeI_min_frac\"] * m.total[\"yellow\"]\n    m.yellow_I_min = pyo.Constraint(rule=yellow_I_min_rule)\n\n    # --- blue: grade I less than 50% ---\n    def blue_I_max_rule(m):\n        gradeI = sum(m.x[s, \"blue\"] for s in m.S if d[\"source_grade\"][s] == \"I\")\n        return gradeI <= d[\"blue_gradeI_max_frac\"] * m.total[\"blue\"]\n    m.blue_I_max = pyo.Constraint(rule=blue_I_max_rule)\n\n    # --- blue: grade I more than 10% ---\n    def blue_I_min_rule(m):\n        gradeI = sum(m.x[s, \"blue\"] for s in m.S if d[\"source_grade\"][s] == \"I\")\n        return gradeI >= d[\"blue_gradeI_min_frac\"] * m.total[\"blue\"]\n    m.blue_I_min = pyo.Constraint(rule=blue_I_min_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1293,
+      "completion_tokens": 1987
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.147979974746704,
+   "position": 5,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# =============================================================================\n# MODELLING COMMENT BLOCK\n# =============================================================================\n# Decision variables\n#   x[b, g] : kg of raw wine grade g blended into finished brand b\n#             b in BRANDS = {red, yellow, blue}\n#             g in GRADES = {g1, g2, g3}\n#             domain: NonNegativeReals\n#   y[b]    : kg of finished brand b produced (equals total blend mass)\n#             domain: NonNegativeReals\n#\n# Objective (maximise daily profit)\n#   profit = sum_b price[b] * y[b] - sum_{b,g} cost[g] * x[b, g]\n#\n# Constraints\n#   (1) Mass balance per brand: y[b] = sum_g x[b, g]\n#   (2) Raw grade supply limits: sum_b x[b, g] <= supply[g]\n#   (3) Red brand minimum production: y[red] >= 2000\n#   (4) Blending-ratio requirements, expressed as linear percentage bounds\n#       on the share of a specified grade within each brand:\n#         share[b, g] = x[b, g] / y[b]\n#       Linearised as:  lo[b, g] * y[b] <= x[b, g] <= hi[b, g] * y[b]\n#       The problem text gives qualitative ratio statements; these are encoded\n#       as numeric lower/upper fractions in DATA (see DATA[\"ratio\"]).\n# =============================================================================\n\nDATA = {\n    # Raw grades: g1, g2, g3\n    \"grades\": [\"g1\", \"g2\", \"g3\"],\n    \"supply\": {\"g1\": 1500.0, \"g2\": 2000.0, \"g3\": 1000.0},\n    \"cost\":   {\"g1\": 6.0,   \"g2\": 4.5,    \"g3\": 3.0},\n\n    # Finished brands\n    \"brands\": [\"red\", \"yellow\", \"blue\"],\n    \"price\": {\"red\": 5.5, \"yellow\": 5.0, \"blue\": 4.8},\n\n    # Minimum daily production of red brand (kg)\n    \"red_min\": 2000.0,\n\n    # Blending-ratio bounds: ratio[(brand, grade)] = (lower, upper)\n    # Fractions of the brand's total mass that may come from that grade.\n    # These encode the qualitative statements in Table 4-9 as linear bounds.\n    \"ratio\": {\n        # Red: grade g1 share between 10% and 50%\n        (\"red\", \"g1\"): (0.10, 0.50),\n        # Yellow: grade g3 share at most 70%, grade g1 at least 20%\n        (\"yellow\", \"g3\"): (0.00, 0.70),\n        (\"yellow\", \"g1\"): (0.20, 1.00),\n        # Blue: grade g1 share between 10% and 50%\n        (\"blue\", \"g1\"): (0.10, 0.50),\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # -------------------------------------------------------------------------\n    # Sets\n    # -------------------------------------------------------------------------\n    model.BRANDS = pyo.Set(initialize=d[\"brands\"])\n    model.GRADES = pyo.Set(initialize=d[\"grades\"])\n\n    # -------------------------------------------------------------------------\n    # Variables\n    # -------------------------------------------------------------------------\n    model.x = pyo.Var(\n        model.BRANDS,\n        model.GRADES,\n        within=pyo.NonNegativeReals,\n    )\n    model.y = pyo.Var(\n        model.BRANDS,\n        within=pyo.NonNegativeReals,\n    )\n\n    # -------------------------------------------------------------------------\n    # Objective: maximise profit\n    # -------------------------------------------------------------------------\n    def obj_rule(m):\n        revenue = sum(d[\"price\"][b] * m.y[b] for b in m.BRANDS)\n        cost = sum(d[\"cost\"][g] * m.x[b, g] for b in m.BRANDS for g in m.GRADES)\n        return revenue - cost\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # -------------------------------------------------------------------------\n    # (1) Mass balance per brand\n    # -------------------------------------------------------------------------\n    def mass_balance_rule(m, b):\n        return m.y[b] == sum(m.x[b, g] for g in m.GRADES)\n\n    model.mass_balance = pyo.Constraint(model.BRANDS, rule=mass_balance_rule)\n\n    # -------------------------------------------------------------------------\n    # (2) Raw grade supply limits\n    # -------------------------------------------------------------------------\n    def supply_rule(m, g):\n        return sum(m.x[b, g] for b in m.BRANDS) <= d[\"supply\"][g]\n\n    model.supply_limit = pyo.Constraint(model.GRADES, rule=supply_rule)\n\n    # -------------------------------------------------------------------------\n    # (3) Red brand minimum production\n    # -------------------------------------------------------------------------\n    def red_min_rule(m):\n        return m.y[\"red\"] >= d[\"red_min\"]\n\n    model.red_min = pyo.Constraint(rule=red_min_rule)\n\n    # -------------------------------------------------------------------------\n    # (4) Blending-ratio bounds (linearised percentage constraints)\n    # -------------------------------------------------------------------------\n    ratio_pairs = list(d[\"ratio\"].keys())\n\n    model.RATIO_PAIRS = pyo.Set(initialize=ratio_pairs, dimen=2)\n\n    def ratio_lower_rule(m, b, g):\n        lo, _ = d[\"ratio\"][(b, g)]\n        return m.x[b, g] >= lo * m.y[b]\n\n    def ratio_upper_rule(m, b, g):\n        _, hi = d[\"ratio\"][(b, g)]\n        return m.x[b, g] <= hi * m.y[b]\n\n    model.ratio_lower = pyo.Constraint(model.RATIO_PAIRS, rule=ratio_lower_rule)\n    model.ratio_upper = pyo.Constraint(model.RATIO_PAIRS, rule=ratio_upper_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1313,
+      "completion_tokens": 5997
+     },
+     "finish_reason": "length"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 7232,
+      "completion_tokens": 1389
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 51.23068070411682,
+   "position": 6,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "\"\"\"\nWINE BLENDING LP MODEL\n======================\n\nDecision variables\n------------------\nx[g, b] : kilograms per day of grade g used in brand b\n          g \u2208 GRADES = {I1, I2, II}   (I1: grade I lot @6\u5143, I2: grade I lot @4.5\u5143, II: grade II @3\u5143)\n          b \u2208 BRANDS = {red, yellow, blue}\n          domain: NonNegativeReals\n\nObjective (maximize profit)\n---------------------------\nprofit = sum over brands of (selling price * total kg produced) - sum over grades of (cost * kg used)\n       = sum_b price[b] * sum_g x[g,b]  -  sum_g cost[g] * sum_b x[g,b]\n\nConstraints (numbered, with source sentence)\n--------------------------------------------\n(1) Supply limits: for each grade g, sum_b x[g,b] <= supply[g]\n    Source: \"Daily Supply (kg)\" column of Table 4-8.\n(2) Red brand minimum production: sum_g x[g,red] >= 2000\n    Source: \"ensuring that the red brand produces at least 2000 kg per day\".\n(3) Red brand: grade I (both lots combined) less than 10% of red total\n    Source: Table 4-9 Red \"I less than 10%\".\n    Linearised: x[I1,red] + x[I2,red] <= 0.10 * (sum_g x[g,red])\n(4) Red brand: grade I (both lots combined) more than 50% of red total\n    Source: Table 4-9 Red \"I more than 50%\".\n    Linearised: x[I1,red] + x[I2,red] >= 0.50 * (sum_g x[g,red])\n(5) Yellow brand: grade II less than 70% of yellow total\n    Source: Table 4-9 Yellow \"II less than 70%\".\n    Linearised: x[II,yellow] <= 0.70 * (sum_g x[g,yellow])\n(6) Yellow brand: grade I (both lots combined) more than 20% of yellow total\n    Source: Table 4-9 Yellow \"I more than 20%\".\n    Linearised: x[I1,yellow] + x[I2,yellow] >= 0.20 * (sum_g x[g,yellow])\n(7) Blue brand: grade I (both lots combined) less than 50% of blue total\n    Source: Table 4-9 Blue \"I less than 50%\".\n    Linearised: x[I1,blue] + x[I2,blue] <= 0.50 * (sum_g x[g,blue])\n(8) Blue brand: grade I (both lots combined) more than 10% of blue total\n    Source: Table 4-9 Blue \"I more than 10%\".\n    Linearised: x[I1,blue] + x[I2,blue] >= 0.10 * (sum_g x[g,blue])\n\"\"\"\n\nimport pyomo.environ as pyo\n\nDATA = {\n    # Grades: two lots of grade I (different costs) plus grade II\n    \"grades\": [\"I1\", \"I2\", \"II\"],\n    \"brands\": [\"red\", \"yellow\", \"blue\"],\n\n    # Table 4-8: daily supply (kg) and cost (\u5143/kg)\n    \"supply\": {\"I1\": 1500, \"I2\": 2000, \"II\": 1000},\n    \"cost\":   {\"I1\": 6.0,  \"I2\": 4.5,  \"II\": 3.0},\n\n    # Table 4-9: selling price (\u5143/kg)\n    \"price\": {\"red\": 5.5, \"yellow\": 5.0, \"blue\": 4.8},\n\n    # Red brand minimum daily production (kg)\n    \"red_min\": 2000,\n\n    # Blending ratio bounds (fraction of brand total)\n    # Red: grade I < 10% and > 50%\n    \"red_I_max\": 0.10,\n    \"red_I_min\": 0.50,\n    # Yellow: grade II < 70%, grade I > 20%\n    \"yellow_II_max\": 0.70,\n    \"yellow_I_min\": 0.20,\n    # Blue: grade I < 50% and > 10%\n    \"blue_I_max\": 0.50,\n    \"blue_I_min\": 0.10,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    m.GRADES = pyo.Set(initialize=d[\"grades\"])\n    m.BRANDS = pyo.Set(initialize=d[\"brands\"])\n\n    # Decision variables: kg of grade g used in brand b\n    m.x = pyo.Var(m.GRADES, m.BRANDS, within=pyo.NonNegativeReals)\n\n    # (1) Supply limits per grade\n    def supply_rule(m, g):\n        return sum(m.x[g, b] for b in m.BRANDS) <= d[\"supply\"][g]\n    m.supply_limit = pyo.Constraint(m.GRADES, rule=supply_rule)\n\n    # (2) Red brand minimum production\n    def red_min_rule(m):\n        return sum(m.x[g, \"red\"] for g in m.GRADES) >= d[\"red_min\"]\n    m.red_min = pyo.Constraint(rule=red_min_rule)\n\n    # (3) Red: grade I (both lots) <= 10% of red total\n    def red_I_max_rule(m):\n        return (m.x[\"I1\", \"red\"] + m.x[\"I2\", \"red\"]) <= \\\n            d[\"red_I_max\"] * sum(m.x[g, \"red\"] for g in m.GRADES)\n    m.red_I_max = pyo.Constraint(rule=red_I_max_rule)\n\n    # (4) Red: grade I (both lots) >= 50% of red total\n    def red_I_min_rule(m):\n        return (m.x[\"I1\", \"red\"] + m.x[\"I2\", \"red\"]) >= \\\n            d[\"red_I_min\"] * sum(m.x[g, \"red\"] for g in m.GRADES)\n    m.red_I_min = pyo.Constraint(rule=red_I_min_rule)\n\n    # (5) Yellow: grade II <= 70% of yellow total\n    def yellow_II_max_rule(m):\n        return m.x[\"II\", \"yellow\"] <= \\\n            d[\"yellow_II_max\"] * sum(m.x[g, \"yellow\"] for g in m.GRADES)\n    m.yellow_II_max = pyo.Constraint(rule=yellow_II_max_rule)\n\n    # (6) Yellow: grade I (both lots) >= 20% of yellow total\n    def yellow_I_min_rule(m):\n        return (m.x[\"I1\", \"yellow\"] + m.x[\"I2\", \"yellow\"]) >= \\\n            d[\"yellow_I_min\"] * sum(m.x[g, \"yellow\"] for g in m.GRADES)\n    m.yellow_I_min = pyo.Constraint(rule=yellow_I_min_rule)\n\n    # (7) Blue: grade I (both lots) <= 50% of blue total\n    def blue_I_max_rule(m):\n        return (m.x[\"I1\", \"blue\"] + m.x[\"I2\", \"blue\"]) <= \\\n            d[\"blue_I_max\"] * sum(m.x[g, \"blue\"] for g in m.GRADES)\n    m.blue_I_max = pyo.Constraint(rule=blue_I_max_rule)\n\n    # (8) Blue: grade I (both lots) >= 10% of blue total\n    def blue_I_min_rule(m):\n        return (m.x[\"I1\", \"blue\"] + m.x[\"I2\", \"blue\"]) >= \\\n            d[\"blue_I_min\"] * sum(m.x[g, \"blue\"] for g in m.GRADES)\n    m.blue_I_min = pyo.Constraint(rule=blue_I_min_rule)\n\n    # Objective: maximize profit = revenue - cost\n    def obj_rule(m):\n        revenue = sum(\n            d[\"price\"][b] * sum(m.x[g, b] for g in m.GRADES)\n            for b in m.BRANDS\n        )\n        cost = sum(\n            d[\"cost\"][g] * sum(m.x[g, b] for b in m.BRANDS)\n            for g in m.GRADES\n        )\n        return revenue - cost\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1313,
+      "completion_tokens": 1094
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1939,
+      "completion_tokens": 1973
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 16.790199041366577,
+   "position": 7,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Table 4-8: grades (two \"I\" entries treated as distinct grades I1, I2)\n    \"grades\": [\"I1\", \"I2\", \"II\"],\n    \"supply\": {\"I1\": 1500, \"I2\": 2000, \"II\": 1000},   # kg/day\n    \"cost\":   {\"I1\": 6.0,  \"I2\": 4.5,  \"II\": 3.0},     # \u5143/kg\n    # Table 4-9: brands\n    \"brands\": [\"red\", \"yellow\", \"blue\"],\n    \"price\": {\"red\": 5.5, \"yellow\": 5.0, \"blue\": 4.8},  # \u5143/kg\n    # Blending ratios (fractions of total brand mass)\n    # Red:   I < 10%  -> sum(I1,I2) <= 0.10*y ; I > 50% -> sum(I1,I2) >= 0.50*y\n    \"red_I_max\": 0.10,\n    \"red_I_min\": 0.50,\n    # Yellow: II < 70% -> x_II <= 0.70*y ; I > 20% -> sum(I1,I2) >= 0.20*y\n    \"yellow_II_max\": 0.70,\n    \"yellow_I_min\": 0.20,\n    # Blue:  I < 50%  -> sum(I1,I2) <= 0.50*y ; I > 10% -> sum(I1,I2) >= 0.10*y\n    \"blue_I_max\": 0.50,\n    \"blue_I_min\": 0.10,\n    # Red brand must produce at least 2000 kg/day\n    \"red_min_prod\": 2000,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    m.G = pyo.Set(initialize=d[\"grades\"])\n    m.B = pyo.Set(initialize=d[\"brands\"])\n\n    # x[g,b]: kg of grade g blended into brand b\n    m.x = pyo.Var(m.G, m.B, within=pyo.NonNegativeReals)\n    # y[b]: total kg produced of brand b\n    m.y = pyo.Var(m.B, within=pyo.NonNegativeReals)\n\n    # Objective: maximize revenue - raw material cost\n    def obj_rule(m):\n        revenue = sum(d[\"price\"][b] * m.y[b] for b in m.B)\n        cost = sum(d[\"cost\"][g] * m.x[g, b] for g in m.G for b in m.B)\n        return revenue - cost\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Supply limit per grade\n    def supply_rule(m, g):\n        return sum(m.x[g, b] for b in m.B) <= d[\"supply\"][g]\n    m.supply_limit = pyo.Constraint(m.G, rule=supply_rule)\n\n    # Total production of each brand equals sum of its components\n    def mass_rule(m, b):\n        return m.y[b] == sum(m.x[g, b] for g in m.G)\n    m.mass_balance = pyo.Constraint(m.B, rule=mass_rule)\n\n    # Red brand minimum production\n    def red_min_rule(m):\n        return m.y[\"red\"] >= d[\"red_min_prod\"]\n    m.red_min = pyo.Constraint(rule=red_min_rule)\n\n    # Red: grade I (I1+I2) <= 10% of red mass\n    def red_I_ub_rule(m):\n        return sum(m.x[g, \"red\"] for g in [\"I1\", \"I2\"]) <= d[\"red_I_max\"] * m.y[\"red\"]\n    m.red_I_ub = pyo.Constraint(rule=red_I_ub_rule)\n\n    # Red: grade I (I1+I2) >= 50% of red mass\n    def red_I_lb_rule(m):\n        return sum(m.x[g, \"red\"] for g in [\"I1\", \"I2\"]) >= d[\"red_I_min\"] * m.y[\"red\"]\n    m.red_I_lb = pyo.Constraint(rule=red_I_lb_rule)\n\n    # Yellow: grade II <= 70% of yellow mass\n    def yellow_II_ub_rule(m):\n        return m.x[\"II\", \"yellow\"] <= d[\"yellow_II_max\"] * m.y[\"yellow\"]\n    m.yellow_II_ub = pyo.Constraint(rule=yellow_II_ub_rule)\n\n    # Yellow: grade I (I1+I2) >= 20% of yellow mass\n    def yellow_I_lb_rule(m):\n        return sum(m.x[g, \"yellow\"] for g in [\"I1\", \"I2\"]) >= d[\"yellow_I_min\"] * m.y[\"yellow\"]\n    m.yellow_I_lb = pyo.Constraint(rule=yellow_I_lb_rule)\n\n    # Blue: grade I (I1+I2) <= 50% of blue mass\n    def blue_I_ub_rule(m):\n        return sum(m.x[g, \"blue\"] for g in [\"I1\", \"I2\"]) <= d[\"blue_I_max\"] * m.y[\"blue\"]\n    m.blue_I_ub = pyo.Constraint(rule=blue_I_ub_rule)\n\n    # Blue: grade I (I1+I2) >= 10% of blue mass\n    def blue_I_lb_rule(m):\n        return sum(m.x[g, \"blue\"] for g in [\"I1\", \"I2\"]) >= d[\"blue_I_min\"] * m.y[\"blue\"]\n    m.blue_I_lb = pyo.Constraint(rule=blue_I_lb_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1297,
+      "completion_tokens": 1596
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.258755207061768,
+   "position": 8,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Table 4-8: grade I, first source: supply 1500, cost 6\n    \"supply_I_src1\": 1500,\n    \"cost_I_src1\": 6,\n    # Table 4-8: grade I, second source: supply 2000, cost 4.5\n    \"supply_I_src2\": 2000,\n    \"cost_I_src2\": 4.5,\n    # Table 4-8: grade II: supply 1000, cost 3\n    \"supply_II\": 1000,\n    \"cost_II\": 3,\n    # Table 4-9: selling prices\n    \"price_red\": 5.5,\n    \"price_yellow\": 5.0,\n    \"price_blue\": 4.8,\n    # Table 4-9 blending ratios (as fractions)\n    \"red_I_min\": 0.50,       # red: grade I more than 50%\n    \"red_II_max\": 0.10,      # red: grade II less than 10%\n    \"yellow_II_max\": 0.70,   # yellow: grade II less than 70%\n    \"yellow_I_min\": 0.20,    # yellow: grade I more than 20%\n    \"blue_I_max\": 0.50,      # blue: grade I less than 50%\n    \"blue_I_min\": 0.10,      # blue: grade I more than 10%\n    # red brand minimum production\n    \"red_min_prod\": 2000,\n}\n\nBRANDS = [\"red\", \"yellow\", \"blue\"]\n\n\ndef build_model(data=None):\n    d = data or DATA\n    m = pyo.ConcreteModel()\n\n    m.BRANDS = pyo.Set(initialize=BRANDS)\n\n    # Decision variables: kg of each grade/source used in each brand\n    m.xI1 = pyo.Var(m.BRANDS, domain=pyo.NonNegativeReals)\n    m.xI2 = pyo.Var(m.BRANDS, domain=pyo.NonNegativeReals)\n    m.xII = pyo.Var(m.BRANDS, domain=pyo.NonNegativeReals)\n\n    # Total produced per brand\n    def total_rule(m, b):\n        return m.xI1[b] + m.xI2[b] + m.xII[b]\n    m.total = pyo.Expression(m.BRANDS, rule=total_rule)\n\n    # Grade I total in brand b\n    def gradeI_rule(m, b):\n        return m.xI1[b] + m.xI2[b]\n    m.gradeI = pyo.Expression(m.BRANDS, rule=gradeI_rule)\n\n    # Supply constraints\n    def supply_I1_rule(m):\n        return sum(m.xI1[b] for b in m.BRANDS) <= d[\"supply_I_src1\"]\n    m.supply_I1 = pyo.Constraint(rule=supply_I1_rule)\n\n    def supply_I2_rule(m):\n        return sum(m.xI2[b] for b in m.BRANDS) <= d[\"supply_I_src2\"]\n    m.supply_I2 = pyo.Constraint(rule=supply_I2_rule)\n\n    def supply_II_rule(m):\n        return sum(m.xII[b] for b in m.BRANDS) <= d[\"supply_II\"]\n    m.supply_II = pyo.Constraint(rule=supply_II_rule)\n\n    # Red brand minimum production\n    def red_min_rule(m):\n        return m.total[\"red\"] >= d[\"red_min_prod\"]\n    m.red_min = pyo.Constraint(rule=red_min_rule)\n\n    # Red: grade I more than 50%\n    def red_I_min_rule(m):\n        return m.gradeI[\"red\"] >= d[\"red_I_min\"] * m.total[\"red\"]\n    m.red_I_min = pyo.Constraint(rule=red_I_min_rule)\n\n    # Red: grade II less than 10%\n    def red_II_max_rule(m):\n        return m.xII[\"red\"] <= d[\"red_II_max\"] * m.total[\"red\"]\n    m.red_II_max = pyo.Constraint(rule=red_II_max_rule)\n\n    # Yellow: grade II less than 70%\n    def yellow_II_max_rule(m):\n        return m.xII[\"yellow\"] <= d[\"yellow_II_max\"] * m.total[\"yellow\"]\n    m.yellow_II_max = pyo.Constraint(rule=yellow_II_max_rule)\n\n    # Yellow: grade I more than 20%\n    def yellow_I_min_rule(m):\n        return m.gradeI[\"yellow\"] >= d[\"yellow_I_min\"] * m.total[\"yellow\"]\n    m.yellow_I_min = pyo.Constraint(rule=yellow_I_min_rule)\n\n    # Blue: grade I less than 50%\n    def blue_I_max_rule(m):\n        return m.gradeI[\"blue\"] <= d[\"blue_I_max\"] * m.total[\"blue\"]\n    m.blue_I_max = pyo.Constraint(rule=blue_I_max_rule)\n\n    # Blue: grade I more than 10%\n    def blue_I_min_rule(m):\n        return m.gradeI[\"blue\"] >= d[\"blue_I_min\"] * m.total[\"blue\"]\n    m.blue_I_min = pyo.Constraint(rule=blue_I_min_rule)\n\n    # Objective: maximize revenue - raw material cost\n    def obj_rule(m):\n        revenue = (\n            d[\"price_red\"] * m.total[\"red\"]\n            + d[\"price_yellow\"] * m.total[\"yellow\"]\n            + d[\"price_blue\"] * m.total[\"blue\"]\n        )\n        cost = (\n            d[\"cost_I_src1\"] * sum(m.xI1[b] for b in m.BRANDS)\n            + d[\"cost_I_src2\"] * sum(m.xI2[b] for b in m.BRANDS)\n            + d[\"cost_II\"] * sum(m.xII[b] for b in m.BRANDS)\n        )\n        return revenue - cost\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1297,
+      "completion_tokens": 2097
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.947950601577759,
+   "position": 9,
+   "recipe_index": 1
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:59:42"
+}

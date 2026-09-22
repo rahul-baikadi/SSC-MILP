@@ -1,0 +1,293 @@
+{
+ "pid": "industryor_0051",
+ "question": "A company has three tasks that require the recruitment of skilled workers and laborers. The first task can be completed by a skilled worker alone or by a team consisting of one skilled worker and two laborers. The second task can be completed by either a skilled worker or a laborer alone. The third task can be completed by a team of five laborers or by a skilled worker leading three laborers. It is known that the weekly wages for skilled workers and laborers are 100 yuan and 80 yuan, respectively. They work 48 hours per week, but their actual effective working time is 42 hours and 36 hours, respectively. To complete these three tasks, the company needs a total effective working time of 10,000 hours for the first task, 20,000 hours for the second task, and 30,000 hours for the third task. The number of workers that can be recruited is limited to a maximum of 400 skilled workers and 800 laborers. Establish a mathematical model to determine the number of skilled workers and laborers to recruit in order to minimize the total wage expenditure.",
+ "templates": [
+  "Workforce / Shift Scheduling",
+  "Production Planning / Product Mix"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "\"\"\"\nWorkforce recruitment MILP.\n\nTasks are completed under alternative crew compositions (\"modes\").\nPer week available EFFECTIVE time: one skilled worker 42 h, one labourer 36 h.\nRequired EFFECTIVE hours per task: task1 10,000 h; task2 20,000 h; task3 30,000 h.\nWage per worker per week: skilled 100; labourer 80.\nAt most 400 skilled and 800 labourers may be recruited.\nObjective: minimise total weekly wage.\n\nMode convention (mode m -> per-executed-crew hours: skilled-size * 42, labour-size * 36):\n  task 1, mode 0: 1 skilled + 2 labourers ;  mode 1: 1 skilled alone\n  task 2, mode 0: 1 skilled alone           ;  mode 1: 1 labourer alone\n  task 3, mode 0: 5 labourers               ;  mode 1: 1 skilled + 3 labourers\nExactly one mode is active per task and the active mode must supply the task's\nrequired effective hours; assigned workers of each type must fit the recruited headcount.\n\"\"\"\n\nimport pyomo.environ as pyo\n\nDATA = {\n    # weekly wages (yuan per worker per week)\n    \"wage\": {\"S\": 100, \"L\": 80},\n\n    # contracted vs effective hours (hours per week per worker)\n    \"hours_contract\": 48,\n    \"hours_effective\": {\"S\": 42, \"L\": 36},\n\n    # effective hours required by each task\n    \"task_hours\": {\"t1\": 10000, \"t2\": 20000, \"t3\": 30000},\n\n    # maximum recruit headcount\n    \"max_headcount\": {\"S\": 400, \"L\": 800},\n\n    # crew composition per mode: how many of each worker type fill one \"crew instance\"\n    # tasks x modes -> {worker type: count of that type in the crew}\n    \"crews\": {\n        \"t1\": {\n            \"m0\": {\"S\": 1, \"L\": 2},   # one skilled worker and two labourers\n            \"m1\": {\"S\": 1, \"L\": 0},   # skilled worker alone\n        },\n        \"t2\": {\n            \"m0\": {\"S\": 1, \"L\": 0},   # skilled worker alone\n            \"m1\": {\"S\": 0, \"L\": 1},   # labourer alone\n        },\n        \"t3\": {\n            \"m0\": {\"S\": 0, \"L\": 5},   # team of five labourers\n            \"m1\": {\"S\": 1, \"L\": 3},   # skilled worker leading three labourers\n        },\n    },\n\n    # big-M: upper bound on number of crew instances for each task\n    \"crew_upper\": {\"t1\": 20000, \"t2\": 40000, \"t3\": 40000},\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # ---------------------------------------------------------------- sets\n    WT = [\"S\", \"L\"]\n    TASKS = [\"t1\", \"t2\", \"t3\"]\n    MODES = {\n        \"t1\": [\"m0\", \"m1\"],\n        \"t2\": [\"m0\", \"m1\"],\n        \"t3\": [\"m0\", \"m1\"],\n    }\n    model.WT = pyo.Set(initialize=WT)\n    model.TASKS = pyo.Set(initialize=TASKS)\n\n    tsk_mode = [(t, m) for t in TASKS for m in MODES[t]]\n    model.TASKMODE = pyo.Set(dimen=2, initialize=tsk_mode)\n\n    # ----------------------------------------------------------- variables\n    # recruited workers by type (integer, bounded by head-count caps)\n    model.headcount = pyo.Var(\n        model.WT,\n        within=pyo.NonNegativeIntegers,\n        bounds=lambda m, w: (0, d[\"max_headcount\"][w]),\n    )\n\n    # number of crew instances executed for task t (integers)\n    model.crew = pyo.Var(model.TASKS, within=pyo.NonNegativeIntegers)\n\n    # exactly-one mode selection per task\n    model.select = pyo.Var(model.TASKMODE, within=pyo.Binary)\n\n    # effective hours of worker type w devoted to task t (continuous)\n    model.hours = pyo.Var(model.TASKS, model.WT, within=pyo.NonNegativeReals)\n\n    # ------------------------------------------------------------ objective\n    # minimise total weekly wages of all recruited workers\n    def obj_rule(m):\n        return sum(d[\"wage\"][w] * m.headcount[w] for w in m.WT)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---------------------------------------------------------- constraints\n\n    # (1) exactly one mode per task\n    def one_mode_rule(m, t):\n        return sum(m.select[t, mode] for mode in MODES[t]) == 1\n    model.one_mode_per_task = pyo.Constraint(model.TASKS, rule=one_mode_rule)\n\n    # (2) per task, the executed crews of the active mode must meet required effective hours.\n    #     crew instances = selected-mode instances only (crew <= M * select on the OTHER modes' free use),\n    #     and effective hours delivered = crews * crew_effective_hours.\n    #     Required task hours must equal effective hours delivered into that task.\n    def task_crew_link_rule(m, t, mode):\n        # if this mode is NOT selected, its share of the crew count must be zero:\n        # model.crew[t] is shared, so instead each mode binary permits at most M crews.\n        return m.crew[t] <= d[\"crew_upper\"][t] * m.select[t, mode] + (\n            d[\"crew_upper\"][t]\n        ) * 0\n    model.crew_within_selected_mode = pyo.Constraint(\n        model.TASKMODE, rule=task_crew_link_rule\n    )\n\n    # (3) effective hours delivered to each task must equal its requirement.\n    def hours_demand_rule(m, t):\n        return sum(m.hours[t, w] for w in m.WT) == d[\"task_hours\"][t]\n    model.task_hours_met = pyo.Constraint(model.TASKS, rule=hours_demand_rule)\n\n    # (4) hours delivered into task t in the selected mode reproduce that mode's crew ratios.\n    #     For the selected mode m: hours[t, w] = crew[t] * crew_size(w) * effective_hours(w).\n    def mode_hours_rule(m, t, w):\n        lo = []\n        for mode in MODES[t]:\n            lo.append(\n                d[\"crews\"][t][mode][w] * d[\"hours_effective\"][w]\n                - d[\"crew_upper\"][t]\n                * d[\"hours_effective\"][w]\n                * (1 - m.select[t, mode])\n            )\n        return m.hours[t, w] >= sum(lo)\n    model.mode_hours_lb = pyo.Constraint(model.TASKS, model.WT, rule=mode_hours_rule)\n\n    def mode_hours_ub_rule(m, t, w):\n        ub = []\n        for mode in MODES[t]:\n            ub.append(\n                d[\"crews\"][t][mode][w] * d[\"hours_effective\"][w]\n                + d[\"crew_upper\"][t] * d[\"hours_effective\"][w] * (1 - m.select[t, mode])\n            )\n        return m.hours[t, w] <= sum(ub)\n    model.mode_hours_ub = pyo.Constraint(\n        model.TASKS, model.WT, rule=mode_hours_ub_rule\n    )\n\n    # (5) total effective hours used from each worker type cannot exceed the capacity\n    #     of the recruited headcount (effective hours available per recruited worker).\n    def capacity_rule(m, w):\n        return (\n            sum(m.hours[t, w] for t in m.TASKS)\n            <= d[\"hours_effective\"][w] * m.headcount[w]\n        )\n    model.capacity = pyo.Constraint(model.WT, rule=capacity_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1183,
+      "completion_tokens": 2720
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 12.765486240386963,
+   "position": 0,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"wage_skilled\": 100,\n    \"wage_labourer\": 80,\n    \"effective_hours_skilled\": 42,\n    \"effective_hours_labourer\": 36,\n    \"task_hours\": {1: 10000, 2: 20000, 3: 30000},\n    \"max_skilled\": 400,\n    \"max_labourer\": 800,\n    # pattern k -> (task, skilled_workers, labourer_workers)\n    \"patterns\": {\n        1: {\"task\": 1, \"skilled\": 1, \"labourer\": 0},\n        2: {\"task\": 1, \"skilled\": 1, \"labourer\": 2},\n        3: {\"task\": 2, \"skilled\": 1, \"labourer\": 0},\n        4: {\"task\": 2, \"skilled\": 0, \"labourer\": 1},\n        5: {\"task\": 3, \"skilled\": 0, \"labourer\": 5},\n        6: {\"task\": 3, \"skilled\": 1, \"labourer\": 3},\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.K = pyo.Set(initialize=list(d[\"patterns\"].keys()), ordered=True)\n    model.J = pyo.Set(initialize=list(d[\"task_hours\"].keys()), ordered=True)\n\n    # Number of teams/patterns of each type to employ\n    model.t = pyo.Var(model.K, domain=pyo.NonNegativeIntegers)\n\n    # Derived headcounts (linear expressions)\n    def skilled_expr(m):\n        return sum(d[\"patterns\"][k][\"skilled\"] * m.t[k] for k in m.K)\n\n    def labourer_expr(m):\n        return sum(d[\"patterns\"][k][\"labourer\"] * m.t[k] for k in m.K)\n\n    # Total weekly wage expenditure (minimize)\n    model.obj = pyo.Objective(\n        expr=d[\"wage_skilled\"] * skilled_expr(model)\n             + d[\"wage_labourer\"] * labourer_expr(model),\n        sense=pyo.minimize,\n    )\n\n    # Effective hours produced by a pattern type per week\n    def pattern_hours(k):\n        return (\n            d[\"patterns\"][k][\"skilled\"] * d[\"effective_hours_skilled\"]\n            + d[\"patterns\"][k][\"labourer\"] * d[\"effective_hours_labourer\"]\n        )\n\n    # Each task must receive at least its required effective hours\n    def task_hours_rule(m, j):\n        return sum(\n            pattern_hours(k) * m.t[k]\n            for k in m.K\n            if d[\"patterns\"][k][\"task\"] == j\n        ) >= d[\"task_hours\"][j]\n\n    model.task_hours_con = pyo.Constraint(model.J, rule=task_hours_rule)\n\n    # Skilled headcount limit\n    def max_skilled_rule(m):\n        return skilled_expr(m) <= d[\"max_skilled\"]\n\n    model.max_skilled_con = pyo.Constraint(rule=max_skilled_rule)\n\n    # Labourer headcount limit\n    def max_labourer_rule(m):\n        return labourer_expr(m) <= d[\"max_labourer\"]\n\n    model.max_labourer_con = pyo.Constraint(rule=max_labourer_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1193,
+      "completion_tokens": 1446
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.918565511703491,
+   "position": 1,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# =====================================================================\n# MODELLING NOTES\n# ---------------------------------------------------------------------\n# Decision variables\n#   xS : number of skilled workers recruited          (integer, 0..400)\n#   xL : number of laborers recruited                 (integer, 0..800)\n#\n# Effective working time per worker per week:\n#   skilled : 42 h/week\n#   laborer : 36 h/week\n#\n# Task completion options (effective hours contributed per \"unit\"):\n#   Task 1 (needs 10,000 effective hours):\n#       - one skilled worker alone            -> 42 h\n#       - one skilled worker + two laborers   -> 42 + 2*36 = 114 h\n#   Task 2 (needs 20,000 effective hours):\n#       - one skilled worker alone            -> 42 h\n#       - one laborer alone                   -> 36 h\n#   Task 3 (needs 30,000 effective hours):\n#       - five laborers                       -> 5*36 = 180 h\n#       - one skilled worker + three laborers -> 42 + 3*36 = 150 h\n#\n# Objective (minimise total weekly wage expenditure):\n#   min 100*xS + 80*xL\n#\n# Constraints\n#   (1) Total effective hours supplied by all recruited workers must be\n#       at least the total effective hours required by the three tasks:\n#           42*xS + 36*xL >= 10000 + 20000 + 30000 = 60000\n#   (2) Recruitment limits:\n#           xS <= 400\n#           xL <= 800\n# =====================================================================\n\nDATA = {\n    # Weekly wages (yuan per worker per week)\n    \"WAGE_SKILLED\": 100,\n    \"WAGE_LABOR\": 80,\n\n    # Effective working hours per worker per week\n    \"EFF_HOURS_SKILLED\": 42,\n    \"EFF_HOURS_LABOR\": 36,\n\n    # Effective working-hour requirements per task\n    \"REQ_TASK1\": 10000,\n    \"REQ_TASK2\": 20000,\n    \"REQ_TASK3\": 30000,\n\n    # Recruitment limits\n    \"MAX_SKILLED\": 400,\n    \"MAX_LABOR\": 800,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Decision variables\n    model.xS = pyo.Var(\n        domain=pyo.NonNegativeIntegers,\n        bounds=(0, d[\"MAX_SKILLED\"]),\n    )\n    model.xL = pyo.Var(\n        domain=pyo.NonNegativeIntegers,\n        bounds=(0, d[\"MAX_LABOR\"]),\n    )\n\n    # Total effective hours required across all three tasks\n    total_required = d[\"REQ_TASK1\"] + d[\"REQ_TASK2\"] + d[\"REQ_TASK3\"]\n\n    # (1) Effective working-time requirement\n    def rule_eff_hours(m):\n        return (\n            d[\"EFF_HOURS_SKILLED\"] * m.xS\n            + d[\"EFF_HOURS_LABOR\"] * m.xL\n            >= total_required\n        )\n\n    model.eff_hours = pyo.Constraint(rule=rule_eff_hours)\n\n    # (2) Recruitment limits (already enforced via bounds, but stated\n    #     explicitly for clarity of the mathematical model)\n    def rule_max_skilled(m):\n        return m.xS <= d[\"MAX_SKILLED\"]\n\n    def rule_max_labor(m):\n        return m.xL <= d[\"MAX_LABOR\"]\n\n    model.max_skilled = pyo.Constraint(rule=rule_max_skilled)\n    model.max_labor = pyo.Constraint(rule=rule_max_labor)\n\n    # Objective: minimise total weekly wage expenditure\n    def rule_obj(m):\n        return d[\"WAGE_SKILLED\"] * m.xS + d[\"WAGE_LABOR\"] * m.xL\n\n    model.obj = pyo.Objective(rule=rule_obj, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1197,
+      "completion_tokens": 2074
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "missing_constraints",
+      "missing_objective",
+      "missing_variables",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1537,
+      "completion_tokens": 934
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 20.30532717704773,
+   "position": 2,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"weekly wages for skilled workers and laborers are 100 yuan and 80 yuan\"\n    \"wage_skilled\": 100,\n    \"wage_laborer\": 80,\n    # \"their actual effective working time is 42 hours and 36 hours, respectively\"\n    \"eff_hours_skilled\": 42,\n    \"eff_hours_laborer\": 36,\n    # \"total effective working time of 10,000 hours for the first task,\n    #  20,000 hours for the second task, and 30,000 hours for the third task\"\n    \"hours_task1\": 10000,\n    \"hours_task2\": 20000,\n    \"hours_task3\": 30000,\n    # \"limited to a maximum of 400 skilled workers and 800 laborers\"\n    \"max_skilled\": 400,\n    \"max_laborer\": 800,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Decision variables: number of workers to recruit\n    model.x_skilled = pyo.Var(\n        within=pyo.NonNegativeIntegers,\n        bounds=(0, d[\"max_skilled\"]),\n    )\n    model.x_laborer = pyo.Var(\n        within=pyo.NonNegativeIntegers,\n        bounds=(0, d[\"max_laborer\"]),\n    )\n\n    # Total effective hours required across all three tasks\n    total_hours_required = d[\"hours_task1\"] + d[\"hours_task2\"] + d[\"hours_task3\"]\n\n    # Effective hours supplied must cover the total requirement\n    def effective_hours_rule(m):\n        return (\n            d[\"eff_hours_skilled\"] * m.x_skilled\n            + d[\"eff_hours_laborer\"] * m.x_laborer\n            >= total_hours_required\n        )\n\n    model.effective_hours = pyo.Constraint(rule=effective_hours_rule)\n\n    # Objective: minimise total weekly wage expenditure\n    def obj_rule(m):\n        return d[\"wage_skilled\"] * m.x_skilled + d[\"wage_laborer\"] * m.x_laborer\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1181,
+      "completion_tokens": 862
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.526031970977783,
+   "position": 3,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # wages (yuan / week)\n    \"wage\": {\"skilled\": 100, \"laborer\": 80},\n    # effective working hours per week per worker\n    \"eff_hours\": {\"skilled\": 42, \"laborer\": 36},\n    # effective-hour requirements per task\n    \"task_requirement\": {1: 10000, 2: 20000, 3: 30000},\n    # recruitment caps\n    \"max_workers\": {\"skilled\": 400, \"laborer\": 800},\n    # completion options: for each task, list of (skilled_used, laborer_used)\n    \"options\": {\n        1: [\n            {\"skilled\": 1, \"laborer\": 0},   # skilled alone\n            {\"skilled\": 1, \"laborer\": 2},   # 1 skilled + 2 laborers\n        ],\n        2: [\n            {\"skilled\": 1, \"laborer\": 0},   # skilled alone\n            {\"skilled\": 0, \"laborer\": 1},   # laborer alone\n        ],\n        3: [\n            {\"skilled\": 0, \"laborer\": 5},   # 5 laborers\n            {\"skilled\": 1, \"laborer\": 3},   # 1 skilled + 3 laborers\n        ],\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # ---- Sets ----\n    model.WORKER_TYPES = pyo.Set(initialize=list(d[\"wage\"].keys()))\n    model.TASKS = pyo.Set(initialize=list(d[\"task_requirement\"].keys()))\n\n    # flat set of (task, option) pairs\n    option_pairs = [\n        (t, k)\n        for t in d[\"options\"]\n        for k in range(len(d[\"options\"][t]))\n    ]\n    model.OPTION_PAIRS = pyo.Set(initialize=option_pairs, dimen=2)\n\n    # ---- Variables ----\n    model.recruit = pyo.Var(\n        model.WORKER_TYPES,\n        domain=pyo.NonNegativeIntegers,\n        bounds=lambda m, w: (0, d[\"max_workers\"][w]),\n    )\n\n    model.use_option = pyo.Var(\n        model.OPTION_PAIRS,\n        domain=pyo.NonNegativeIntegers,\n    )\n\n    # ---- Objective: minimize total weekly wage ----\n    def obj_rule(m):\n        return sum(d[\"wage\"][w] * m.recruit[w] for w in m.WORKER_TYPES)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---- Constraint 1: effective hours delivered per task must meet requirement ----\n    def task_hours_rule(m, t):\n        total = 0\n        for k in range(len(d[\"options\"][t])):\n            opt = d[\"options\"][t][k]\n            hours = (\n                opt[\"skilled\"] * d[\"eff_hours\"][\"skilled\"]\n                + opt[\"laborer\"] * d[\"eff_hours\"][\"laborer\"]\n            )\n            total += hours * m.use_option[t, k]\n        return total >= d[\"task_requirement\"][t]\n\n    model.task_hours = pyo.Constraint(model.TASKS, rule=task_hours_rule)\n\n    # ---- Constraint 2: skilled workers used cannot exceed skilled recruited ----\n    def skilled_link_rule(m):\n        total = 0\n        for (t, k) in option_pairs:\n            total += d[\"options\"][t][k][\"skilled\"] * m.use_option[t, k]\n        return total <= m.recruit[\"skilled\"]\n\n    model.skilled_link = pyo.Constraint(rule=skilled_link_rule)\n\n    # ---- Constraint 3: laborers used cannot exceed laborers recruited ----\n    def laborer_link_rule(m):\n        total = 0\n        for (t, k) in option_pairs:\n            total += d[\"options\"][t][k][\"laborer\"] * m.use_option[t, k]\n        return total <= m.recruit[\"laborer\"]\n\n    model.laborer_link = pyo.Constraint(rule=laborer_link_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1177,
+      "completion_tokens": 1303
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2436,
+      "completion_tokens": 970
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 9.935226678848267,
+   "position": 4,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"wage\": {\"skilled\": 100, \"labor\": 80},\n    \"hours\": {\"skilled\": 42, \"labor\": 36},\n    \"task_hours\": {1: 10000, 2: 20000, 3: 30000},\n    # mode composition: (skilled, labor) workers per unit of each mode\n    # task 1: mode1 = 1 skilled; mode2 = 1 skilled + 2 labor\n    \"mode_a\": {1: (1, 0), 2: (1, 0), 3: (0, 5)},\n    # task 1: skilled-only  -> mode_a; team is mode_b\n    # task 2: skilled alone OR labor alone -> handled below via mode_a/mode_b\n    \"mode_b\": {1: (1, 2), 2: (0, 1), 3: (1, 3)},\n    \"max_skilled\": 400,\n    \"max_labor\": 800,\n}\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.T = pyo.RangeSet(1, 3)\n\n    # Decision variables: number of whole-task completions per mode\n    model.x = pyo.Var(model.T, within=pyo.NonNegativeReals)  # mode A units\n    model.y = pyo.Var(model.T, within=pyo.NonNegativeReals)  # mode B units\n\n    # Derived headcounts as variables linked to mode units\n    model.S = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, d[\"max_skilled\"]))\n    model.L = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, d[\"max_labor\"]))\n\n    # Constraint: task completion (>= 1)  [each task must be done]\n    def task_rule(m, t):\n        return m.x[t] + m.y[t] >= 1\n    model.task_done = pyo.Constraint(model.T, rule=task_rule)\n\n    # Constraint: link skilled headcount to chosen modes\n    def skilled_rule(m):\n        return m.S == sum(\n            d[\"mode_a\"][t][0] * m.x[t] + d[\"mode_b\"][t][0] * m.y[t]\n            for t in m.T\n        )\n    model.skilled_link = pyo.Constraint(rule=skilled_rule)\n\n    # Constraint: link labor headcount to chosen modes\n    def labor_rule(m):\n        return m.L == sum(\n            d[\"mode_a\"][t][1] * m.x[t] + d[\"mode_b\"][t][1] * m.y[t]\n            for t in m.T\n        )\n    model.labor_link = pyo.Constraint(rule=labor_rule)\n\n    # Constraint: effective working time sufficiency per task\n    # available effective hours = S*hours_skilled + L*hours_labor? \n    # The tasks require effective hours; total effective hours available from chosen modes\n    # must meet per-task effective-hour demand. Mode commits a type to a task.\n    def hours_rule(m, t):\n        avail = (\n            d[\"mode_a\"][t][0] * d[\"hours\"][\"skilled\"] * m.x[t]\n            + d[\"mode_a\"][t][1] * d[\"hours\"][\"labor\"] * m.x[t]\n            + d[\"mode_b\"][t][0] * d[\"hours\"][\"skilled\"] * m.y[t]\n            + d[\"mode_b\"][t][1] * d[\"hours\"][\"labor\"] * m.y[t]\n        )\n        return avail >= d[\"task_hours\"][t]\n    model.hours_demand = pyo.Constraint(model.T, rule=hours_rule)\n\n    # Objective: minimize total wage\n    def obj_rule(m):\n        return d[\"wage\"][\"skilled\"] * m.S + d[\"wage\"][\"labor\"] * m.L\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1193,
+      "completion_tokens": 1632
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.189099550247192,
+   "position": 5,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"weekly wages for skilled workers and laborers are 100 yuan and 80 yuan\"\n    \"wage_skilled\": 100,\n    \"wage_laborer\": 80,\n    # \"effective working time is 42 hours and 36 hours, respectively\"\n    \"eff_hours_skilled\": 42,\n    \"eff_hours_laborer\": 36,\n    # \"total effective working time of 10,000 ... 20,000 ... 30,000\"\n    \"task_hours\": {1: 10000, 2: 20000, 3: 30000},\n    # \"maximum of 400 skilled workers and 800 laborers\"\n    \"max_skilled\": 400,\n    \"max_laborer\": 800,\n    # Pattern definitions: task -> list of (skilled, laborers) compositions.\n    # Task 1: skilled alone, OR 1 skilled + 2 laborers\n    # Task 2: skilled alone, OR laborer alone\n    # Task 3: 5 laborers, OR 1 skilled + 3 laborers\n    \"patterns\": {\n        1: [(1, 0), (1, 2)],\n        2: [(1, 0), (0, 1)],\n        3: [(0, 5), (1, 3)],\n    },\n}\n\n# Flat list of (task, pattern_index, skilled, laborers) for indexing\nPATTERNS = [\n    (t, k, s, l)\n    for t, plist in DATA[\"patterns\"].items()\n    for k, (s, l) in enumerate(plist)\n]\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ---- Sets ----\n    model.TASKS = pyo.Set(initialize=list(d[\"patterns\"].keys()))\n    model.PATTERNS = pyo.Set(\n        initialize=[p for p in PATTERNS], dimen=4\n    )\n\n    # ---- Variables ----\n    # Number of skilled workers / laborers recruited\n    model.x_skilled = pyo.Var(\n        within=pyo.NonNegativeIntegers, bounds=(0, d[\"max_skilled\"])\n    )\n    model.x_laborer = pyo.Var(\n        within=pyo.NonNegativeIntegers, bounds=(0, d[\"max_laborer\"])\n    )\n\n    # Number of units of each pattern used for each task\n    model.n = pyo.Var(model.PATTERNS, within=pyo.NonNegativeIntegers)\n\n    # ---- Objective: minimize total weekly wage ----\n    model.obj = pyo.Objective(\n        expr=d[\"wage_skilled\"] * model.x_skilled\n        + d[\"wage_laborer\"] * model.x_laborer,\n        sense=pyo.minimize,\n    )\n\n    # ---- Constraints ----\n\n    # Effective hours delivered per pattern unit\n    def pattern_hours(p):\n        _, _, s, l = p\n        return s * d[\"eff_hours_skilled\"] + l * d[\"eff_hours_laborer\"]\n\n    # Each task's required effective hours must be met\n    def task_rule(m, t):\n        return sum(\n            pattern_hours(p) * m.n[p]\n            for p in m.PATTERNS\n            if p[0] == t\n        ) >= d[\"task_hours\"][t]\n\n    model.task_req = pyo.Constraint(model.TASKS, rule=task_rule)\n\n    # Total skilled workers used across all patterns <= recruited skilled\n    def skilled_supply_rule(m):\n        return sum(\n            p[2] * m.n[p] for p in m.PATTERNS\n        ) <= m.x_skilled\n\n    model.skilled_supply = pyo.Constraint(rule=skilled_supply_rule)\n\n    # Total laborers used across all patterns <= recruited laborers\n    def laborer_supply_rule(m):\n        return sum(\n            p[3] * m.n[p] for p in m.PATTERNS\n        ) <= m.x_laborer\n\n    model.laborer_supply = pyo.Constraint(rule=laborer_supply_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1181,
+      "completion_tokens": 1397
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.72421145439148,
+   "position": 6,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # wages (yuan per worker per week)\n    \"wage_skilled\": 100,\n    \"wage_laborer\": 80,\n    # effective working hours per week\n    \"eff_hours_skilled\": 42,\n    \"eff_hours_laborer\": 36,\n    # task effective-hour demands\n    \"demand_task1\": 10000,\n    \"demand_task2\": 20000,\n    \"demand_task3\": 30000,\n    # recruitment caps\n    \"max_skilled\": 400,\n    \"max_laborer\": 800,\n    # manning coefficients (effective hours contributed per worker to a task)\n    # Task 1: skilled alone OR 1 skilled + 2 laborers\n    \"t1_skilled_alone\": 42,\n    \"t1_skilled_team\": 42,\n    \"t1_laborer_team\": 36,\n    # Task 2: skilled alone OR laborer alone\n    \"t2_skilled_alone\": 42,\n    \"t2_laborer_alone\": 36,\n    # Task 3: 5 laborers OR 1 skilled + 3 laborers\n    \"t3_laborer_team5\": 36,\n    \"t3_skilled_lead\": 42,\n    \"t3_laborer_lead\": 36,\n    # big-M for mode selection\n    \"bigM\": 1000000,\n}\n\nTASKS = [1, 2, 3]\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.TASKS = pyo.Set(initialize=TASKS)\n\n    # Decision variables: number of workers to recruit\n    model.x_skilled = pyo.Var(\n        within=pyo.NonNegativeIntegers,\n        bounds=(0, d[\"max_skilled\"]),\n    )\n    model.x_laborer = pyo.Var(\n        within=pyo.NonNegativeIntegers,\n        bounds=(0, d[\"max_laborer\"]),\n    )\n\n    # Mode-selection binaries for each task\n    # Task 1: mode A = skilled alone, mode B = skilled + 2 laborers\n    model.m1a = pyo.Var(within=pyo.Binary)\n    model.m1b = pyo.Var(within=pyo.Binary)\n    # Task 2: mode A = skilled alone, mode B = laborer alone\n    model.m2a = pyo.Var(within=pyo.Binary)\n    model.m2b = pyo.Var(within=pyo.Binary)\n    # Task 3: mode A = 5 laborers, mode B = skilled + 3 laborers\n    model.m3a = pyo.Var(within=pyo.Binary)\n    model.m3b = pyo.Var(within=pyo.Binary)\n\n    # Effective hours allocated per task per skill\n    model.h_skilled = pyo.Var(model.TASKS, within=pyo.NonNegativeReals)\n    model.h_laborer = pyo.Var(model.TASKS, within=pyo.NonNegativeReals)\n\n    # Objective: minimize total weekly wage\n    model.obj = pyo.Objective(\n        expr=d[\"wage_skilled\"] * model.x_skilled\n        + d[\"wage_laborer\"] * model.x_laborer,\n        sense=pyo.minimize,\n    )\n\n    # Exactly one mode per task\n    def rule_mode1(m):\n        return m.m1a + m.m1b == 1\n\n    def rule_mode2(m):\n        return m.m2a + m.m2b == 1\n\n    def rule_mode3(m):\n        return m.m3a + m.m3b == 1\n\n    model.c_mode1 = pyo.Constraint(rule=rule_mode1)\n    model.c_mode2 = pyo.Constraint(rule=rule_mode2)\n    model.c_mode3 = pyo.Constraint(rule=rule_mode3)\n\n    # Task demand satisfaction (effective hours)\n    def rule_demand1(m):\n        return m.h_skilled[1] + m.h_laborer[1] >= d[\"demand_task1\"]\n\n    def rule_demand2(m):\n        return m.h_skilled[2] + m.h_laborer[2] >= d[\"demand_task2\"]\n\n    def rule_demand3(m):\n        return m.h_skilled[3] + m.h_laborer[3] >= d[\"demand_task3\"]\n\n    model.c_demand1 = pyo.Constraint(rule=rule_demand1)\n    model.c_demand2 = pyo.Constraint(rule=rule_demand2)\n    model.c_demand3 = pyo.Constraint(rule=rule_demand3)\n\n    # Task 1: skilled hours limited by mode\n    # mode A: skilled alone -> h_skilled[1] <= 42 * x_skilled\n    # mode B: skilled + 2 laborers -> h_skilled[1] <= 42 * x_skilled, h_laborer[1] <= 36 * x_laborer\n    def rule_t1_skilled(m):\n        return m.h_skilled[1] <= d[\"t1_skilled_alone\"] * m.x_skilled\n\n    def rule_t1_laborer(m):\n        return m.h_laborer[1] <= d[\"t1_laborer_team\"] * m.x_laborer + d[\"bigM\"] * m.m1a\n\n    model.c_t1_skilled = pyo.Constraint(rule=rule_t1_skilled)\n    model.c_t1_laborer = pyo.Constraint(rule=rule_t1_laborer)\n\n    # Task 2: skilled alone OR laborer alone\n    def rule_t2_skilled(m):\n        return m.h_skilled[2] <= d[\"t2_skilled_alone\"] * m.x_skilled + d[\"bigM\"] * m.m2b\n\n    def rule_t2_laborer(m):\n        return m.h_laborer[2] <= d[\"t2_laborer_alone\"] * m.x_laborer + d[\"bigM\"] * m.m2a\n\n    model.c_t2_skilled = pyo.Constraint(rule=rule_t2_skilled)\n    model.c_t2_laborer = pyo.Constraint(rule=rule_t2_laborer)\n\n    # Task 3: 5 laborers OR skilled + 3 laborers\n    def rule_t3_skilled(m):\n        return m.h_skilled[3] <= d[\"t3_skilled_lead\"] * m.x_skilled + d[\"bigM\"] * m.m3a\n\n    def rule_t3_laborer(m):\n        return m.h_laborer[3] <= d[\"t3_laborer_team5\"] * m.x_laborer\n\n    model.c_t3_skilled = pyo.Constraint(rule=rule_t3_skilled)\n    model.c_t3_laborer = pyo.Constraint(rule=rule_t3_laborer)\n\n    # Total effective hours per skill cannot exceed supply\n    def rule_supply_skilled(m):\n        return (\n            m.h_skilled[1] + m.h_skilled[2] + m.h_skilled[3]\n            <= d[\"eff_hours_skilled\"] * m.x_skilled\n        )\n\n    def rule_supply_laborer(m):\n        return (\n            m.h_laborer[1] + m.h_laborer[2] + m.h_laborer[3]\n            <= d[\"eff_hours_laborer\"] * m.x_laborer\n        )\n\n    model.c_supply_skilled = pyo.Constraint(rule=rule_supply_skilled)\n    model.c_supply_laborer = pyo.Constraint(rule=rule_supply_laborer)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1183,
+      "completion_tokens": 5123
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1767,
+      "completion_tokens": 1787
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 37.56896686553955,
+   "position": 7,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# =============================================================================\n# Structured formulation comment block\n# =============================================================================\n# Decision variables\n#   x[\"skilled\"] : number of skilled workers recruited (non-negative integer)\n#   x[\"laborer\"] : number of laborers recruited        (non-negative integer)\n#\n# Objective (in words)\n#   Minimise total weekly wage expenditure:\n#       wage_skilled * x_skilled + wage_laborer * x_laborer\n#\n# Constraints (numbered, with source sentence)\n#   (1) Task 1 effective-time requirement:\n#       \"the company needs a total effective working time of 10,000 hours for\n#        the first task\"  ->  effective hours supplied to task 1 >= 10000.\n#       Task 1 can be done by a skilled worker alone or by a team of one\n#       skilled worker and two laborers.  We model the effective hours\n#       contributed to task 1 by each recruited worker type using the\n#       effective weekly hours per worker.\n#   (2) Task 2 effective-time requirement:\n#       \"20,000 hours for the second task\" -> effective hours >= 20000.\n#       Task 2 can be done by a skilled worker or a laborer alone.\n#   (3) Task 3 effective-time requirement:\n#       \"30,000 hours for the third task\" -> effective hours >= 30000.\n#       Task 3 can be done by a team of five laborers or by a skilled worker\n#       leading three laborers.\n#   (4) Skilled-worker recruitment limit:\n#       \"maximum of 400 skilled workers\" -> x_skilled <= 400.\n#   (5) Laborer recruitment limit:\n#       \"maximum of 800 laborers\" -> x_laborer <= 800.\n#\n# The model is linear: all constraints are linear in the integer variables.\n# =============================================================================\n\nDATA = {\n    # Effective (useful) working time per worker per week, in hours\n    \"eff_skilled_hours\": 42,\n    \"eff_laborer_hours\": 36,\n\n    # Weekly wages, in yuan\n    \"wage_skilled\": 100,\n    \"wage_laborer\": 80,\n\n    # Effective-time requirements per task, in hours\n    \"req_task1\": 10000,\n    \"req_task2\": 20000,\n    \"req_task3\": 30000,\n\n    # Recruitment limits\n    \"max_skilled\": 400,\n    \"max_laborer\": 800,\n\n    # Effective-hour contribution coefficients per recruited worker type\n    # for each task.  These encode the crew structures described in the text:\n    #   Task 1: skilled alone OR 1 skilled + 2 laborers\n    #   Task 2: skilled alone OR laborer alone\n    #   Task 3: 5 laborers OR 1 skilled + 3 laborers\n    # The coefficients below express the effective hours each recruited worker\n    # can contribute to the corresponding task under the stated crew options.\n    \"contrib\": {\n        (\"skilled\", \"task1\"): 42,\n        (\"laborer\", \"task1\"): 18,   # 36 effective hours / 2 laborers per crew\n        (\"skilled\", \"task2\"): 42,\n        (\"laborer\", \"task2\"): 36,\n        (\"skilled\", \"task3\"): 42,\n        (\"laborer\", \"task3\"): 9,    # 36 effective hours / 4 laborers per crew\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel(\"company_recruitment\")\n\n    # ------------------------------- Sets ------------------------------------\n    model.WorkerTypes = pyo.Set(initialize=[\"skilled\", \"laborer\"])\n    model.Tasks = pyo.Set(initialize=[\"task1\", \"task2\", \"task3\"])\n\n    # ---------------------------- Variables ----------------------------------\n    def worker_bounds(m, w):\n        if w == \"skilled\":\n            return (0, d[\"max_skilled\"])\n        return (0, d[\"max_laborer\"])\n\n    model.x = pyo.Var(\n        model.WorkerTypes,\n        within=pyo.NonNegativeIntegers,\n        bounds=worker_bounds,\n    )\n\n    # ---------------------------- Objective ----------------------------------\n    def obj_rule(m):\n        return (\n            d[\"wage_skilled\"] * m.x[\"skilled\"]\n            + d[\"wage_laborer\"] * m.x[\"laborer\"]\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --------------------------- Constraints ---------------------------------\n    # (1)-(3) Effective-time requirements per task\n    def task_requirement_rule(m, t):\n        return (\n            d[\"contrib\"][(\"skilled\", t)] * m.x[\"skilled\"]\n            + d[\"contrib\"][(\"laborer\", t)] * m.x[\"laborer\"]\n            >= d[\"req_\" + t]\n        )\n\n    model.task_requirement = pyo.Constraint(\n        model.Tasks, rule=task_requirement_rule\n    )\n\n    # (4) Skilled-worker recruitment limit\n    def skilled_limit_rule(m):\n        return m.x[\"skilled\"] <= d[\"max_skilled\"]\n\n    model.skilled_limit = pyo.Constraint(rule=skilled_limit_rule)\n\n    # (5) Laborer recruitment limit\n    def laborer_limit_rule(m):\n        return m.x[\"laborer\"] <= d[\"max_laborer\"]\n\n    model.laborer_limit = pyo.Constraint(rule=laborer_limit_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1197,
+      "completion_tokens": 5999
+     },
+     "finish_reason": "length"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 7117,
+      "completion_tokens": 1240
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 49.741936445236206,
+   "position": 8,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # worker types\n    \"workers\": [\"skilled\", \"laborer\"],\n    \"wage\": {\"skilled\": 100, \"laborer\": 80},\n    \"effective_hours\": {\"skilled\": 42, \"laborer\": 36},\n    \"max_recruit\": {\"skilled\": 400, \"laborer\": 800},\n\n    # tasks\n    \"tasks\": [1, 2, 3],\n    \"required_hours\": {1: 10000, 2: 20000, 3: 30000},\n\n    # admissible crew patterns per task:\n    # each pattern is (n_skilled, n_laborer) forming one \"crew unit\"\n    # effective work delivered per crew unit = recipe * effective_hours\n    \"patterns\": {\n        1: [(1, 0), (1, 2)],   # skilled alone  OR  1 skilled + 2 laborers\n        2: [(1, 0), (0, 1)],   # skilled alone  OR  laborer alone\n        3: [(0, 5), (1, 3)],   # 5 laborers     OR  1 skilled + 3 laborers\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # ---- Sets ----\n    model.W = pyo.Set(initialize=d[\"workers\"])\n    model.T = pyo.Set(initialize=d[\"tasks\"])\n\n    # pattern index set: (task, pattern_id)\n    pattern_keys = []\n    pattern_recipe = {}\n    for t in d[\"tasks\"]:\n        for pid, recipe in enumerate(d[\"patterns\"][t]):\n            pattern_keys.append((t, pid))\n            pattern_recipe[(t, pid)] = recipe\n    model.P = pyo.Set(initialize=pattern_keys, dimen=2)\n\n    # ---- Variables ----\n    model.skilled = pyo.Var(\n        domain=pyo.NonNegativeIntegers,\n        bounds=(0, d[\"max_recruit\"][\"skilled\"]),\n    )\n    model.laborer = pyo.Var(\n        domain=pyo.NonNegativeIntegers,\n        bounds=(0, d[\"max_recruit\"][\"laborer\"]),\n    )\n    model.use = pyo.Var(model.P, domain=pyo.NonNegativeIntegers)\n\n    # ---- Objective ----\n    model.obj = pyo.Objective(\n        expr=d[\"wage\"][\"skilled\"] * model.skilled\n        + d[\"wage\"][\"laborer\"] * model.laborer,\n        sense=pyo.minimize,\n    )\n\n    # ---- Constraints ----\n\n    # (a) each task's required effective hours must be met\n    def task_hours_rule(m, t):\n        return sum(\n            (pattern_recipe[(t, pid)][0] * d[\"effective_hours\"][\"skilled\"]\n             + pattern_recipe[(t, pid)][1] * d[\"effective_hours\"][\"laborer\"])\n            * m.use[t, pid]\n            for (tt, pid) in m.P\n            if tt == t\n        ) >= d[\"required_hours\"][t]\n    model.task_hours = pyo.Constraint(model.T, rule=task_hours_rule)\n\n    # (b) skilled workers deployed cannot exceed recruited skilled workers\n    def skilled_avail_rule(m):\n        return sum(\n            pattern_recipe[(t, pid)][0] * m.use[t, pid]\n            for (t, pid) in m.P\n        ) <= m.skilled\n    model.skilled_avail = pyo.Constraint(rule=skilled_avail_rule)\n\n    # (c) laborers deployed cannot exceed recruited laborers\n    def laborer_avail_rule(m):\n        return sum(\n            pattern_recipe[(t, pid)][1] * m.use[t, pid]\n            for (t, pid) in m.P\n        ) <= m.laborer\n    model.laborer_avail = pyo.Constraint(rule=laborer_avail_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1177,
+      "completion_tokens": 1262
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.85478401184082,
+   "position": 9,
+   "recipe_index": 5
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:58:15"
+}

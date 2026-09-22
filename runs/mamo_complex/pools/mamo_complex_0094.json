@@ -1,0 +1,308 @@
+{
+ "pid": "mamo_complex_0094",
+ "question": "A post office requires different numbers of full-time employees on different days of the week. The number of full-time employees required on each day is given in Table 4. Monday requires 17 employees,Tuesday requires13, Wednesday requires 15, Thursday requires 19, Friday requires 14, Saturday requires 16,  Sunday requires 11. Union rules state that each full-time employee must work five consecutive days and then receive two days off. For example, an employee who works Monday to Friday must be off on Saturday and Sunday. The post office wants to meet its daily requirements using only fulltime employees. Formulate an LP that the post office can use to minimize the number of full-time employees who must be hired. Find the minimal number.",
+ "templates": [
+  "Workforce / Shift Scheduling"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Day index -> required number of full-time employees\n    # 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun\n    \"days\": [0, 1, 2, 3, 4, 5, 6],\n    \"requirement\": {\n        0: 17,  # Monday\n        1: 13,  # Tuesday\n        2: 15,  # Wednesday\n        3: 19,  # Thursday\n        4: 14,  # Friday\n        5: 16,  # Saturday\n        6: 11,  # Sunday\n    },\n    # Number of consecutive working days per employee\n    \"work_days\": 5,\n    # Number of consecutive off days per employee\n    \"off_days\": 2,\n    \"num_days\": 7,\n}\n\n\ndef _coverage(start_day, day, work_days, num_days):\n    \"\"\"Return 1 if an employee starting on start_day works on `day`, else 0.\n\n    The employee works `work_days` consecutive days beginning at start_day,\n    wrapping around the week.\n    \"\"\"\n    for k in range(work_days):\n        if (start_day + k) % num_days == day:\n            return 1\n    return 0\n\n\ndef build_model(data=None):\n    d = data or DATA\n    days = d[\"days\"]\n    num_days = d[\"num_days\"]\n    work_days = d[\"work_days\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets: start days (shift patterns) and days to cover\n    model.SHIFTS = pyo.Set(initialize=days, ordered=True)\n    model.DAYS = pyo.Set(initialize=days, ordered=True)\n\n    # Coverage parameter a[s, t] = 1 if shift s works on day t\n    coverage = {\n        (s, t): _coverage(s, t, work_days, num_days)\n        for s in days for t in days\n    }\n    model.a = pyo.Param(model.SHIFTS, model.DAYS,\n                        initialize=coverage, within=pyo.Binary)\n\n    # Decision variable: employees whose 5-day block starts on day s\n    model.x = pyo.Var(model.SHIFTS, within=pyo.NonNegativeIntegers)\n\n    # Objective: minimize total number of full-time employees hired\n    model.obj = pyo.Objective(\n        expr=sum(model.x[s] for s in model.SHIFTS),\n        sense=pyo.minimize,\n    )\n\n    # Constraint: each day's staffing must meet or exceed its requirement\n    # sum_s a[s,t] * x[s] >= requirement[t]  (>= because text says \"requires\")\n    def daily_requirement_rule(m, t):\n        return sum(m.a[s, t] * m.x[s] for s in m.SHIFTS) >= d[\"requirement\"][t]\n\n    model.daily_requirement = pyo.Constraint(\n        model.DAYS, rule=daily_requirement_rule\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 974,
+      "completion_tokens": 1000
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1634,
+      "completion_tokens": 719
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1634,
+      "completion_tokens": 719
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "possible_nonlinearity"
+   ],
+   "seconds": 12.217213153839111,
+   "position": 0,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "# =============================================================================\n# Post Office Full-Time Employee LP\n#\n# Decision variables:\n#   x[j] in NonNegativeIntegers, j in SHIFTS = {0,...,6}\n#       = number of full-time employees whose 5 consecutive work days START on\n#         cyclic day index j (day j, j+1, ..., j+4 mod 7); off days are j+5, j+6.\n#\n# Objective (minimize):\n#   total number of full-time employees hired = sum_j x[j]\n#\n# Constraints:\n#   (1) Daily coverage: for each day i in DAYS,\n#         sum_{j : day i is covered by shift starting at j} x[j] >= requirement[i]\n#       Source: \"each full-time employee must work five consecutive days and then\n#                receive two days off\" + the per-day requirement table.\n# =============================================================================\n\nimport pyomo.environ as pyo\n\nDATA = {\n    \"day_names\": [\"Mon\", \"Tue\", \"Wed\", \"Thu\", \"Fri\", \"Sat\", \"Sun\"],  # cyclic order\n    \"requirement\": {0: 17, 1: 13, 2: 15, 3: 19, 4: 14, 5: 16, 6: 11},\n    \"days_per_week\": 7,   # horizon length\n    \"work_days\": 5,       # consecutive days each employee works\n    \"rest_days\": 2,       # consecutive days off\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    n = d[\"days_per_week\"]\n    work = d[\"work_days\"]\n    req = d[\"requirement\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets: days of the week and the possible shift-start days (same index set)\n    model.DAYS = pyo.Set(initialize=list(range(n)))\n    model.SHIFTS = pyo.Set(initialize=list(range(n)))\n\n    # Coverage parameter: cover[i, j] = 1 if a shift starting on day j works day i\n    def cover_init(m, i, j):\n        # shift starting at j works days j, j+1, ..., j+work-1 (mod n)\n        return 1 if ((i - j) % n) < work else 0\n\n    model.cover = pyo.Param(model.DAYS, model.SHIFTS,\n                            initialize=cover_init, within=pyo.Binary)\n\n    # Requirement parameter\n    model.requirement = pyo.Param(model.DAYS,\n                                  initialize={i: req[i] for i in range(n)},\n                                  within=pyo.NonNegativeIntegers)\n\n    # Decision variable: employees starting their 5-day block on day j\n    model.x = pyo.Var(model.SHIFTS, within=pyo.NonNegativeIntegers)\n\n    # Objective: minimize total employees hired\n    def obj_rule(m):\n        return sum(m.x[j] for j in m.SHIFTS)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint (1): daily coverage requirement\n    def coverage_rule(m, i):\n        return sum(m.cover[i, j] * m.x[j] for j in m.SHIFTS) >= m.requirement[i]\n\n    model.coverage = pyo.Constraint(model.DAYS, rule=coverage_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 978,
+      "completion_tokens": 3057
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "missing_constraints",
+      "missing_objective",
+      "missing_variables",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1716,
+      "completion_tokens": 766
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1685,
+      "completion_tokens": 766
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "possible_nonlinearity"
+   ],
+   "seconds": 30.553566455841064,
+   "position": 1,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"days\": [\"Mon\", \"Tue\", \"Wed\", \"Thu\", \"Fri\", \"Sat\", \"Sun\"],\n    \"work_days\": 5,                 # each employee works 5 consecutive days\n    \"total_days\": 7,                # ... then 2 off, in a 7-day cycle\n    \"requirement\": {                # required full-time employees per day\n        \"Mon\": 17,\n        \"Tue\": 13,\n        \"Wed\": 15,\n        \"Thu\": 19,\n        \"Fri\": 14,\n        \"Sat\": 16,\n        \"Sun\": 11,\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_coverage(data):\n    \"\"\"coverage[(d, s)] = 1 if a worker starting on shift s covers day d.\"\"\"\n    days = data[\"days\"]\n    n = data[\"total_days\"]\n    work = data[\"work_days\"]\n    idx = {d: i for i, d in enumerate(days)}\n    cov = {}\n    for s_day in days:\n        s = idx[s_day]\n        for k in range(work):\n            d = days[(s + k) % n]\n            cov[(d, s_day)] = 1\n    for d in days:\n        for s_day in days:\n            cov.setdefault((d, s_day), 0)\n    return cov\n\n\ndef build_model(data=None):\n    d = data or DATA\n    days = list(d[\"days\"])\n    cov = build_coverage(d)\n\n    model = pyo.ConcreteModel()\n\n    model.DAYS = pyo.Set(initialize=days, ordered=True)\n\n    # x[s]: number of employees whose 5-day block starts on day s\n    model.x = pyo.Var(model.DAYS, within=pyo.NonNegativeIntegers)\n\n    def obj_rule(m):\n        return sum(m.x[s] for s in m.DAYS)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # One >= requirement constraint per day\n    def demand_rule(m, day):\n        return sum(cov[(day, s)] * m.x[s] for s in m.DAYS) >= d[\"requirement\"][day]\n\n    model.demand = pyo.Constraint(model.DAYS, rule=demand_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 964,
+      "completion_tokens": 934
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.739130020141602,
+   "position": 2,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# Every numeric constant from the problem lives here.\nDATA = {\n    # Day indices: 0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday,\n    #              4=Friday, 5=Saturday, 6=Sunday\n    \"days\": [0, 1, 2, 3, 4, 5, 6],\n    \"day_names\": [\"Monday\", \"Tuesday\", \"Wednesday\", \"Thursday\",\n                  \"Friday\", \"Saturday\", \"Sunday\"],\n    # Required full-time employees on each day (Mon..Sun)\n    \"requirements\": {\n        0: 17,   # Monday\n        1: 13,   # Tuesday\n        2: 15,   # Wednesday\n        3: 19,   # Thursday\n        4: 14,   # Friday\n        5: 16,   # Saturday\n        6: 11,   # Sunday\n    },\n    # Union rule: each employee works this many consecutive days ...\n    \"work_days_count\": 5,\n    # ... and is then off for two days\n    \"off_days_count\": 2,\n    # Number of distinct cyclic shift start days (= 7 days in a week)\n    \"num_shifts\": 7,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel(name=\"PostOfficeShiftScheduling\")\n\n    day_list = list(d[\"days\"])\n\n    # ------------------------------------------------------------------\n    # Sets\n    # ------------------------------------------------------------------\n    # Set of days of the week\n    model.DAYS = pyo.Set(initialize=day_list, ordered=True)\n    # Set of possible shift-start days (one shift pattern per start day)\n    model.SHIFTS = pyo.Set(initialize=day_list, ordered=True)\n\n    # ------------------------------------------------------------------\n    # Data-derived coverage indicator:\n    # shift starting on day i covers days (i + k) mod 7 for k = 0..work-1\n    # These are DATA-derived numeric constants (0/1), not decision vars.\n    # ------------------------------------------------------------------\n    W = d[\"work_days_count\"]\n    n_shifts = d[\"num_shifts\"]\n\n    def covers(shift_start, day):\n        offset = (day - shift_start) % n_shifts\n        return 1 if 0 <= offset < W else 0\n\n    coverage = {\n        (i, j): covers(i, j)\n        for i in model.SHIFTS\n        for j in model.DAYS\n    }\n\n    # ------------------------------------------------------------------\n    # Variables\n    # ------------------------------------------------------------------\n    # Number of employees hired whose shift starts on day i.\n    model.x = pyo.Var(\n        model.SHIFTS,\n        within=pyo.NonNegativeIntegers,\n        bounds=(0, None),\n    )\n\n    # ------------------------------------------------------------------\n    # Objective: minimize total full-time employees hired\n    # ------------------------------------------------------------------\n    def obj_rule(m):\n        return sum(m.x[i] for i in m.SHIFTS)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ------------------------------------------------------------------\n    # Constraints:\n    # Each day's staffing requirement must be met by employees working\n    # that day. This encodes the 5-consecutive-days / 2-off union rule\n    # because shift \"i\" is exactly the set of 5 consecutive days\n    # beginning on day i.\n    # ------------------------------------------------------------------\n    def demand_rule(m, j):\n        return sum(coverage[i, j] * m.x[i] for i in m.SHIFTS) >= d[\"requirements\"][j]\n\n    model.fulfill_demand = pyo.Constraint(model.DAYS, rule=demand_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 964,
+      "completion_tokens": 1204
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.711970329284668,
+   "position": 3,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant in the problem lives here.\n# Days are indexed 0..6 = Mon, Tue, Wed, Thu, Fri, Sat, Sun.\n# A start pattern s means the employee works days s, s+1, ..., s+4 (mod 7)\n# and is off on days s+5, s+6 (mod 7).\n# ---------------------------------------------------------------------------\nDATA = {\n    \"days\": [\"Mon\", \"Tue\", \"Wed\", \"Thu\", \"Fri\", \"Sat\", \"Sun\"],\n    \"req\": {\n        \"Mon\": 17,\n        \"Tue\": 13,\n        \"Wed\": 15,\n        \"Thu\": 19,\n        \"Fri\": 14,\n        \"Sat\": 16,\n        \"Sun\": 11,\n    },\n    \"work_block\": 5,   # consecutive days worked\n    \"off_block\": 2,    # consecutive days off\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    days = d[\"days\"]\n    req = d[\"req\"]\n    work_block = d[\"work_block\"]\n\n    # Coverage: pattern starting on day index s covers days s..s+work_block-1 (mod 7)\n    n = len(days)\n    coverage = {}\n    for di, day in enumerate(days):\n        coverage[day] = {}\n        for si, start in enumerate(days):\n            covered = any((si + k) % n == di for k in range(work_block))\n            coverage[day][start] = 1 if covered else 0\n\n    model = pyo.ConcreteModel()\n\n    # --- Sets ---\n    model.DAYS = pyo.Set(initialize=days, ordered=True)\n    model.STARTS = pyo.Set(initialize=days, ordered=True)\n\n    # --- Variables: employees starting their 5-day block on each day ---\n    model.workers = pyo.Var(\n        model.STARTS,\n        within=pyo.NonNegativeIntegers,\n        bounds=(0, None),\n    )\n\n    # --- Objective: minimize total full-time employees hired ---\n    def obj_rule(m):\n        return sum(m.workers[s] for s in m.STARTS)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --- Constraints: meet each day's requirement ---\n    def req_rule(m, day):\n        return sum(\n            coverage[day][s] * m.workers[s] for s in m.STARTS\n        ) >= req[day]\n\n    model.daily_requirement = pyo.Constraint(model.DAYS, rule=req_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 958,
+      "completion_tokens": 943
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.909034252166748,
+   "position": 4,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"requirements\": {          # day -> min full-time employees needed\n        \"Mon\": 17, \"Tue\": 13, \"Wed\": 15,\n        \"Thu\": 19, \"Fri\": 14, \"Sat\": 16, \"Sun\": 11,\n    },\n    \"days\": [\"Mon\", \"Tue\", \"Wed\", \"Thu\", \"Fri\", \"Sat\", \"Sun\"],\n    \"work_length\": 5,          # consecutive working days\n    \"cycle_length\": 7,         # weekly cycle\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    days = d[\"days\"]\n    n = d[\"cycle_length\"]\n    w = d[\"work_length\"]\n    req = d[\"requirements\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets: day index and shift-start index (0..6)\n    model.D = pyo.RangeSet(0, n - 1)   # day of week 0..6 (Mon..Sun)\n    model.S = pyo.RangeSet(0, n - 1)   # start day of the 5-day block\n\n    # x[s] = number of employees whose work block starts on day s\n    model.x = pyo.Var(model.S, within=pyo.NonNegativeIntegers)\n\n    # Objective: minimise total number of full-time employees hired\n    model.obj = pyo.Objective(\n        expr=sum(model.x[s] for s in model.S),\n        sense=pyo.minimize,\n    )\n\n    # Coverage constraint: on each day, employees at work must meet requirement.\n    # Employee starting on s works days s..s+w-1 (mod n), so employee s covers\n    # day dd iff (dd - s) mod n in {0,...,w-1}.\n    def cover_rule(m, dd):\n        return sum(\n            m.x[s] for s in m.S\n            if (dd - s) % n < w\n        ) >= req[days[dd]]\n    model.cover = pyo.Constraint(model.D, rule=cover_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 974,
+      "completion_tokens": 840
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.393338680267334,
+   "position": 5,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem, with source sentence quotes.\n# ---------------------------------------------------------------------------\nDATA = {\n    # \"Monday requires 17 employees, Tuesday requires 13, Wednesday requires 15,\n    #  Thursday requires 19, Friday requires 14, Saturday requires 16, Sunday requires 11.\"\n    \"requirements\": {\n        \"Mon\": 17,\n        \"Tue\": 13,\n        \"Wed\": 15,\n        \"Thu\": 19,\n        \"Fri\": 14,\n        \"Sat\": 16,\n        \"Sun\": 11,\n    },\n    # \"each full-time employee must work five consecutive days and then receive two days off.\"\n    \"work_days\": 5,\n    # Days of the week in order (defines the cyclic week).\n    \"days\": [\"Mon\", \"Tue\", \"Wed\", \"Thu\", \"Fri\", \"Sat\", \"Sun\"],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    days = d[\"days\"]\n    n = len(days)\n    work = d[\"work_days\"]\n\n    model = pyo.ConcreteModel()\n\n    # Set: each pattern is identified by its first working day.\n    model.PATTERNS = pyo.Set(initialize=days, ordered=True)\n    model.DAYS = pyo.Set(initialize=days, ordered=True)\n\n    # Precompute coverage: pattern starting on day index i covers days i..i+work-1 (cyclic).\n    def covers(start_day, day):\n        i = days.index(start_day)\n        j = days.index(day)\n        return 1 if ((j - i) % n) < work else 0\n\n    coverage = {(s, day): covers(s, day) for s in days for day in days}\n\n    # Variable: number of employees assigned to each 5-consecutive-day pattern.\n    model.x = pyo.Var(model.PATTERNS, within=pyo.NonNegativeIntegers)\n\n    # Objective: minimize total full-time employees hired.\n    model.obj = pyo.Objective(\n        expr=sum(model.x[p] for p in model.PATTERNS),\n        sense=pyo.minimize,\n    )\n\n    # Constraint: each day's staffing requirement must be met.\n    def staff_rule(m, day):\n        return sum(coverage[(p, day)] * m.x[p] for p in m.PATTERNS) >= d[\"requirements\"][day]\n\n    model.staff = pyo.Constraint(model.DAYS, rule=staff_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 962,
+      "completion_tokens": 870
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.482486009597778,
+   "position": 6,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   x[s] : number of full-time employees whose 5-consecutive-day work block\n#          starts on day s (s in DAYS).  Domain: non-negative integers.\n#          Each employee works 5 consecutive days and is off the other 2.\n#\n# Objective (minimize)\n#   Total number of full-time employees hired = sum_s x[s].\n#\n# Constraints\n#   (1) For each day d, the number of employees working that day must be at\n#       least the daily requirement r[d].  An employee with start day s works\n#       day d iff d lies in the 5-day window beginning at s (cyclically).\n#       sum_{s : d in window(s)} x[s] >= r[d]   for all d in DAYS.\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"days\": [\"Mon\", \"Tue\", \"Wed\", \"Thu\", \"Fri\", \"Sat\", \"Sun\"],\n    # For each start day, the 5 consecutive days worked (cyclic week).\n    \"work_windows\": {\n        \"Mon\": [\"Mon\", \"Tue\", \"Wed\", \"Thu\", \"Fri\"],\n        \"Tue\": [\"Tue\", \"Wed\", \"Thu\", \"Fri\", \"Sat\"],\n        \"Wed\": [\"Wed\", \"Thu\", \"Fri\", \"Sat\", \"Sun\"],\n        \"Thu\": [\"Thu\", \"Fri\", \"Sat\", \"Sun\", \"Mon\"],\n        \"Fri\": [\"Fri\", \"Sat\", \"Sun\", \"Mon\", \"Tue\"],\n        \"Sat\": [\"Sat\", \"Sun\", \"Mon\", \"Tue\", \"Wed\"],\n        \"Sun\": [\"Sun\", \"Mon\", \"Tue\", \"Wed\", \"Thu\"],\n    },\n    \"requirements\": {\n        \"Mon\": 17,\n        \"Tue\": 13,\n        \"Wed\": 15,\n        \"Thu\": 19,\n        \"Fri\": 14,\n        \"Sat\": 16,\n        \"Sun\": 11,\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.DAYS = pyo.Set(initialize=d[\"days\"], ordered=True)\n\n    # x[s]: employees whose work block starts on day s\n    model.x = pyo.Var(model.DAYS, within=pyo.NonNegativeIntegers)\n\n    # Objective: minimize total employees hired\n    def obj_rule(m):\n        return sum(m.x[s] for s in m.DAYS)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Coverage constraint: each day's requirement must be met\n    def coverage_rule(m, day):\n        return sum(\n            m.x[s]\n            for s in m.DAYS\n            if day in d[\"work_windows\"][s]\n        ) >= d[\"requirements\"][day]\n\n    model.coverage = pyo.Constraint(model.DAYS, rule=coverage_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 978,
+      "completion_tokens": 2467
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1108,
+      "completion_tokens": 663
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 21.670830965042114,
+   "position": 7,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # \"Monday requires 17 employees, Tuesday requires 13, Wednesday requires 15,\n    #  Thursday requires 19, Friday requires 14, Saturday requires 16, Sunday requires 11.\"\n    \"requirement\": {\n        \"Mon\": 17,\n        \"Tue\": 13,\n        \"Wed\": 15,\n        \"Thu\": 19,\n        \"Fri\": 14,\n        \"Sat\": 16,\n        \"Sun\": 11,\n    },\n    # \"each full-time employee must work five consecutive days and then receive two days off\"\n    \"days_worked\": 5,\n    \"days_off\": 2,\n    # Ordered list of days (shift patterns start on each day in order)\n    \"days\": [\"Mon\", \"Tue\", \"Wed\", \"Thu\", \"Fri\", \"Sat\", \"Sun\"],\n}\n\n# Precompute which days each shift (starting on a given day) covers.\ndef _build_coverage(days, days_worked):\n    n = len(days)\n    coverage = {}\n    for start in range(n):\n        covered = [days[(start + k) % n] for k in range(days_worked)]\n        coverage[days[start]] = covered\n    return coverage\n\n\ndef build_model(data=None):\n    d = data or DATA\n    days = d[\"days\"]\n    n = len(days)\n    coverage = _build_coverage(days, d[\"days_worked\"])\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.DAYS = pyo.Set(initialize=days, ordered=True)   # requirement days\n    model.SHIFTS = pyo.Set(initialize=days, ordered=True)  # shift start days\n\n    # Variables: number of employees starting their 5-day block on each day\n    model.x = pyo.Var(model.SHIFTS, within=pyo.NonNegativeIntegers)\n\n    # Objective: minimize total full-time employees hired\n    def obj_rule(m):\n        return sum(m.x[s] for s in m.SHIFTS)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraints: each day's requirement must be covered\n    def cover_rule(m, t):\n        return sum(m.x[s] for s in m.SHIFTS if t in coverage[s]) >= d[\"requirement\"][t]\n    model.cover = pyo.Constraint(model.DAYS, rule=cover_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 962,
+      "completion_tokens": 862
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.669235944747925,
+   "position": 8,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"days\": [\"Mon\", \"Tue\", \"Wed\", \"Thu\", \"Fri\", \"Sat\", \"Sun\"],\n    \"requirement\": {\n        \"Mon\": 17,\n        \"Tue\": 13,\n        \"Wed\": 15,\n        \"Thu\": 19,\n        \"Fri\": 14,\n        \"Sat\": 16,\n        \"Sun\": 11,\n    },\n    # Each pattern = the two consecutive rest days; worker works the other 5 consecutive days.\n    \"rest_pairs\": [\n        (\"Sat\", \"Sun\"),  # works Mon-Fri\n        (\"Sun\", \"Mon\"),  # works Tue-Sat\n        (\"Mon\", \"Tue\"),  # works Wed-Sun\n        (\"Tue\", \"Wed\"),  # works Thu-Mon\n        (\"Wed\", \"Thu\"),  # works Fri-Tue\n        (\"Thu\", \"Fri\"),  # works Sat-Wed\n        (\"Fri\", \"Sat\"),  # works Sun-Thu\n    ],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    days = d[\"days\"]\n    req = d[\"requirement\"]\n    rest_pairs = d[\"rest_pairs\"]\n\n    # Coverage: pattern p works day t if t is not one of its two rest days.\n    covers = {\n        (t, p): (0 if t in rest_pairs[p] else 1)\n        for t in days\n        for p in range(len(rest_pairs))\n    }\n\n    model = pyo.ConcreteModel()\n\n    model.DAYS = pyo.Set(initialize=days)\n    model.PATTERNS = pyo.Set(initialize=range(len(rest_pairs)))\n\n    model.workers = pyo.Var(\n        model.PATTERNS, within=pyo.NonNegativeIntegers\n    )\n\n    def obj_rule(m):\n        return sum(m.workers[p] for p in m.PATTERNS)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    def coverage_rule(m, t):\n        return sum(covers[(t, p)] * m.workers[p] for p in m.PATTERNS) >= req[t]\n\n    model.coverage = pyo.Constraint(model.DAYS, rule=coverage_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 958,
+      "completion_tokens": 822
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.295662879943848,
+   "position": 9,
+   "recipe_index": 0
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T10:36:00"
+}

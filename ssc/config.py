@@ -63,7 +63,7 @@ DEFECTS = {
     # Pyomo API
     "reserved_pyomo_component_name": (0.60, True),
     "rule_arity_mismatch": (0.50, True),
-    "unsupported_pyomo_max": (0.08, True),
+    "unsupported_pyomo_max": (0.45, True),
     "unsupported_python_max_on_pyomo_expr": (0.10, False),
     "disallowed_component_decorator": (0.00, True),
     "disallowed_constraint_list": (0.00, True),

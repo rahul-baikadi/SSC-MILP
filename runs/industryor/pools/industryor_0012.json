@@ -1,0 +1,289 @@
+{
+ "pid": "industryor_0012",
+ "question": "A factory produces three types of products: A, B, and C. Each unit of product A requires 1 hour of technical preparation, 10 hours of direct labor, and 3 kilograms of material. Each unit of product B requires 2 hours of technical preparation, 4 hours of labor, and 2 kilograms of material. Each unit of product C requires 1 hour of technical preparation, 5 hours of labor, and 1 kilogram of material. The available technical preparation time is 100 hours, labor time is 700 hours, and material is 400 kilograms. The company offers larger discounts for bulk purchases, as shown in Table 1-22. Determine the company's production plan to maximize profit.\n\nTable 1-22\n\\begin{tabular}{cc|cc|cc}\n\\hline \\multicolumn{2}{c|}{Product A} & \\multicolumn{2}{c|}{Product B} & \\multicolumn{2}{c}{Product C} \\\\\n\\hline Sales volume (units) & Profit (yuan) & Sales volume (units) & Profit (yuan) & Sales volume (units) & Profit (yuan) \\\\\n\\hline $0 \\sim 40$ & 10 & $0 \\sim 50$ & 6 & $0 \\sim 100$ & 5 \\\\\n\\hline $40 \\sim 100$ & 9 & $50 \\sim 100$ & 4 & Above 100 & 4 \\\\\n\\hline $100 \\sim 150$ & 8 & Above 100 & 3 & & \\\\\n\\hline Above 150 & 7 & \\multicolumn{2}{|c|}{} & & \\\\\n\\hline\n\\end{tabular}",
+ "templates": [
+  "Production Planning / Product Mix"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ----------------------------------------------------------------------\n# DATA: every numeric constant from the problem statement\n# ----------------------------------------------------------------------\nDATA = {\n    # Products and resources\n    \"products\": [\"A\", \"B\", \"C\"],\n    \"resources\": [\"tech\", \"labor\", \"material\"],\n\n    # Resource usage per unit (rows = resource, cols = product)\n    # \"Each unit of A requires 1 hour prep, 10 hours labor, 3 kg material\"\n    \"usage\": {\n        \"tech\":    {\"A\": 1, \"B\": 2, \"C\": 1},\n        \"labor\":   {\"A\": 10, \"B\": 4, \"C\": 5},\n        \"material\": {\"A\": 3, \"B\": 2, \"C\": 1},\n    },\n\n    # Available resources: tech 100 h, labor 700 h, material 400 kg\n    \"availability\": {\"tech\": 100, \"labor\": 700, \"material\": 400},\n\n    # Discount bands (Table 1-22). Each band: (lower, upper, profit_per_unit)\n    # upper = None means unbounded above.\n    \"bands\": {\n        # Product A: 0-40 @10, 40-100 @9, 100-150 @8, above 150 @7\n        \"A\": [(0, 40, 10), (40, 100, 9), (100, 150, 8), (150, None, 7)],\n        # Product B: 0-50 @6, 50-100 @4, above 100 @3\n        \"B\": [(0, 50, 6), (50, 100, 4), (100, None, 3)],\n        # Product C: 0-100 @5, above 100 @4\n        \"C\": [(0, 100, 5), (100, None, 4)],\n    },\n\n    # Big-M used to bound band variables (largest sensible production)\n    \"bigM\": 1000,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = d[\"products\"]\n    resources = d[\"resources\"]\n    bands = d[\"bands\"]\n    bigM = d[\"bigM\"]\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=products)\n    model.R = pyo.Set(initialize=resources)\n\n    # Band index set per product: (product, band_number)\n    band_pairs = []\n    for p in products:\n        for k in range(len(bands[p])):\n            band_pairs.append((p, k))\n    model.B = pyo.Set(initialize=band_pairs, dimen=2)\n\n    # Total production quantity per product (integer units)\n    model.x = pyo.Var(model.P, domain=pyo.NonNegativeIntegers)\n\n    # Units allocated to each discount band (continuous; capacity capped by band)\n    model.y = pyo.Var(model.B, domain=pyo.NonNegativeReals, bounds=(0, bigM))\n\n    # Binary: band is used / opened\n    model.z = pyo.Var(model.B, domain=pyo.Binary)\n\n    # ------------------------------------------------------------------\n    # Objective: maximize total profit\n    # ------------------------------------------------------------------\n    def obj_rule(m):\n        return sum(bands[p][k][2] * m.y[p, k] for (p, k) in m.B)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # ------------------------------------------------------------------\n    # Constraints\n    # ------------------------------------------------------------------\n\n    # Resource capacity constraints\n    def resource_rule(m, r):\n        return sum(d[\"usage\"][r][p] * m.x[p] for p in m.P) <= d[\"availability\"][r]\n    model.resource_limit = pyo.Constraint(model.R, rule=resource_rule)\n\n    # Total units = sum of band allocations\n    def total_rule(m, p):\n        return m.x[p] == sum(m.y[p, k] for k in range(len(bands[p])))\n    model.total_units = pyo.Constraint(model.P, rule=total_rule)\n\n    # Band capacity: y[p,k] <= width[p,k] * z[p,k]\n    def band_cap_rule(m, p, k):\n        lo, hi, _ = bands[p][k]\n        width = bigM if hi is None else (hi - lo)\n        return m.y[p, k] <= width * m.z[p, k]\n    model.band_capacity = pyo.Constraint(model.B, rule=band_cap_rule)\n\n    # Ordering: band k+1 can only be opened if band k is opened\n    # (fill higher-profit bands first so discount structure is respected)\n    def order_rule(m, p, k):\n        if k == 0:\n            return pyo.Constraint.Skip\n        return m.z[p, k] <= m.z[p, k - 1]\n\n    ordered_pairs = [(p, k) for (p, k) in band_pairs if k >= 1]\n    model.band_order = pyo.Constraint(ordered_pairs, rule=order_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1169,
+      "completion_tokens": 1570
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.824688196182251,
+   "position": 0,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"A\", \"B\", \"C\"],\n    # resource usage per unit: [tech_prep, labor, material]\n    \"usage\": {\n        \"A\": {\"tech\": 1, \"labor\": 10, \"material\": 3},\n        \"B\": {\"tech\": 2, \"labor\": 4,  \"material\": 2},\n        \"C\": {\"tech\": 1, \"labor\": 5,  \"material\": 1},\n    },\n    # resource availability\n    \"avail\": {\"tech\": 100, \"labor\": 700, \"material\": 400},\n    # tiers per product: (lower, upper_or_None, profit_rate)\n    \"tiers\": {\n        \"A\": [(0, 40, 10), (40, 100, 9), (100, 150, 8), (150, None, 7)],\n        \"B\": [(0, 50, 6), (50, 100, 4), (100, None, 3)],\n        \"C\": [(0, 100, 5), (100, None, 4)],\n    },\n    # big-M for the open-ended last tier (effectively unbounded upper)\n    \"open_upper\": 100000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    products = d[\"products\"]\n    tiers = d[\"tiers\"]\n\n    # (product, tier_index) pairs\n    seg_keys = [(p, s) for p in products for s in range(len(tiers[p]))]\n\n    m = pyo.ConcreteModel()\n\n    m.P = pyo.Set(initialize=products)\n    m.SEG = pyo.Set(initialize=seg_keys, dimen=2)\n\n    # total production per product\n    m.x = pyo.Var(m.P, within=pyo.NonNegativeReals)\n\n    # quantity allocated to each tier\n    m.seg = pyo.Var(m.SEG, within=pyo.NonNegativeReals)\n\n    # tier activation binaries\n    m.y = pyo.Var(m.SEG, within=pyo.Binary)\n\n    # ---- Objective: maximize total profit ----\n    def obj_rule(m):\n        return sum(\n            d[\"tiers\"][p][s][2] * m.seg[p, s]\n            for (p, s) in seg_keys\n        )\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # ---- Resource capacity constraints ----\n    def tech_rule(m):\n        return sum(d[\"usage\"][p][\"tech\"] * m.x[p] for p in products) <= d[\"avail\"][\"tech\"]\n    m.tech = pyo.Constraint(rule=tech_rule)\n\n    def labor_rule(m):\n        return sum(d[\"usage\"][p][\"labor\"] * m.x[p] for p in products) <= d[\"avail\"][\"labor\"]\n    m.labor = pyo.Constraint(rule=labor_rule)\n\n    def material_rule(m):\n        return sum(d[\"usage\"][p][\"material\"] * m.x[p] for p in products) <= d[\"avail\"][\"material\"]\n    m.material = pyo.Constraint(rule=material_rule)\n\n    # ---- Linking: total production equals sum of tier allocations ----\n    def link_rule(m, p):\n        return m.x[p] == sum(m.seg[p, s] for s in range(len(tiers[p])))\n    m.link = pyo.Constraint(m.P, rule=link_rule)\n\n    # ---- Tier capacity (big-M via tier width) ----\n    def tier_cap_rule(m, p, s):\n        lower, upper, _ = tiers[p][s]\n        width = (upper if upper is not None else d[\"open_upper\"]) - lower\n        return m.seg[p, s] <= width * m.y[p, s]\n    m.tier_cap = pyo.Constraint(m.SEG, rule=tier_cap_rule)\n\n    # ---- Tier ordering: must fill lower tiers before higher ones ----\n    def tier_order_rule(m, p, s):\n        if s == 0:\n            return pyo.Constraint.Skip\n        return m.y[p, s] <= m.y[p, s - 1]\n    m.tier_order = pyo.Constraint(m.SEG, rule=tier_order_rule)\n\n    # ---- First tier always active ----\n    def first_tier_rule(m, p):\n        return m.y[p, 0] == 1\n    m.first_tier = pyo.Constraint(m.P, rule=first_tier_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1165,
+      "completion_tokens": 1430
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.228618383407593,
+   "position": 1,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ----------------------------------------------------------------------\n# All numeric constants from the problem statement\n# ----------------------------------------------------------------------\nDATA = {\n    \"products\": [\"A\", \"B\", \"C\"],\n\n    # per-unit resource usage: (technical_prep, labor, material)\n    \"tech\":     {\"A\": 1, \"B\": 2, \"C\": 1},\n    \"labor\":    {\"A\": 10, \"B\": 4, \"C\": 5},\n    \"material\": {\"A\": 3, \"B\": 2, \"C\": 1},\n\n    # resource availabilities\n    \"tech_avail\": 100,\n    \"labor_avail\": 700,\n    \"material_avail\": 400,\n\n    # price break brackets from Table 1-22\n    # product -> list of (upper_bound_of_bracket, profit_per_unit)\n    # last entry uses None as upper bound (unbounded bracket)\n    \"brackets\": {\n        \"A\": [(40, 10), (100, 9), (150, 8), (None, 7)],\n        \"B\": [(50, 6), (100, 4), (None, 3)],\n        \"C\": [(100, 5), (None, 4)],\n    },\n\n    # finite upper bound used for the unbounded (last) bracket variables\n    \"big_M\": 100000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = d[\"products\"]\n\n    # bracket index sets\n    bracket_index = {\n        p: list(range(len(d[\"brackets\"][p]))) for p in products\n    }\n\n    # cumulative width (units) of each bracket = upper - lower\n    def width(p, k):\n        up = d[\"brackets\"][p][k][0]\n        low = d[\"brackets\"][p][k - 1][0] if k > 0 else 0\n        return up - low\n\n    model = pyo.ConcreteModel()\n\n    # ----------------------------------------------------------------\n    # Sets\n    # ----------------------------------------------------------------\n    model.P = pyo.Set(initialize=products, ordered=True)\n\n    # flat set of (product, bracket) pairs\n    pairs = [(p, k) for p in products for k in bracket_index[p]]\n    model.K = pyo.Set(initialize=pairs, dimen=2, ordered=True)\n\n    # ----------------------------------------------------------------\n    # Variables\n    # ----------------------------------------------------------------\n    # total units of each product  (units are indivisible -> integers)\n    model.x = pyo.Var(model.P, domain=pyo.NonNegativeIntegers)\n\n    # units of each product sold within each price bracket\n    def y_bounds(m, p, k):\n        up = d[\"brackets\"][p][k][0]\n        if up is None:                      # unbounded (last) bracket\n            return (0, d[\"big_M\"])\n        return (0, width(p, k))\n\n    model.y = pyo.Var(model.K, domain=pyo.NonNegativeIntegers, bounds=y_bounds)\n\n    # ----------------------------------------------------------------\n    # Objective: maximize total profit\n    # ----------------------------------------------------------------\n    def obj_rule(m):\n        return sum(\n            d[\"brackets\"][p][k][1] * m.y[p, k]\n            for (p, k) in m.K\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # ----------------------------------------------------------------\n    # Constraints\n    # ----------------------------------------------------------------\n    # total produced of each product equals sum over its brackets\n    def total_rule(m, p):\n        return m.x[p] == sum(m.y[p, k] for k in bracket_index[p])\n    model.total = pyo.Constraint(model.P, rule=total_rule)\n\n    # technical preparation time availability  (<= 100)\n    def tech_rule(m):\n        return sum(d[\"tech\"][p] * m.x[p] for p in m.P) <= d[\"tech_avail\"]\n    model.tech = pyo.Constraint(rule=tech_rule)\n\n    # direct labor time availability  (<= 700)\n    def labor_rule(m):\n        return sum(d[\"labor\"][p] * m.x[p] for p in m.P) <= d[\"labor_avail\"]\n    model.labor = pyo.Constraint(rule=labor_rule)\n\n    # material availability  (<= 400)\n    def material_rule(m):\n        return sum(d[\"material\"][p] * m.x[p] for p in m.P) <= d[\"material_avail\"]\n    model.material = pyo.Constraint(rule=material_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1181,
+      "completion_tokens": 1478
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2301,
+      "completion_tokens": 1042
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 10.865717649459839,
+   "position": 2,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"A\", \"B\", \"C\"],\n    \"resources\": [\"tech\", \"labor\", \"material\"],\n    # per-unit resource usage: usage[resource][product]\n    \"usage\": {\n        \"tech\":     {\"A\": 1, \"B\": 2, \"C\": 1},\n        \"labor\":    {\"A\": 10, \"B\": 4, \"C\": 5},\n        \"material\": {\"A\": 3, \"B\": 2, \"C\": 1},\n    },\n    \"availability\": {\"tech\": 100, \"labor\": 700, \"material\": 400},\n    # profit tiers per product: list of (width, unit_profit)\n    # widths are the span of each interval; last tier is \"above\" -> large cap\n    \"tiers\": {\n        \"A\": [(40, 10), (60, 9), (50, 8), (100000, 7)],   # 0-40,40-100,100-150,>150\n        \"B\": [(50, 6), (50, 4), (100000, 3)],             # 0-50,50-100,>100\n        \"C\": [(100, 5), (100000, 4)],                     # 0-100,>100\n    },\n    # big-M for tier-linking; larger than any feasible production\n    \"bigM\": 100000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = d[\"products\"]\n    resources = d[\"resources\"]\n\n    model = pyo.ConcreteModel()\n\n    # Build tier index set: (product, tier_number)\n    tier_pairs = []\n    for p in products:\n        for t in range(len(d[\"tiers\"][p])):\n            tier_pairs.append((p, t))\n\n    model.P = pyo.Set(initialize=products, ordered=True)\n    model.R = pyo.Set(initialize=resources, ordered=True)\n    model.T = pyo.Set(initialize=tier_pairs, dimen=2)\n\n    # Total production per product\n    model.x = pyo.Var(model.P, domain=pyo.NonNegativeIntegers)\n\n    # Units allocated to each tier\n    def y_bounds(m, p, t):\n        return (0, d[\"tiers\"][p][t][0])\n    model.y = pyo.Var(model.T, domain=pyo.NonNegativeIntegers, bounds=y_bounds)\n\n    # Binary: tier used\n    model.z = pyo.Var(model.T, domain=pyo.Binary)\n\n    # Objective: maximize total profit\n    def obj_rule(m):\n        return sum(d[\"tiers\"][p][t][1] * m.y[p, t] for (p, t) in m.T)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # Resource capacity constraints\n    def resource_rule(m, r):\n        return sum(d[\"usage\"][r][p] * m.x[p] for p in m.P) <= d[\"availability\"][r]\n    model.resource_cap = pyo.Constraint(model.R, rule=resource_rule)\n\n    # Total production equals sum of tier allocations\n    def total_rule(m, p):\n        return m.x[p] == sum(m.y[p, t] for t in range(len(d[\"tiers\"][p])))\n    model.total_link = pyo.Constraint(model.P, rule=total_rule)\n\n    # Tier capacity: y[p,t] <= width * z[p,t]\n    def cap_rule(m, p, t):\n        width = d[\"tiers\"][p][t][0]\n        return m.y[p, t] <= width * m.z[p, t]\n    model.tier_cap = pyo.Constraint(model.T, rule=cap_rule)\n\n    # Sequential tiers: tier t usable only if tier t-1 is full\n    # y[p,t-1] >= width[p,t-1] * z[p,t]\n    def seq_pairs():\n        pairs = []\n        for p in products:\n            for t in range(1, len(d[\"tiers\"][p])):\n                pairs.append((p, t))\n        return pairs\n    model.SEQ = pyo.Set(initialize=seq_pairs(), dimen=2)\n\n    def seq_rule(m, p, t):\n        prev_width = d[\"tiers\"][p][t - 1][0]\n        return m.y[p, t - 1] >= prev_width * m.z[p, t]\n    model.tier_seq = pyo.Constraint(model.SEQ, rule=seq_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1165,
+      "completion_tokens": 1532
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.184664011001587,
+   "position": 3,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ----------------------------------------------------------------------\n# Data: every numeric constant of the problem lives here.\n# ----------------------------------------------------------------------\nDATA = {\n    \"products\": [\"A\", \"B\", \"C\"],\n\n    # per-unit resource usage a[resource][product]\n    \"usage\": {\n        \"tech_prep\": {\"A\": 1, \"B\": 2, \"C\": 1},\n        \"labor\":     {\"A\": 10, \"B\": 4, \"C\": 5},\n        \"material\":  {\"A\": 3, \"B\": 2, \"C\": 1},\n    },\n    # resource availabilities\n    \"avail\": {\"tech_prep\": 100, \"labor\": 700, \"material\": 400},\n\n    # discount tiers: list of (band_width, profit_per_unit) per product\n    # A: 40 @10, 60 @9, 50 @8, unbounded @7\n    # B: 50 @6, 50 @4, unbounded @3\n    # C: 100 @5, unbounded @4\n    \"tiers\": {\n        \"A\": [(40, 10), (60, 9), (50, 8), (None, 7)],\n        \"B\": [(50, 6), (50, 4), (None, 3)],\n        \"C\": [(100, 5), (None, 4)],\n    },\n\n    \"bigM\": 100000,\n}\n\n# pre-derive per-(product,tier) records so model code has no inline maths\n_TIER_KEYS = []\n_TIER_WIDTH = {}     # effective width used in the big-M band constraint\n_TIER_RATE = {}      # profit per unit in that tier\n_TIER_CUM = {}       # units needed below this tier before it can be used\n_TIERS_OF = {}       # ordered tier indices for each product\n_RATE_MIN = {}       # smallest profit rate (last tier) per product\n_RATE_MAX = {}       # largest profit rate (first tier) per product\n\nfor _p, _tl in DATA[\"tiers\"].items():\n    _TIERS_OF[_p] = list(range(len(_tl)))\n    _cum = 0\n    for _k, (_w, _r) in enumerate(_tl):\n        _TIER_KEYS.append((_p, _k))\n        _TIER_WIDTH[(_p, _k)] = _w if _w is not None else DATA[\"bigM\"]\n        _TIER_RATE[(_p, _k)] = _r\n        _TIER_CUM[(_p, _k)] = _cum          # capacity of all strictly-lower tiers\n        if _w is not None:\n            _cum += _w\n    _RATE_MAX[_p] = _tl[0][1]\n    _RATE_MIN[_p] = _tl[-1][1]\n\nDATA[\"tier_keys\"] = _TIER_KEYS\nDATA[\"tier_width\"] = _TIER_WIDTH\nDATA[\"tier_rate\"] = _TIER_RATE\nDATA[\"tier_cum\"] = _TIER_CUM\nDATA[\"tiers_of\"] = _TIERS_OF\nDATA[\"rate_max\"] = _RATE_MAX\nDATA[\"rate_min\"] = _RATE_MIN\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    m.P = pyo.Set(initialize=d[\"products\"], ordered=True)\n    m.R = pyo.Set(initialize=list(d[\"usage\"].keys()), ordered=True)\n    m.PT = pyo.Set(initialize=[tuple(k) for k in d[\"tier_keys\"]], dimen=2, ordered=True)\n\n    # ---- decision variables -------------------------------------------\n    # total integer units produced of each product\n    m.x = pyo.Var(m.P,\n                  within=pyo.NonNegativeIntegers,\n                  bounds=(0, d[\"bigM\"]))\n\n    # units of product p assigned to discount tier k\n    m.y = pyo.Var(m.PT,\n                  within=pyo.NonNegativeReals,\n                  bounds=(0, None))\n\n    # indicator: lower tier (p, k-1) fully filled -> 1, used for sequential fill\n    m.filled = pyo.Var(m.PT, within=pyo.Binary)\n\n    # ---- objective: maximise total (tier-weighted) profit ------------\n    def obj_rule(m):\n        return sum(d[\"tier_rate\"][p, k] * m.y[p, k] for p, k in m.PT)\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    # ---- resource capacity constraints (one per resource) ------------\n    def res_rule(m, r):\n        return sum(d[\"usage\"][r][p] * m.x[p] for p in m.P) <= d[\"avail\"][r]\n    m.resource_cap = pyo.Constraint(m.R, rule=res_rule)\n\n    # ---- total produced equals sum over tiers ------------------------\n    def link_rule(m, p):\n        return m.x[p] == sum(m.y[p, k] for k in d[\"tiers_of\"][p])\n    m.link = pyo.Constraint(m.P, rule=link_rule)\n\n    # ---- tier width caps ---------------------------------------------\n    def width_rule(m, p, k):\n        return m.y[p, k] <= d[\"tier_width\"][p, k]\n    m.width_cap = pyo.Constraint(m.PT, rule=width_rule)\n\n    # ---- monotone fill: a tier above can receive units only if the\n    # cumulative below is effectively full (indicator + big-M). ----------\n    # For tier k>=1:  y[p,k] <= W_k * filled[p,k]\n    #                 cum_below(k) - (1 - filled[p,k]) * M <= x_used_below\n    def fill_bigM_rule(m, p, k):\n        if k == 0:\n            return pyo.Constraint.Skip\n        return m.y[p, k] <= d[\"tier_width\"][p, k] * m.filled[p, k]\n    m.fill_bigM = pyo.Constraint(m.PT, rule=fill_bigM_rule)\n\n    def fill_trigger_rule(m, p, k):\n        if k == 0:\n            return pyo.Constraint.Skip\n        cum = d[\"tier_cum\"][p, k]\n        # units placed strictly below tier k:\n        below = sum(m.y[p, j] for j in range(k))\n        M = d[\"bigM\"]\n        return cum - (1 - m.filled[p, k]) * M <= below\n    m.fill_trigger = pyo.Constraint(m.PT, rule=fill_trigger_rule)\n\n    # tier k=0 always \"allowed\": filled[p,0] fixed to 1\n    def fill_base_rule(m, p):\n        return m.filled[p, 0] == 1\n    m.fill_base = pyo.Constraint(m.P, rule=fill_base_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1171,
+      "completion_tokens": 3579
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 15.092685461044312,
+   "position": 4,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"A\", \"B\", \"C\"],\n    \"resources\": {\n        \"tech\":  {\"avail\": 100},\n        \"labor\": {\"avail\": 700},\n        \"mat\":   {\"avail\": 400},\n    },\n    \"usage\": {\n        \"A\": {\"tech\": 1, \"labor\": 10, \"mat\": 3},\n        \"B\": {\"tech\": 2, \"labor\":  4, \"mat\": 2},\n        \"C\": {\"tech\": 1, \"labor\":  5, \"mat\": 1},\n    },\n    # Brackets: list of (upper_bound_units, profit_per_unit)\n    \"brackets\": {\n        \"A\": [(40, 10), (100, 9), (150, 8), (None, 7)],\n        \"B\": [(50, 6), (100, 4), (None, 3)],\n        \"C\": [(100, 5), (None, 4)],\n    },\n    \"M\": 10000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = d[\"products\"]\n    brackets  = d[\"brackets\"]\n    M = d[\"M\"]\n\n    # Index set of (product, bracket-number)\n    bracket_index = [(p, k) for p in products for k in range(len(brackets[p]))]\n\n    model = pyo.ConcreteModel()\n    model.P = pyo.Set(initialize=products, ordered=True)\n    model.BI = pyo.Set(initialize=bracket_index, ordered=True, dimen=2)\n    model.R = pyo.Set(initialize=list(d[\"resources\"].keys()))\n\n    # ---- Variables ----\n    def x_bounds(m, p):\n        return (0, None)\n    model.x = pyo.Var(model.P, domain=pyo.NonNegativeIntegers, bounds=x_bounds)\n\n    def y_bounds(m, p, k):\n        return (0, _bracket_width(brackets, p, k))\n    model.y = pyo.Var(model.BI, domain=pyo.NonNegativeIntegers, bounds=y_bounds)\n\n    model.z = pyo.Var(model.BI, domain=pyo.Binary)\n\n    # ---- Objective: maximize total profit ----\n    def profit_expr(m):\n        return sum(brackets[p][k][1] * m.y[p, k] for (p, k) in m.BI)\n    model.obj = pyo.Objective(expr=profit_expr(model), sense=pyo.maximize)\n\n    # ---- Resource-capacity constraints: one rule per resource ----\n    def resource_rule(m, r):\n        return sum(d[\"usage\"][p][r] * m.x[p] for p in m.P) <= d[\"resources\"][r][\"avail\"]\n    model.capacity = pyo.Constraint(model.R, rule=resource_rule)\n\n    # ---- Volume accounting: sales of each product fill its brackets ----\n    def accounting_rule(m, p):\n        return m.x[p] == sum(m.y[p, k] for k in range(len(brackets[p])))\n    model.accounting = pyo.Constraint(model.P, rule=accounting_rule)\n\n    # ---- Per-bracket volume cap: y[p,k] <= width[p,k] * z[p,k] ----\n    def bracket_cap_rule(m, p, k):\n        w = _bracket_width(brackets, p, k)\n        return m.y[p, k] <= w * m.z[p, k]\n    model.bracket_cap = pyo.Constraint(model.BI, rule=bracket_cap_rule)\n\n    # ---- Sequencing: a later bracket cannot be used unless the prior one is filled ----\n    # z[p,k] <= z[p,k-1]  for k >= 1  (monotone, top-most active bracket is k)\n    def sequence_rule(m, p, k):\n        return m.z[p, k] <= m.z[p, k - 1]\n    model.sequence = pyo.Constraint(\n        [(p, k) for (p, k) in bracket_index if k >= 1], rule=sequence_rule\n    )\n\n    return model\n\n\ndef _bracket_width(brackets, p, k):\n    \"\"\"Width of bracket k for product p (units).\"\"\"\n    brackets_p = brackets[p]\n    prev_upper = 0 if k == 0 else brackets_p[k - 1][0]\n    upper = brackets_p[k][0]\n    if upper is None:\n        return DATA[\"M\"]\n    return upper - prev_upper\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1171,
+      "completion_tokens": 1452
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.469264030456543,
+   "position": 5,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [\"A\", \"B\", \"C\"],\n    \"resources\": [\"tech\", \"labor\", \"material\"],\n    # usage a[resource][product]\n    \"usage\": {\n        \"tech\":    {\"A\": 1, \"B\": 2, \"C\": 1},\n        \"labor\":   {\"A\": 10, \"B\": 4, \"C\": 5},\n        \"material\": {\"A\": 3, \"B\": 2, \"C\": 1},\n    },\n    # resource availability\n    \"avail\": {\"tech\": 100, \"labor\": 700, \"material\": 400},\n    # tiers per product: list of (width, profit_per_unit)\n    \"tiers\": {\n        \"A\": [(40, 10), (60, 9), (50, 8), (None, 7)],   # None = unbounded upper\n        \"B\": [(50, 6), (50, 4), (None, 3)],\n        \"C\": [(100, 5), (None, 4)],\n    },\n    # big-M large enough for any tier count (upper bound of production)\n    \"bigM\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    P = d[\"products\"]\n    R = d[\"resources\"]\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=P)\n    model.R = pyo.Set(initialize=R)\n\n    # tier index set (0-based) per product\n    tier_index = {p: list(range(len(d[\"tiers\"][p]))) for p in P}\n    model.K = pyo.Set(\n        initialize=[(p, k) for p in P for k in tier_index[p]],\n        dimen=2,\n    )\n\n    # ---- Variables ----\n    # total units produced of each product\n    model.x = pyo.Var(model.P, domain=pyo.NonNegativeIntegers)\n\n    # units sold within tier (p,k)\n    model.t = pyo.Var(model.K, domain=pyo.NonNegativeIntegers)\n\n    # binray: tier (p,k) is \"open\"/used\n    model.z = pyo.Var(model.K, domain=pyo.Binary)\n\n    def tier_width(p, k):\n        w = d[\"tiers\"][p][k][0]\n        return w if w is not None else d[\"bigM\"]\n\n    def tier_profit(p, k):\n        return d[\"tiers\"][p][k][1]\n\n    # ---- Objective: maximize total profit ----\n    model.obj = pyo.Objective(\n        expr=sum(tier_profit(p, k) * model.t[p, k] for (p, k) in model.K),\n        sense=pyo.maximize,\n    )\n\n    # ---- Constraints ----\n\n    # 1) Tier capacity: units in tier (p,k) cannot exceed its width\n    def cap_rule(m, p, k):\n        return m.t[p, k] <= tier_width(p, k)\n    model.tier_cap = pyo.Constraint(model.K, rule=cap_rule)\n\n    # 2) Total produced of product p = sum of its tier units\n    def balance_rule(m, p):\n        return m.x[p] == sum(m.t[p, k] for k in tier_index[p])\n    model.balance = pyo.Constraint(model.P, rule=balance_rule)\n\n    # 3) Ordering: tier (p,k) can be used only if previous tier is filled.\n    #    t[p,k] <= width_k * z[p,k];  z[p,k] <= z[p,k-1]\n    def open_rule(m, p, k):\n        return m.t[p, k] <= tier_width(p, k) * m.z[p, k]\n    model.open_link = pyo.Constraint(model.K, rule=open_rule)\n\n    def order_rule(m, p, k):\n        if k == 0:\n            return pyo.Constraint.Skip\n        return m.z[p, k] <= m.z[p, k - 1]\n    model.order = pyo.Constraint(model.K, rule=order_rule)\n\n    # 4) Resource constraints\n    def res_rule(m, r):\n        return sum(d[\"usage\"][r][p] * m.x[p] for p in P) <= d[\"avail\"][r]\n    model.resource = pyo.Constraint(model.R, rule=res_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1181,
+      "completion_tokens": 1355
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.358475923538208,
+   "position": 6,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Problem data\n# ---------------------------------------------------------------------------\n# Products: A, B, C\n# Resources: technical preparation (hours), direct labour (hours), material (kg)\n#\n# Per-unit resource usage:\n#   A: 1 tech, 10 labour, 3 material\n#   B: 2 tech,  4 labour, 2 material\n#   C: 1 tech,  5 labour, 1 material\n#\n# Availability: 100 tech, 700 labour, 400 material\n#\n# Profit is a piecewise (declining) function of sales volume for each product.\n# We model each product's sales volume as the sum of quantities sold in each\n# price tier, with tier quantities bounded by the tier width.  Because the\n# profit per unit declines as volume increases, an optimal solution will\n# always fill cheaper (higher-profit) tiers before moving to lower-profit\n# tiers, so no explicit ordering constraint is required.\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"products\": [\"A\", \"B\", \"C\"],\n    \"resources\": [\"tech\", \"labour\", \"material\"],\n    # resource usage a[resource][product]\n    \"usage\": {\n        \"tech\":     {\"A\": 1, \"B\": 2, \"C\": 1},\n        \"labour\":   {\"A\": 10, \"B\": 4, \"C\": 5},\n        \"material\": {\"A\": 3, \"B\": 2, \"C\": 1},\n    },\n    # resource availability\n    \"availability\": {\"tech\": 100, \"labour\": 700, \"material\": 400},\n    # profit tiers: for each product a list of (upper_bound, profit_per_unit)\n    # upper_bound is the cumulative sales volume at the top of the tier.\n    \"tiers\": {\n        \"A\": [(40, 10), (100, 9), (150, 8), (None, 7)],\n        \"B\": [(50, 6), (100, 4), (None, 3)],\n        \"C\": [(100, 5), (None, 4)],\n    },\n    # big-M for the final (unbounded) tier: a safe upper bound on any product's\n    # sales volume given the resources.  Labour is the tightest resource for\n    # product C (5 h/unit, 700 h) -> 140; for A (10 h/unit) -> 70; for B\n    # (4 h/unit) -> 175.  Use a generous common bound.\n    \"big_m\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    products = d[\"products\"]\n    resources = d[\"resources\"]\n\n    # Build the set of (product, tier_index) pairs and the tier widths.\n    tier_keys = []\n    tier_width = {}\n    tier_profit = {}\n    for p in products:\n        prev = 0\n        for k, (ub, profit) in enumerate(d[\"tiers\"][p]):\n            tier_keys.append((p, k))\n            if ub is None:\n                width = d[\"big_m\"]\n            else:\n                width = ub - prev\n            tier_width[(p, k)] = width\n            tier_profit[(p, k)] = profit\n            if ub is not None:\n                prev = ub\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=products, ordered=True)\n    model.R = pyo.Set(initialize=resources, ordered=True)\n    model.T = pyo.Set(initialize=tier_keys, dimen=2)\n\n    # Decision variable: quantity sold of product p within tier k.\n    def _tier_bounds(m, p, k):\n        return (0, tier_width[(p, k)])\n\n    model.x = pyo.Var(model.T, domain=pyo.NonNegativeReals, bounds=_tier_bounds)\n\n    # Total sales volume of each product.\n    def _total_rule(m, p):\n        return sum(m.x[p, k] for k in range(len(d[\"tiers\"][p])))\n\n    model.total = pyo.Expression(model.P, rule=_total_rule)\n\n    # Objective: maximize total profit.\n    def _obj_rule(m):\n        return sum(tier_profit[(p, k)] * m.x[p, k] for (p, k) in m.T)\n\n    model.obj = pyo.Objective(rule=_obj_rule, sense=pyo.maximize)\n\n    # Resource capacity constraints.\n    def _res_rule(m, r):\n        return sum(d[\"usage\"][r][p] * m.total[p] for p in m.P) <= d[\"availability\"][r]\n\n    model.resource_limit = pyo.Constraint(model.R, rule=_res_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1185,
+      "completion_tokens": 5999
+     },
+     "finish_reason": "length"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2208,
+      "completion_tokens": 1066
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 50.376126289367676,
+   "position": 7,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   xA : units of product A produced/sold        (NonNegativeReals)\n#   xB : units of product B produced/sold        (NonNegativeReals)\n#   xC : units of product C produced/sold        (NonNegativeReals)\n#\n#   Piecewise-linear profit via incremental (discount) segments.\n#   For each product we introduce nonnegative segment variables that measure\n#   how many units fall into each sales-volume band.  Because the per-unit\n#   profit is non-increasing across bands, the LP relaxation automatically\n#   fills cheaper (earlier) bands first, so no extra binaries are needed.\n#\n#   A-bands:  sA1 in [0,40]  profit 10\n#             sA2 in [0,60]  profit  9\n#             sA3 in [0,50]  profit  8\n#             sA4 in [0,inf) profit  7\n#   B-bands:  sB1 in [0,50]  profit  6\n#             sB2 in [0,50]  profit  4\n#             sB3 in [0,inf) profit  3\n#   C-bands:  sC1 in [0,100] profit  5\n#             sC2 in [0,inf) profit  4\n#\n# Objective (maximize): total profit from all sold units.\n#\n# Constraints\n#   (1) Technical preparation:  1*xA + 2*xB + 1*xC <= 100\n#   (2) Direct labor:          10*xA + 4*xB + 5*xC <= 700\n#   (3) Material:               3*xA + 2*xB + 1*xC <= 400\n#   (4) Linking: xA = sA1+sA2+sA3+sA4 ; xB = sB1+sB2+sB3 ; xC = sC1+sC2\n# ---------------------------------------------------------------------------\n\nDATA = {\n    # resource usage per unit\n    \"tech_A\": 1, \"tech_B\": 2, \"tech_C\": 1,\n    \"labor_A\": 10, \"labor_B\": 4, \"labor_C\": 5,\n    \"mat_A\": 3, \"mat_B\": 2, \"mat_C\": 1,\n    # resource availability\n    \"tech_avail\": 100,\n    \"labor_avail\": 700,\n    \"mat_avail\": 400,\n    # profit per unit in each band\n    \"pA1\": 10, \"pA2\": 9, \"pA3\": 8, \"pA4\": 7,\n    \"pB1\": 6, \"pB2\": 4, \"pB3\": 3,\n    \"pC1\": 5, \"pC2\": 4,\n    # band widths (upper bounds on segment variables)\n    \"wA1\": 40, \"wA2\": 60, \"wA3\": 50,\n    \"wB1\": 50, \"wB2\": 50,\n    \"wC1\": 100,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # ---- segment (band) variables -------------------------------------\n    model.sA1 = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, d[\"wA1\"]))\n    model.sA2 = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, d[\"wA2\"]))\n    model.sA3 = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, d[\"wA3\"]))\n    model.sA4 = pyo.Var(within=pyo.NonNegativeReals)\n\n    model.sB1 = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, d[\"wB1\"]))\n    model.sB2 = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, d[\"wB2\"]))\n    model.sB3 = pyo.Var(within=pyo.NonNegativeReals)\n\n    model.sC1 = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, d[\"wC1\"]))\n    model.sC2 = pyo.Var(within=pyo.NonNegativeReals)\n\n    # ---- total production variables -----------------------------------\n    model.xA = pyo.Var(within=pyo.NonNegativeReals)\n    model.xB = pyo.Var(within=pyo.NonNegativeReals)\n    model.xC = pyo.Var(within=pyo.NonNegativeReals)\n\n    # ---- linking constraints ------------------------------------------\n    def link_A_rule(m):\n        return m.xA == m.sA1 + m.sA2 + m.sA3 + m.sA4\n    model.link_A = pyo.Constraint(rule=link_A_rule)\n\n    def link_B_rule(m):\n        return m.xB == m.sB1 + m.sB2 + m.sB3\n    model.link_B = pyo.Constraint(rule=link_B_rule)\n\n    def link_C_rule(m):\n        return m.xC == m.sC1 + m.sC2\n    model.link_C = pyo.Constraint(rule=link_C_rule)\n\n    # ---- resource constraints -----------------------------------------\n    def tech_rule(m):\n        return (d[\"tech_A\"] * m.xA + d[\"tech_B\"] * m.xB\n                + d[\"tech_C\"] * m.xC) <= d[\"tech_avail\"]\n    model.tech = pyo.Constraint(rule=tech_rule)\n\n    def labor_rule(m):\n        return (d[\"labor_A\"] * m.xA + d[\"labor_B\"] * m.xB\n                + d[\"labor_C\"] * m.xC) <= d[\"labor_avail\"]\n    model.labor = pyo.Constraint(rule=labor_rule)\n\n    def mat_rule(m):\n        return (d[\"mat_A\"] * m.xA + d[\"mat_B\"] * m.xB\n                + d[\"mat_C\"] * m.xC) <= d[\"mat_avail\"]\n    model.mat = pyo.Constraint(rule=mat_rule)\n\n    # ---- objective -----------------------------------------------------\n    def obj_rule(m):\n        return (d[\"pA1\"] * m.sA1 + d[\"pA2\"] * m.sA2\n                + d[\"pA3\"] * m.sA3 + d[\"pA4\"] * m.sA4\n                + d[\"pB1\"] * m.sB1 + d[\"pB2\"] * m.sB2\n                + d[\"pB3\"] * m.sB3\n                + d[\"pC1\"] * m.sC1 + d[\"pC2\"] * m.sC2)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1185,
+      "completion_tokens": 5999
+     },
+     "finish_reason": "length"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1118,
+      "completion_tokens": 1590
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 50.439462184906006,
+   "position": 8,
+   "recipe_index": 9
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Resource usage per unit of each product (source: problem statement)\n    \"prep_usage\":     {\"A\": 1,  \"B\": 2, \"C\": 1},   # \"1 hour / 2 hours / 1 hour of technical preparation\"\n    \"labor_usage\":    {\"A\": 10, \"B\": 4, \"C\": 5},   # \"10 hours / 4 hours / 5 hours of direct labor\"\n    \"material_usage\": {\"A\": 3,  \"B\": 2, \"C\": 1},   # \"3 / 2 / 1 kilograms of material\"\n    # Available resources (source: problem statement)\n    \"prep_avail\": 100,      # \"available technical preparation time is 100 hours\"\n    \"labor_avail\": 700,     # \"labor time is 700 hours\"\n    \"material_avail\": 400,  # \"material is 400 kilograms\"\n    # Sales-volume segments and per-unit profit (source: Table 1-22)\n    # Each entry: (lower, upper_or_None, profit_per_unit). None = unbounded above.\n    \"segments\": {\n        \"A\": [(0, 40, 10), (40, 100, 9), (100, 150, 8), (150, None, 7)],\n        \"B\": [(0, 50, 6),  (50, 100, 4), (100, None, 3)],\n        \"C\": [(0, 100, 5), (100, None, 4)],\n    },\n    # Big-M for ordering / linking constraints\n    \"bigM\": 100000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = list(d[\"segments\"].keys())\n\n    # Segment index set: (product, segment_number)\n    seg_index = [(p, s) for p in products for s in range(len(d[\"segments\"][p]))]\n\n    model = pyo.ConcreteModel()\n    model.P = pyo.Set(initialize=products)\n    model.SEG = pyo.Set(initialize=seg_index, dimen=2)\n\n    # x[p,s]: units sold in segment s of product p (integer)\n    model.x = pyo.Var(model.SEG, within=pyo.NonNegativeIntegers)\n\n    # y[p,s]: binary, 1 if segment s is \"active/reached\" (used for fill ordering)\n    model.y = pyo.Var(model.SEG, within=pyo.Binary)\n\n    # Segment upper bounds\n    def x_upper_rule(m, p, s):\n        hi = d[\"segments\"][p][s][1]\n        if hi is None:\n            return pyo.Constraint.Skip\n        return m.x[p, s] <= hi\n    model.x_upper = pyo.Constraint(model.SEG, rule=x_upper_rule)\n\n    # Segment lower bounds (only enforced when segment is active)\n    def x_lower_rule(m, p, s):\n        lo = d[\"segments\"][p][s][0]\n        if lo == 0:\n            return pyo.Constraint.Skip\n        return m.x[p, s] >= lo * m.y[p, s]\n    model.x_lower = pyo.Constraint(model.SEG, rule=x_lower_rule)\n\n    # Fill-order linking: segment s can only be used if segment s-1 is filled.\n    def order_rule(m, p, s):\n        if s == 0:\n            return pyo.Constraint.Skip\n        prev = s - 1\n        prev_cap = d[\"segments\"][p][prev][1]\n        if prev_cap is None:\n            return pyo.Constraint.Skip\n        return m.x[p, prev] >= prev_cap * m.y[p, s]\n    model.order = pyo.Constraint(model.SEG, rule=order_rule)\n\n    # Resource constraints (aggregate over all segments per product)\n    def prep_rule(m):\n        return sum(d[\"prep_usage\"][p] * m.x[p, s]\n                   for (p, s) in seg_index) <= d[\"prep_avail\"]\n    model.prep = pyo.Constraint(rule=prep_rule)\n\n    def labor_rule(m):\n        return sum(d[\"labor_usage\"][p] * m.x[p, s]\n                   for (p, s) in seg_index) <= d[\"labor_avail\"]\n    model.labor = pyo.Constraint(rule=labor_rule)\n\n    def material_rule(m):\n        return sum(d[\"material_usage\"][p] * m.x[p, s]\n                   for (p, s) in seg_index) <= d[\"material_avail\"]\n    model.material = pyo.Constraint(rule=material_rule)\n\n    # Objective: maximize total profit\n    def obj_rule(m):\n        return sum(d[\"segments\"][p][s][2] * m.x[p, s] for (p, s) in seg_index)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1169,
+      "completion_tokens": 1692
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2407,
+      "completion_tokens": 1155
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 11.324408531188965,
+   "position": 9,
+   "recipe_index": 6
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:50:31"
+}

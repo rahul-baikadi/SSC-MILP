@@ -1,0 +1,316 @@
+{
+ "pid": "optmath_0038",
+ "question": "The manufacturing facility produces three products over a six-month period, aiming to minimize total costs, including production, setup, and inventory holding costs, while meeting customer demand and adhering to resource constraints. Product 0 has cumulative demands of 75, 141, 241, 315, 386, and 469 units over the six months. Product 1 has cumulative demands of 65, 151, 228, 286, 338, and 390 units. Product 2 has cumulative demands of 57, 143, 193, 263, 363, and 428 units. Production costs per unit for Product 0 are $42, $47, $41, $40, $43, and $47 across the six months. For Product 1, they are $43, $50, $41, $50, $49, and $46. For Product 2, they are $42, $49, $40, $47, $49, and $45. Setup costs for Product 0 are $1,282, $1,493, $1,006, $1,286, $1,305, and $1,360. For Product 1, they are $1,402, $1,498, $1,296, $1,366, $1,376, and $1,172. For Product 2, they are $1,362, $1,094, $1,283, $1,279, $1,430, and $1,146. Inventory holding costs per unit for Product 0 are $4, $5, $4, $5, $4, and $4. For Product 1, they are $5, $5, $5, $4, $4, and $4. For Product 2, they are $5, $5, $4, $5, $5, and $4. The facility has monthly resource capacities of 1,173, 1,102, 1,018, 1,077, 1,190, and 1,132 units. Each unit of Product 0 consumes 1.778 resource units, Product 1 consumes 1.502, and Product 2 consumes 1.556. If a product is produced in a month, a setup cost is incurred, and production quantities are limited by setup decisions: Product 0 can produce up to 469, 394, 328, 228, 154, and 83 units; Product 1 up to 390, 325, 239, 162, 104, and 52 units; and Product 2 up to 428, 371, 285, 235, 165, and 65 units. Inventory at the end of each month must satisfy demand, and no initial or final inventory is allowed. The objective is to determine optimal production quantities, setup decisions, and inventory levels to minimize total costs while meeting demand and resource constraints.",
+ "templates": [
+  "Inventory / Lot Sizing",
+  "Production Planning / Product Mix"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [0, 1, 2],\n    \"periods\": [0, 1, 2, 3, 4, 5],\n    # Cumulative demands (index by product)\n    \"cum_demand\": {\n        0: [75, 141, 241, 315, 386, 469],\n        1: [65, 151, 228, 286, 338, 390],\n        2: [57, 143, 193, 263, 363, 428],\n    },\n    # Production cost per unit\n    \"prod_cost\": {\n        0: [42, 47, 41, 40, 43, 47],\n        1: [43, 50, 41, 50, 49, 46],\n        2: [42, 49, 40, 47, 49, 45],\n    },\n    # Setup cost\n    \"setup_cost\": {\n        0: [1282, 1493, 1006, 1286, 1305, 1360],\n        1: [1402, 1498, 1296, 1366, 1376, 1172],\n        2: [1362, 1094, 1283, 1279, 1430, 1146],\n    },\n    # Inventory holding cost per unit\n    \"hold_cost\": {\n        0: [4, 5, 4, 5, 4, 4],\n        1: [5, 5, 5, 4, 4, 4],\n        2: [5, 5, 4, 5, 5, 4],\n    },\n    # Monthly resource capacity (units)\n    \"resource_cap\": [1173, 1102, 1018, 1077, 1190, 1132],\n    # Resource consumption per unit of product\n    \"res_usage\": {0: 1.778, 1: 1.502, 2: 1.556},\n    # Max production per month if setup\n    \"max_prod\": {\n        0: [469, 394, 328, 228, 154, 83],\n        1: [390, 325, 239, 162, 104, 52],\n        2: [428, 371, 285, 235, 165, 65],\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef _demand_by_period(cum):\n    \"\"\"Convert cumulative demands to per-period demands.\"\"\"\n    by_period = {}\n    for idx, t in enumerate(range(len(cum))):\n        if idx == 0:\n            by_period[t] = cum[idx]\n        else:\n            by_period[t] = cum[idx] - cum[idx - 1]\n    return by_period\n\n\ndef build_model(data=None):\n    d = data or DATA\n    P = d[\"products\"]\n    T = d[\"periods\"]\n\n    # per-period demand lookup\n    demand = {p: _demand_by_period(d[\"cum_demand\"][p]) for p in P}\n\n    m = pyo.ConcreteModel()\n\n    m.P = pyo.Set(initialize=P)\n    m.T = pyo.Set(initialize=T)\n\n    # --- Variables ---\n    def x_bounds(m, p, t):\n        return (0, d[\"max_prod\"][p][t])\n\n    m.x = pyo.Var(m.P, m.T, within=pyo.NonNegativeReals, bounds=x_bounds)\n    m.I = pyo.Var(m.P, m.T, within=pyo.NonNegativeReals)\n    m.y = pyo.Var(m.P, m.T, within=pyo.Binary)\n\n    # --- Objective: production + setup + inventory holding ---\n    def obj_rule(m):\n        prod = sum(\n            d[\"prod_cost\"][p][t] * m.x[p, t] for p in P for t in T\n        )\n        setup = sum(\n            d[\"setup_cost\"][p][t] * m.y[p, t] for p in P for t in T\n        )\n        hold = sum(\n            d[\"hold_cost\"][p][t] * m.I[p, t] for p in P for t in T\n        )\n        return prod + setup + hold\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # --- Inventory balance constraint ---\n    def balance_rule(m, p, t):\n        if t == 0:\n            prev_inv = 0\n        else:\n            prev_inv = m.I[p, t - 1]\n        return prev_inv + m.x[p, t] - m.I[p, t] == demand[p][t]\n\n    m.balance = pyo.Constraint(m.P, m.T, rule=balance_rule)\n\n    # --- Final inventory must be zero ---\n    def final_inv_rule(m, p):\n        return m.I[p, T[-1]] == 0\n\n    m.final_inv = pyo.Constraint(m.P, rule=final_inv_rule)\n\n    # --- Setup linking: x[p,t] <= maxprod * y[p,t] ---\n    def setup_link_rule(m, p, t):\n        return m.x[p, t] <= d[\"max_prod\"][p][t] * m.y[p, t]\n\n    m.setup_link = pyo.Constraint(m.P, m.T, rule=setup_link_rule)\n\n    # --- Resource capacity constraint ---\n    def resource_rule(m, t):\n        return (\n            sum(d[\"res_usage\"][p] * m.x[p, t] for p in P)\n            <= d[\"resource_cap\"][t]\n        )\n\n    m.resource = pyo.Constraint(m.T, rule=resource_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1628,
+      "completion_tokens": 1585
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3042,
+      "completion_tokens": 1298
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 11.044027328491211,
+   "position": 0,
+   "recipe_index": 8
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# Cumulative demands are converted to per-month demands inside DATA.\n# per-month demand = cumulative[t] - cumulative[t-1] (cumulative[-1] = 0)\nDATA = {\n    \"products\": [0, 1, 2],\n    \"months\": [0, 1, 2, 3, 4, 5],\n\n    # cumulative demands per product over the 6 months\n    \"cum_demand\": {\n        0: [75, 141, 241, 315, 386, 469],\n        1: [65, 151, 228, 286, 338, 390],\n        2: [57, 143, 193, 263, 363, 428],\n    },\n\n    # production cost per unit [product][month]\n    \"prod_cost\": {\n        0: [42, 47, 41, 40, 43, 47],\n        1: [43, 50, 41, 50, 49, 46],\n        2: [42, 49, 40, 47, 49, 45],\n    },\n\n    # setup cost [product][month]\n    \"setup_cost\": {\n        0: [1282, 1493, 1006, 1286, 1305, 1360],\n        1: [1402, 1498, 1296, 1366, 1376, 1172],\n        2: [1362, 1094, 1283, 1279, 1430, 1146],\n    },\n\n    # inventory holding cost per unit [product][month]\n    \"hold_cost\": {\n        0: [4, 5, 4, 5, 4, 4],\n        1: [5, 5, 5, 4, 4, 4],\n        2: [5, 5, 4, 5, 5, 4],\n    },\n\n    # monthly resource capacity\n    \"resource_cap\": [1173, 1102, 1018, 1077, 1190, 1132],\n\n    # resource usage per unit [product]\n    \"resource_use\": {0: 1.778, 1: 1.502, 2: 1.556},\n\n    # max production per month [product][month]\n    \"max_prod\": {\n        0: [469, 394, 328, 228, 154, 83],\n        1: [390, 325, 239, 162, 104, 52],\n        2: [428, 371, 285, 235, 165, 65],\n    },\n\n    \"initial_inventory\": 0,\n    \"final_inventory\": 0,\n}\n\n\ndef _monthly_demand(cum):\n    \"\"\"Convert cumulative demand list into per-period demand.\"\"\"\n    out = []\n    prev = 0\n    for c in cum:\n        out.append(c - prev)\n        prev = c\n    return out\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    products = d[\"products\"]\n    months = d[\"months\"]\n\n    demand = {p: _monthly_demand(d[\"cum_demand\"][p]) for p in products}\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=products)\n    model.T = pyo.Set(initialize=months)\n\n    # Decision variables\n    model.production = pyo.Var(model.P, model.T, within=pyo.NonNegativeReals)\n    model.inventory = pyo.Var(model.P, model.T, within=pyo.NonNegativeReals)\n    model.setup = pyo.Var(model.P, model.T, within=pyo.Binary)\n\n    # Objective: minimize production + setup + holding costs\n    def obj_rule(m):\n        total = 0\n        for p in products:\n            for t in months:\n                total += d[\"prod_cost\"][p][t] * m.production[p, t]\n                total += d[\"setup_cost\"][p][t] * m.setup[p, t]\n                total += d[\"hold_cost\"][p][t] * m.inventory[p, t]\n        return total\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand balance for month 0 (no initial inventory)\n    def balance_first_rule(m, p):\n        return (m.production[p, 0] - m.inventory[p, 0]\n                == demand[p][0])\n\n    model.balance_first = pyo.Constraint(model.P, rule=balance_first_rule)\n\n    # Demand balance for months 1..5\n    def balance_rule(m, p, t):\n        return (m.inventory[p, t - 1] + m.production[p, t] - m.inventory[p, t]\n                == demand[p][t])\n\n    model.balance = pyo.Constraint(model.P, model.T, rule=balance_rule)\n\n    # No final inventory\n    def final_inv_rule(m, p):\n        return m.inventory[p, months[-1]] == d[\"final_inventory\"]\n\n    model.final_inventory = pyo.Constraint(model.P, rule=final_inv_rule)\n\n    # Setup linking / production capacity\n    def setup_link_rule(m, p, t):\n        return m.production[p, t] <= d[\"max_prod\"][p][t] * m.setup[p, t]\n\n    model.setup_link = pyo.Constraint(model.P, model.T, rule=setup_link_rule)\n\n    # Resource capacity per month\n    def resource_rule(m, t):\n        return sum(d[\"resource_use\"][p] * m.production[p, t]\n                   for p in products) <= d[\"resource_cap\"][t]\n\n    model.resource_cap = pyo.Constraint(model.T, rule=resource_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1622,
+      "completion_tokens": 1647
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "disallowed_lambda_rule"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2908,
+      "completion_tokens": 1315
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3050,
+      "completion_tokens": 1315
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [
+    "sandbox_construct_error"
+   ],
+   "seconds": 15.63467788696289,
+   "position": 1,
+   "recipe_index": 0
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# DATA: every numeric constant from the problem, with its source sentence.\n# ---------------------------------------------------------------------------\nDATA = {\n    # \"produces three products over a six-month period\"\n    \"products\": [0, 1, 2],\n    \"periods\": [1, 2, 3, 4, 5, 6],\n\n    # \"Product 0 has cumulative demands of 75, 141, 241, 315, 386, and 469 units\"\n    \"cum_demand\": {\n        0: [75, 141, 241, 315, 386, 469],\n        1: [65, 151, 228, 286, 338, 390],   # \"Product 1 has cumulative demands of 65, 151, 228, 286, 338, and 390\"\n        2: [57, 143, 193, 263, 363, 428],   # \"Product 2 has cumulative demands of 57, 143, 193, 263, 363, and 428\"\n    },\n\n    # \"Production costs per unit for Product 0 are $42, $47, $41, $40, $43, and $47\"\n    \"prod_cost\": {\n        0: [42, 47, 41, 40, 43, 47],\n        1: [43, 50, 41, 50, 49, 46],   # \"For Product 1, they are $43, $50, $41, $50, $49, and $46\"\n        2: [42, 49, 40, 47, 49, 45],   # \"For Product 2, they are $42, $49, $40, $47, $49, and $45\"\n    },\n\n    # \"Setup costs for Product 0 are $1,282, $1,493, $1,006, $1,286, $1,305, and $1,360\"\n    \"setup_cost\": {\n        0: [1282, 1493, 1006, 1286, 1305, 1360],\n        1: [1402, 1498, 1296, 1366, 1376, 1172],  # \"For Product 1, they are $1,402, $1,498, $1,296, $1,366, $1,376, and $1,172\"\n        2: [1362, 1094, 1283, 1279, 1430, 1146],  # \"For Product 2, they are $1,362, $1,094, $1,283, $1,279, $1,430, and $1,146\"\n    },\n\n    # \"Inventory holding costs per unit for Product 0 are $4, $5, $4, $5, $4, and $4\"\n    \"hold_cost\": {\n        0: [4, 5, 4, 5, 4, 4],\n        1: [5, 5, 5, 4, 4, 4],   # \"For Product 1, they are $5, $5, $5, $4, $4, and $4\"\n        2: [5, 5, 4, 5, 5, 4],   # \"For Product 2, they are $5, $5, $4, $5, $5, and $4\"\n    },\n\n    # \"monthly resource capacities of 1,173, 1,102, 1,018, 1,077, 1,190, and 1,132 units\"\n    \"resource_capacity\": [1173, 1102, 1018, 1077, 1190, 1132],\n\n    # \"Each unit of Product 0 consumes 1.778 resource units, Product 1 consumes 1.502, and Product 2 consumes 1.556\"\n    \"usage\": {0: 1.778, 1: 1.502, 2: 1.556},\n\n    # \"Product 0 can produce up to 469, 394, 328, 228, 154, and 83 units\"\n    \"prod_cap\": {\n        0: [469, 394, 328, 228, 154, 83],\n        1: [390, 325, 239, 162, 104, 52],   # \"Product 1 up to 390, 325, 239, 162, 104, and 52 units\"\n        2: [428, 371, 285, 235, 165, 65],   # \"Product 2 up to 428, 371, 285, 235, 165, and 65 units\"\n    },\n}\n\n# Placeholder per contract (never used in the model).\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    prod = d[\"products\"]          # 0,1,2\n    per = d[\"periods\"]            # 1..6\n    T = len(per)\n\n    # Convert cumulative demand -> per-month demand (differencing).\n    # demand[p][k] = cum[k] - cum[k-1], with cum[-1] = 0.\n    demand = {}\n    for p in prod:\n        cum = d[\"cum_demand\"][p]\n        demand[p] = [cum[0]] + [cum[k] - cum[k - 1] for k in range(1, T)]\n\n    model = pyo.ConcreteModel()\n\n    # ------------------- Sets -------------------\n    model.P = pyo.Set(initialize=prod, ordered=True)\n    model.T = pyo.Set(initialize=per, ordered=True)\n\n    # ------------------- Variables -------------------\n    # Production quantity of product p in month t (units, non-negative reals).\n    model.x = pyo.Var(model.P, model.T, within=pyo.NonNegativeReals)\n    # End-of-month inventory of product p in month t.\n    model.I = pyo.Var(model.P, model.T, within=pyo.NonNegativeReals)\n    # Setup binary: 1 if product p is produced in month t.\n    model.y = pyo.Var(model.P, model.T, within=pyo.Binary)\n\n    # ------------------- Objective -------------------\n    def obj_rule(m):\n        return sum(\n            d[\"prod_cost\"][p][t - 1] * m.x[p, t]\n            + d[\"setup_cost\"][p][t - 1] * m.y[p, t]\n            + d[\"hold_cost\"][p][t - 1] * m.I[p, t]\n            for p in m.P for t in m.T\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ------------------- Constraints -------------------\n\n    # Inventory balance: I[p,t-1] + x[p,t] - I[p,t] = demand[p,t],  I[p,0] = 0.\n    def balance_rule(m, p, t):\n        prev = m.I[p, t - 1] if t > per[0] else 0.0\n        return prev + m.x[p, t] - m.I[p, t] == demand[p][t - 1]\n\n    model.balance = pyo.Constraint(model.P, model.T, rule=balance_rule)\n\n    # No final inventory allowed: I[p, last] = 0.\n    def final_inv_rule(m, p):\n        return m.I[p, per[-1]] == 0.0\n\n    model.final_inv = pyo.Constraint(model.P, rule=final_inv_rule)\n\n    # Setup linking / production cap: x[p,t] <= prod_cap[p,t] * y[p,t].\n    def cap_rule(m, p, t):\n        return m.x[p, t] <= d[\"prod_cap\"][p][t - 1] * m.y[p, t]\n\n    model.prod_link = pyo.Constraint(model.P, model.T, rule=cap_rule)\n\n    # Resource capacity: sum_p usage[p] * x[p,t] <= resource_capacity[t].\n    def resource_rule(m, t):\n        return sum(d[\"usage\"][p] * m.x[p, t] for p in m.P) <= d[\"resource_capacity\"][t - 1]\n\n    model.resource = pyo.Constraint(model.T, rule=resource_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1626,
+      "completion_tokens": 2244
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3689,
+      "completion_tokens": 1894
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 14.147550106048584,
+   "position": 2,
+   "recipe_index": 1
+  },
+  {
+   "recipe": {
+    "variant": 1,
+    "temperature": 0.8,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Products and periods\n    \"products\": [0, 1, 2],\n    \"periods\": [0, 1, 2, 3, 4, 5],\n\n    # Cumulative demands per product over the six months\n    # \"Product 0 has cumulative demands of 75, 141, 241, 315, 386, and 469\"\n    \"cum_demand\": {\n        0: [75, 141, 241, 315, 386, 469],\n        1: [65, 151, 228, 286, 338, 390],\n        2: [57, 143, 193, 263, 363, 428],\n    },\n\n    # Production cost per unit\n    # \"Production costs per unit for Product 0 are $42, $47, $41, $40, $43, and $47\"\n    \"prod_cost\": {\n        0: [42, 47, 41, 40, 43, 47],\n        1: [43, 50, 41, 50, 49, 46],\n        2: [42, 49, 40, 47, 49, 45],\n    },\n\n    # Setup costs\n    # \"Setup costs for Product 0 are $1,282, $1,493, $1,006, $1,286, $1,305, and $1,360\"\n    \"setup_cost\": {\n        0: [1282, 1493, 1006, 1286, 1305, 1360],\n        1: [1402, 1498, 1296, 1366, 1376, 1172],\n        2: [1362, 1094, 1283, 1279, 1430, 1146],\n    },\n\n    # Inventory holding cost per unit\n    # \"Inventory holding costs per unit for Product 0 are $4, $5, $4, $5, $4, and $4\"\n    \"hold_cost\": {\n        0: [4, 5, 4, 5, 4, 4],\n        1: [5, 5, 5, 4, 4, 4],\n        2: [5, 5, 4, 5, 5, 4],\n    },\n\n    # Monthly resource capacities\n    # \"monthly resource capacities of 1,173, 1,102, 1,018, 1,077, 1,190, and 1,132\"\n    \"resource_cap\": [1173, 1102, 1018, 1077, 1190, 1132],\n\n    # Resource usage per unit of each product\n    # \"Each unit of Product 0 consumes 1.778 resource units, Product 1 consumes 1.502, and Product 2 consumes 1.556\"\n    \"resource_use\": {0: 1.778, 1: 1.502, 2: 1.556},\n\n    # Production upper bounds (also serve as big-M for setup linkage)\n    # \"Product 0 can produce up to 469, 394, 328, 228, 154, and 83 units\"\n    \"prod_ub\": {\n        0: [469, 394, 328, 228, 154, 83],\n        1: [390, 325, 239, 162, 104, 52],\n        2: [428, 371, 285, 235, 165, 65],\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    products = d[\"products\"]\n    periods = d[\"periods\"]\n\n    # Per-period demand derived from cumulative demand (differencing).\n    demand = {}\n    for p in products:\n        cum = d[\"cum_demand\"][p]\n        demand[p] = [cum[0]] + [cum[t] - cum[t - 1] for t in periods[1:]]\n\n    m = pyo.ConcreteModel()\n\n    m.P = pyo.Set(initialize=products)\n    m.T = pyo.Set(initialize=periods)\n\n    # Production quantity\n    m.x = pyo.Var(m.P, m.T, within=pyo.NonNegativeReals)\n\n    # End-of-month inventory\n    m.I = pyo.Var(m.P, m.T, within=pyo.NonNegativeReals)\n\n    # Setup indicator\n    m.y = pyo.Var(m.P, m.T, within=pyo.Binary)\n\n    # Objective: minimize production + setup + holding cost\n    def obj_rule(m):\n        total = 0\n        for p in m.P:\n            for t in m.T:\n                total += d[\"prod_cost\"][p][t] * m.x[p, t]\n                total += d[\"setup_cost\"][p][t] * m.y[p, t]\n                total += d[\"hold_cost\"][p][t] * m.I[p, t]\n        return total\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Inventory balance: I[t-1] + x[t] - I[t] = demand[t]\n    # No initial inventory (I[-1] = 0). Final inventory forced to 0 by\n    # requiring I[last] == 0 in the balance for the last period.\n    def balance_rule(m, p, t):\n        prev_inv = 0 if t == periods[0] else m.I[p, t - 1]\n        return prev_inv + m.x[p, t] - m.I[p, t] == demand[p][t]\n\n    m.balance = pyo.Constraint(m.P, m.T, rule=balance_rule)\n\n    # No final inventory allowed\n    def final_inv_rule(m, p):\n        return m.I[p, periods[-1]] == 0\n\n    m.final_inv = pyo.Constraint(m.P, rule=final_inv_rule)\n\n    # Setup linkage / production cap: x[p,t] <= U[p,t] * y[p,t]\n    def setup_rule(m, p, t):\n        return m.x[p, t] <= d[\"prod_ub\"][p][t] * m.y[p, t]\n\n    m.setup_link = pyo.Constraint(m.P, m.T, rule=setup_rule)\n\n    # Monthly resource capacity: sum_p a[p] * x[p,t] <= cap[t]\n    def resource_rule(m, t):\n        return sum(d[\"resource_use\"][p] * m.x[p, t] for p in m.P) <= d[\"resource_cap\"][t]\n\n    m.resource = pyo.Constraint(m.T, rule=resource_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1626,
+      "completion_tokens": 1904
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.239331960678101,
+   "position": 3,
+   "recipe_index": 6
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------\n# All numeric constants from the problem statement\n# ---------------------------------------------------------------\nDATA = {\n    \"products\": [0, 1, 2],\n    \"months\": [1, 2, 3, 4, 5, 6],\n    # cumulative demands per product over the six months\n    \"cum_demand\": {\n        0: [75, 141, 241, 315, 386, 469],\n        1: [65, 151, 228, 286, 338, 390],\n        2: [57, 143, 193, 263, 363, 428],\n    },\n    # production cost per unit [product][month]\n    \"prod_cost\": {\n        0: [42, 47, 41, 40, 43, 47],\n        1: [43, 50, 41, 50, 49, 46],\n        2: [42, 49, 40, 47, 49, 45],\n    },\n    # setup cost [product][month]\n    \"setup_cost\": {\n        0: [1282, 1493, 1006, 1286, 1305, 1360],\n        1: [1402, 1498, 1296, 1366, 1376, 1172],\n        2: [1362, 1094, 1283, 1279, 1430, 1146],\n    },\n    # inventory holding cost per unit [product][month]\n    \"hold_cost\": {\n        0: [4, 5, 4, 5, 4, 4],\n        1: [5, 5, 5, 4, 4, 4],\n        2: [5, 5, 4, 5, 5, 4],\n    },\n    # production upper bound (big-M) [product][month]\n    \"max_prod\": {\n        0: [469, 394, 328, 228, 154, 83],\n        1: [390, 325, 239, 162, 104, 52],\n        2: [428, 371, 285, 235, 165, 65],\n    },\n    # monthly resource capacity\n    \"res_cap\": [1173, 1102, 1018, 1077, 1190, 1132],\n    # resource usage per unit of each product\n    \"res_usage\": {0: 1.778, 1: 1.502, 2: 1.556},\n    \"init_inv\": 0,\n    \"final_inv\": 0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    m = pyo.ConcreteModel()\n\n    # ---------------- Sets ----------------\n    m.P = pyo.Set(initialize=d[\"products\"])\n    m.T = pyo.Set(initialize=d[\"months\"], ordered=True)\n\n    # per-month demand (non-cumulative) derived from cumulative demands\n    demand = {}\n    for p in d[\"products\"]:\n        cum = d[\"cum_demand\"][p]\n        prev = 0\n        for i, t in enumerate(d[\"months\"]):\n            demand[p, t] = cum[i] - prev\n            prev = cum[i]\n    m.demand = demand\n\n    # ---------------- Variables ----------------\n    m.x = pyo.Var(m.P, m.T, domain=pyo.NonNegativeReals)          # production\n    m.I = pyo.Var(m.P, m.T, domain=pyo.NonNegativeReals)          # end inv\n    m.y = pyo.Var(m.P, m.T, domain=pyo.Binary)                    # setup\n\n    # ---------------- Objective ----------------\n    def obj_rule(m):\n        prod = sum(d[\"prod_cost\"][p][t - 1] * m.x[p, t]\n                   for p in m.P for t in m.T)\n        setup = sum(d[\"setup_cost\"][p][t - 1] * m.y[p, t]\n                    for p in m.P for t in m.T)\n        hold = sum(d[\"hold_cost\"][p][t - 1] * m.I[p, t]\n                   for p in m.P for t in m.T)\n        return prod + setup + hold\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---------------- Constraints ----------------\n    # Inventory balance: prev_inv + x - I = demand   (<=> equality)\n    def rule_balance(m, p, t):\n        prev = d[\"init_inv\"] if t == m.T.first() else m.I[p, t - 1]\n        return prev + m.x[p, t] - m.I[p, t] == m.demand[p, t]\n    m.balance = pyo.Constraint(m.P, m.T, rule=rule_balance)\n\n    # Final inventory zero (<= forced equal to 0; use equality)\n    def rule_final(m, p):\n        return m.I[p, m.T.last()] == d[\"final_inv\"]\n    m.final_inv = pyo.Constraint(m.P, rule=rule_final)\n\n    # Setup linkage: x <= max_prod * y\n    def rule_setup(m, p, t):\n        return m.x[p, t] <= d[\"max_prod\"][p][t - 1] * m.y[p, t]\n    m.setup_link = pyo.Constraint(m.P, m.T, rule=rule_setup)\n\n    # Resource capacity: sum_p usage*x <= cap   (direction <=)\n    def rule_res(m, t):\n        return sum(d[\"res_usage\"][p] * m.x[p, t] for p in m.P) <= d[\"res_cap\"][t - 1]\n    m.res_cap = pyo.Constraint(m.T, rule=rule_res)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1638,
+      "completion_tokens": 1676
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.638367176055908,
+   "position": 4,
+   "recipe_index": 2
+  },
+  {
+   "recipe": {
+    "variant": 0,
+    "temperature": 0.6,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# Cumulative demands per product over 6 months\n_cum_demand = {\n    0: [75, 141, 241, 315, 386, 469],\n    1: [65, 151, 228, 286, 338, 390],\n    2: [57, 143, 193, 263, 363, 428],\n}\n\ndef _period_demand(cum):\n    prev = 0\n    out = []\n    for v in cum:\n        out.append(v - prev)\n        prev = v\n    return out\n\nDATA = {\n    \"products\": [0, 1, 2],\n    \"periods\": [1, 2, 3, 4, 5, 6],\n    # per-period demand (differenced from cumulative)\n    \"demand\": {p: _period_demand(_cum_demand[p]) for p in [0, 1, 2]},\n    # production cost per unit\n    \"prod_cost\": {\n        0: [42, 47, 41, 40, 43, 47],\n        1: [43, 50, 41, 50, 49, 46],\n        2: [42, 49, 40, 47, 49, 45],\n    },\n    # setup cost\n    \"setup_cost\": {\n        0: [1282, 1493, 1006, 1286, 1305, 1360],\n        1: [1402, 1498, 1296, 1366, 1376, 1172],\n        2: [1362, 1094, 1283, 1279, 1430, 1146],\n    },\n    # inventory holding cost per unit\n    \"hold_cost\": {\n        0: [4, 5, 4, 5, 4, 4],\n        1: [5, 5, 5, 4, 4, 4],\n        2: [5, 5, 4, 5, 5, 4],\n    },\n    # monthly resource capacity\n    \"capacity\": [1173, 1102, 1018, 1077, 1190, 1132],\n    # resource usage per unit\n    \"usage\": {0: 1.778, 1: 1.502, 2: 1.556},\n    # max production (big-M) per product per month\n    \"max_prod\": {\n        0: [469, 394, 328, 228, 154, 83],\n        1: [390, 325, 239, 162, 104, 52],\n        2: [428, 371, 285, 235, 165, 65],\n    },\n    \"initial_inventory\": 0,\n    \"final_inventory\": 0,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = d[\"products\"]\n    periods = d[\"periods\"]\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=products)\n    model.T = pyo.Set(initialize=periods)\n\n    # Decision variables\n    model.production = pyo.Var(model.P, model.T, within=pyo.NonNegativeReals)\n    model.inventory = pyo.Var(model.P, model.T, within=pyo.NonNegativeReals)\n    model.setup = pyo.Var(model.P, model.T, within=pyo.Binary)\n\n    # Objective: production + setup + holding costs\n    def obj_rule(m):\n        return (\n            sum(d[\"prod_cost\"][p][t - 1] * m.production[p, t]\n                for p in m.P for t in m.T)\n            + sum(d[\"setup_cost\"][p][t - 1] * m.setup[p, t]\n                  for p in m.P for t in m.T)\n            + sum(d[\"hold_cost\"][p][t - 1] * m.inventory[p, t]\n                  for p in m.P for t in m.T)\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Inventory balance: prev_inv + production - inventory = demand\n    def balance_rule(m, p, t):\n        prev = d[\"initial_inventory\"] if t == periods[0] else m.inventory[p, t - 1]\n        return prev + m.production[p, t] - m.inventory[p, t] == d[\"demand\"][p][t - 1]\n\n    model.balance = pyo.Constraint(model.P, model.T, rule=balance_rule)\n\n    # No final inventory\n    def final_inv_rule(m, p):\n        return m.inventory[p, periods[-1]] == d[\"final_inventory\"]\n\n    model.final_inv = pyo.Constraint(model.P, rule=final_inv_rule)\n\n    # Setup linking / production cap: production <= max_prod * setup\n    def cap_rule(m, p, t):\n        return m.production[p, t] <= d[\"max_prod\"][p][t - 1] * m.setup[p, t]\n\n    model.cap = pyo.Constraint(model.P, model.T, rule=cap_rule)\n\n    # Resource capacity per month\n    def resource_rule(m, t):\n        return sum(d[\"usage\"][p] * m.production[p, t] for p in m.P) <= d[\"capacity\"][t - 1]\n\n    model.resource = pyo.Constraint(model.T, rule=resource_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1622,
+      "completion_tokens": 1581
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.228215217590332,
+   "position": 5,
+   "recipe_index": 5
+  },
+  {
+   "recipe": {
+    "variant": 2,
+    "temperature": 1.0,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\n# Cumulative demands are converted to monthly demand below.\nDATA = {\n    \"products\": [0, 1, 2],\n    \"months\": [1, 2, 3, 4, 5, 6],\n    # cumulative demand per product over months -> converted to per-month in build_model\n    \"cum_demand\": {\n        0: [75, 141, 241, 315, 386, 469],\n        1: [65, 151, 228, 286, 338, 390],\n        2: [57, 143, 193, 263, 363, 428],\n    },\n    # production cost per unit c[p][t-1]\n    \"prod_cost\": {\n        0: [42, 47, 41, 40, 43, 47],\n        1: [43, 50, 41, 50, 49, 46],\n        2: [42, 49, 40, 47, 49, 45],\n    },\n    # setup cost f[p][t-1]\n    \"setup_cost\": {\n        0: [1282, 1493, 1006, 1286, 1305, 1360],\n        1: [1402, 1498, 1296, 1366, 1376, 1172],\n        2: [1362, 1094, 1283, 1279, 1430, 1146],\n    },\n    # holding cost per unit h[p][t-1]\n    \"hold_cost\": {\n        0: [4, 5, 4, 5, 4, 4],\n        1: [5, 5, 5, 4, 4, 4],\n        2: [5, 5, 4, 5, 5, 4],\n    },\n    # resource capacity per month cap[t-1]\n    \"capacity\": [1173, 1102, 1018, 1077, 1190, 1132],\n    # resource usage per unit value[p]\n    \"usage\": {0: 1.778, 1: 1.502, 2: 1.556},\n    # production upper bound UB[p][t-1]\n    \"ub\": {\n        0: [469, 394, 328, 228, 154, 83],\n        1: [390, 325, 239, 162, 104, 52],\n        2: [428, 371, 285, 235, 165, 65],\n    },\n    \"init_inventory\": 0,\n    \"final_inventory\": 0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    products = list(d[\"products\"])\n    months = list(d[\"months\"])\n    nT = len(months)\n\n    # derive monthly demand from cumulative demand\n    demand = {}\n    for p in products:\n        cum = d[\"cum_demand\"][p]\n        monthly = []\n        prev = 0\n        for t in range(nT):\n            monthly.append(cum[t] - prev)\n            prev = cum[t]\n        demand[p] = monthly\n\n    m = pyo.ConcreteModel()\n\n    m.P = pyo.Set(initialize=products)\n    m.T = pyo.Set(initialize=months)\n\n    # production quantity (units)\n    m.x = pyo.Var(m.P, m.T, within=pyo.NonNegativeReals)\n    # end-of-month inventory (units)\n    m.I = pyo.Var(m.P, m.T, within=pyo.NonNegativeReals)\n    # setup indicator\n    m.y = pyo.Var(m.P, m.T, within=pyo.Binary)\n\n    # ---- Objective: minimize production + setup + holding cost ----\n    def obj_rule(m):\n        return sum(\n            d[\"prod_cost\"][p][t - 1] * m.x[p, t]\n            + d[\"setup_cost\"][p][t - 1] * m.y[p, t]\n            + d[\"hold_cost\"][p][t - 1] * m.I[p, t]\n            for p in products for t in months\n        )\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # ---- Inventory balance: I[p,t-1] + x[p,t] - I[p,t] = demand[p,t] ----\n    def balance_rule(m, p, t):\n        prev_inv = d[\"init_inventory\"] if t == months[0] else m.I[p, t - 1]\n        return prev_inv + m.x[p, t] - m.I[p, t] == demand[p][t - 1]\n    m.balance = pyo.Constraint(m.P, m.T, rule=balance_rule)\n\n    # ---- No final inventory: I[p, last] = 0 (>= enforced by domain, so <=) ----\n    def final_rule(m, p):\n        return m.I[p, months[-1]] <= d[\"final_inventory\"]\n    m.final_inv = pyo.Constraint(m.P, rule=final_rule)\n\n    # ---- Setup linking: x[p,t] <= UB[p,t] * y[p,t] ----\n    def setup_rule(m, p, t):\n        return m.x[p, t] <= d[\"ub\"][p][t - 1] * m.y[p, t]\n    m.setup_link = pyo.Constraint(m.P, m.T, rule=setup_rule)\n\n    # ---- Resource capacity: sum_p usage[p]*x[p,t] <= cap[t] ----\n    def cap_rule(m, t):\n        return sum(d[\"usage\"][p] * m.x[p, t] for p in products) <= d[\"capacity\"][t - 1]\n    m.capacity = pyo.Constraint(m.T, rule=cap_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1638,
+      "completion_tokens": 1664
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.658676385879517,
+   "position": 6,
+   "recipe_index": 7
+  },
+  {
+   "recipe": {
+    "variant": 3,
+    "temperature": 1.2,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------\n# DATA: all numeric constants from the problem\n# CumDemands are cumulative; per-month demand is derived inside build_model.\n# ---------------------------------------------------------------\nDATA = {\n    \"products\": [0, 1, 2],\n    \"periods\": [1, 2, 3, 4, 5, 6],\n\n    # cumulative demands over the six months (used to derive monthly demand)\n    \"cum_demand\": {\n        0: [75, 141, 241, 315, 386, 469],\n        1: [65, 151, 228, 286, 338, 390],\n        2: [57, 143, 193, 263, 363, 428],\n    },\n\n    # production cost per unit\n    \"prod_cost\": {\n        0: [42, 47, 41, 40, 43, 47],\n        1: [43, 50, 41, 50, 49, 46],\n        2: [42, 49, 40, 47, 49, 45],\n    },\n\n    # setup cost\n    \"setup_cost\": {\n        0: [1282, 1493, 1006, 1286, 1305, 1360],\n        1: [1402, 1498, 1296, 1366, 1376, 1172],\n        2: [1362, 1094, 1283, 1279, 1430, 1146],\n    },\n\n    # inventory holding cost per unit (period t applies to end-of-month inventory)\n    \"hold_cost\": {\n        0: [4, 5, 4, 5, 4, 4],\n        1: [5, 5, 5, 4, 4, 4],\n        2: [5, 5, 4, 5, 5, 4],\n    },\n\n    # monthly resource capacity (one shared resource)\n    \"capacity\": [1173, 1102, 1018, 1077, 1190, 1132],\n\n    # resource usage per unit\n    \"usage\": {0: 1.778, 1: 1.502, 2: 1.556},\n\n    # monthly production upper bounds per product (also serve as big-M for setup)\n    \"upt\": {\n        0: [469, 394, 328, 228, 154, 83],\n        1: [390, 325, 239, 162, 104, 52],\n        2: [428, 371, 285, 235, 165, 65],\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    products = d[\"products\"]\n    periods = d[\"periods\"]\n\n    # standard demand quantity multipliers in the \"if produced then >= min\" from spec\n    # derive per-period demand from cumulative demands (first period is the head)\n    dem = {}\n    for p in products:\n        cum = d[\"cum_demand\"][p]\n        prev = 0\n        dem[p] = {}\n        for idx, t in enumerate(periods):\n            dem[p][t] = cum[idx] - prev\n            prev = cum[idx]\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=products)\n    model.T = pyo.Set(initialize=periods)\n    # I[t] stores end-of-month t; index 0 is the (zero) initial inventory\n    model.T0 = pyo.Set(initialize=[0] + list(periods))\n\n    # ---------------------- Variables ----------------------\n    # production quantity\n    def x_bounds(m, p, t):\n        return (0, d[\"upt\"][p][t - 1])\n\n    model.x = pyo.Var(model.P, model.T, domain=pyo.NonNegativeIntegers, bounds=x_bounds)\n    model.y = pyo.Var(model.P, model.T, domain=pyo.Binary)\n    model.I = pyo.Var(model.P, model.T0, domain=pyo.NonNegativeIntegers)\n    _, ubI_p, _, _ = 0.0, 1.0, None, None\n    inv_total = {p: sum(d[\"cum_demand\"][p]) for p in products}\n\n    def I_bounds(m, p, t):\n        return (0, inv_total[p])\n\n    # override I bounds to a valid total-demand ceiling\n    model.I = pyo.Var(model.P, model.T0, domain=pyo.NonNegativeIntegers, bounds=I_bounds)\n\n    # ---------------------- Objective ----------------------\n    # min sum production + setup + holding costs\n    model.obj = pyo.Objective(\n        expr=(\n            sum(d[\"prod_cost\"][p][t - 1] * model.x[p, t] for p in model.P for t in model.T)\n            + sum(d[\"setup_cost\"][p][t - 1] * model.y[p, t] for p in model.P for t in model.T)\n            + sum(d[\"hold_cost\"][p][t - 1] * model.I[p, t] for p in model.P for t in model.T)\n        ),\n        sense=pyo.minimize,\n    )\n\n    # ---------------------- Constraints ----------------------\n    # Initial inventory must be zero (T0 index 0).\n    def no_init_inv_rule(m, p):\n        return m.I[p, 0] == 0\n\n    model.no_init_inv = pyo.Constraint(model.P, rule=no_init_inv_rule)\n\n    # Final inventory must be zero (end of last period).\n    last = periods[-1]\n\n    def no_final_inv_rule(m, p):\n        return m.I[p, last] == 0\n\n    model.no_final_inv = pyo.Constraint(model.P, rule=no_final_inv_rule)\n\n    # First period balance: 0 + x[p,1] - I[p,1] = dem\n    def balance_1_rule(m, p):\n        return m.x[p, 1] - m.I[p, 1] == dem[p][1]\n\n    model.balance_1 = pyo.Constraint(model.P, rule=balance_1_rule)\n\n    # Remaining periods balance: I[p,t-1] + x[p,t] - I[p,t] = dem\n    def balance_t_rule(m, p, t):\n        return m.I[p, t - 1] + m.x[p, t] - m.I[p, t] == dem[p][t]\n\n    rem = pyo.Set(initialize=periods[1:])\n    model.balance_t = pyo.Constraint(model.P, rem, rule=balance_t_rule)\n\n    # Setup linking: x[p,t] <= upt[p,t] * y[p,t]\n    def setup_link_rule(m, p, t):\n        return m.x[p, t] <= d[\"upt\"][p][t - 1] * m.y[p, t]\n\n    model.setup_link = pyo.Constraint(model.P, model.T, rule=setup_link_rule)\n\n    # Setup already paid together with each lower production only requires check:\n    # if y default 1 but produced 0 further logic not needed since x <= upt and every plant requires y.\n    # but for completeness define a lower linking? not the problem asks min so OK\n\n    # period-resource-capacity\n    def resource_cap_rule(m, t):\n        return sum(d[\"usage\"][p] * m.x[p, t] for p in m.P) <= d[\"capacity\"][t - 1]\n\n    model.resource_cap = pyo.Constraint(model.T, rule=resource_cap_rule)\n\n    # sanity check to expose anything missed\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1628,
+      "completion_tokens": 2131
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.853606462478638,
+   "position": 7,
+   "recipe_index": 3
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 0
+   },
+   "code": "import pyomo.environ as pyo\n\n# =============================================================================\n# Decision variables\n# -----------------------------------------------------------------------------\n# x[p, t]  : production quantity of product p in month t          (>= 0, continuous)\n# I[p, t]  : end-of-month inventory of product p in month t       (>= 0, continuous)\n# y[p, t]  : 1 if product p is produced (setup) in month t        (binary)\n#\n# Index sets\n#   P = {0, 1, 2}          products\n#   T = {0, 1, 2, 3, 4, 5} months\n#\n# Objective (minimize, in words)\n#   Total cost = sum over products and months of\n#       (production cost * x) + (setup cost * y) + (holding cost * I)\n#\n# Constraints (numbered, with source sentence)\n#   1. Inventory balance: I[p,t-1] + x[p,t] - I[p,t] = demand[p,t]\n#      (\"Inventory at the end of each month must satisfy demand\")\n#      with I[p,-1] = 0 (no initial inventory) and I[p,5] = 0 (no final inventory).\n#   2. Setup linking / production upper bound: x[p,t] <= cap[p,t] * y[p,t]\n#      (\"production quantities are limited by setup decisions: Product 0 can\n#       produce up to ... units\")\n#   3. Resource capacity: sum_p usage[p] * x[p,t] <= resource[t]\n#      (\"The facility has monthly resource capacities of ...\")\n# =============================================================================\n\nDATA = {\n    \"products\": [0, 1, 2],\n    \"months\": [0, 1, 2, 3, 4, 5],\n    # cumulative demands -> converted to per-month demand below\n    \"cum_demand\": {\n        0: [75, 141, 241, 315, 386, 469],\n        1: [65, 151, 228, 286, 338, 390],\n        2: [57, 143, 193, 263, 363, 428],\n    },\n    \"prod_cost\": {\n        0: [42, 47, 41, 40, 43, 47],\n        1: [43, 50, 41, 50, 49, 46],\n        2: [42, 49, 40, 47, 49, 45],\n    },\n    \"setup_cost\": {\n        0: [1282, 1493, 1006, 1286, 1305, 1360],\n        1: [1402, 1498, 1296, 1366, 1376, 1172],\n        2: [1362, 1094, 1283, 1279, 1430, 1146],\n    },\n    \"hold_cost\": {\n        0: [4, 5, 4, 5, 4, 4],\n        1: [5, 5, 5, 4, 4, 4],\n        2: [5, 5, 4, 5, 5, 4],\n    },\n    \"resource_cap\": [1173, 1102, 1018, 1077, 1190, 1132],\n    \"usage\": {0: 1.778, 1: 1.502, 2: 1.556},\n    \"prod_ub\": {\n        0: [469, 394, 328, 228, 154, 83],\n        1: [390, 325, 239, 162, 104, 52],\n        2: [428, 371, 285, 235, 165, 65],\n    },\n}\n\n\ndef _monthly_demand(cum):\n    \"\"\"Convert cumulative demand list into per-month demand list.\"\"\"\n    out = []\n    prev = 0\n    for c in cum:\n        out.append(c - prev)\n        prev = c\n    return out\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    products = list(d[\"products\"])\n    months = list(d[\"months\"])\n\n    demand = {p: _monthly_demand(d[\"cum_demand\"][p]) for p in products}\n\n    m = pyo.ConcreteModel()\n\n    m.P = pyo.Set(initialize=products)\n    m.T = pyo.Set(initialize=months)\n\n    m.x = pyo.Var(m.P, m.T, within=pyo.NonNegativeReals)\n    m.I = pyo.Var(m.P, m.T, within=pyo.NonNegativeReals)\n    m.y = pyo.Var(m.P, m.T, within=pyo.Binary)\n\n    # Objective: production + setup + holding costs\n    def obj_rule(m):\n        total = 0\n        for p in m.P:\n            for t in m.T:\n                total += d[\"prod_cost\"][p][t] * m.x[p, t]\n                total += d[\"setup_cost\"][p][t] * m.y[p, t]\n                total += d[\"hold_cost\"][p][t] * m.I[p, t]\n        return total\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint 1: inventory balance\n    def balance_rule(m, p, t):\n        prev_inv = m.I[p, t - 1] if t > 0 else 0\n        return prev_inv + m.x[p, t] - m.I[p, t] == demand[p][t]\n\n    m.balance = pyo.Constraint(m.P, m.T, rule=balance_rule)\n\n    # Constraint 1b: no final inventory\n    def final_inv_rule(m, p):\n        return m.I[p, months[-1]] == 0\n\n    m.final_inv = pyo.Constraint(m.P, rule=final_inv_rule)\n\n    # Constraint 2: setup linking / production upper bound\n    def setup_link_rule(m, p, t):\n        return m.x[p, t] <= d[\"prod_ub\"][p][t] * m.y[p, t]\n\n    m.setup_link = pyo.Constraint(m.P, m.T, rule=setup_link_rule)\n\n    # Constraint 3: resource capacity per month\n    def resource_rule(m, t):\n        return sum(d[\"usage\"][p] * m.x[p, t] for p in m.P) <= d[\"resource_cap\"][t]\n\n    m.resource = pyo.Constraint(m.T, rule=resource_rule)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1642,
+      "completion_tokens": 3617
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1999,
+      "completion_tokens": 1486
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 37.293864250183105,
+   "position": 8,
+   "recipe_index": 4
+  },
+  {
+   "recipe": {
+    "variant": 4,
+    "temperature": 1.4,
+    "repeat": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"products\": [0, 1, 2],\n    \"months\": [0, 1, 2, 3, 4, 5],\n\n    # cumulative demand by product by month: cum[p][m]\n    \"cum_demand\": {\n        0: [75, 141, 241, 315, 386, 469],\n        1: [65, 151, 228, 286, 338, 390],\n        2: [57, 143, 193, 263, 363, 428],\n    },\n\n    # production cost per unit c[p][m]\n    \"cost_prod\": {\n        0: [42, 47, 41, 40, 43, 47],\n        1: [43, 50, 41, 50, 49, 46],\n        2: [42, 49, 40, 47, 49, 45],\n    },\n\n    # setup cost f[p][m]\n    \"cost_setup\": {\n        0: [1282, 1493, 1006, 1286, 1305, 1360],\n        1: [1402, 1498, 1296, 1366, 1376, 1172],\n        2: [1362, 1094, 1283, 1279, 1430, 1146],\n    },\n\n    # inventory holding cost h[p][m]\n    \"cost_hold\": {\n        0: [4, 5, 4, 5, 4, 4],\n        1: [5, 5, 5, 4, 4, 4],\n        2: [5, 5, 4, 5, 5, 4],\n    },\n\n    # monthly resource capacity\n    \"capacity\": [1173, 1102, 1018, 1077, 1190, 1132],\n\n    # resource usage per unit of product\n    \"usage\": {0: 1.778, 1: 1.502, 2: 1.556},\n\n    # per (p, m) upper bound on production (also serves as setup big-M)\n    \"upper\": {\n        0: [469, 394, 328, 228, 154, 83],\n        1: [390, 325, 239, 162, 104, 52],\n        2: [428, 371, 285, 235, 165, 65],\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    P = d[\"products\"]\n    M = d[\"months\"]\n\n    # monthly demand derived from cumulative demand\n    demand = {}\n    for p in P:\n        cum = d[\"cum_demand\"][p]\n        demand[p] = [cum[0]] + [cum[m] - cum[m - 1] for m in range(1, len(cum))]\n\n    model = pyo.ConcreteModel()\n\n    model.P = pyo.Set(initialize=P)\n    model.M = pyo.Set(initialize=M, ordered=True)\n\n    # x[p,m]: production quantity of product p in month m\n    model.x = pyo.Var(model.P, model.M, within=pyo.NonNegativeIntegers)\n\n    # y[p,m]: setup binary, 1 if product p is produced in month m\n    model.y = pyo.Var(model.P, model.M, within=pyo.Binary)\n\n    # I[p,m]: end-of-month inventory of product p after month m\n    model.I = pyo.Var(model.P, model.M, within=pyo.NonNegativeIntegers)\n\n    # Objective: minimize production + setup + holding costs\n    def obj_rule(m):\n        return (\n            sum(d[\"cost_prod\"][p][mm] * m.x[p, mm] for p in P for mm in M)\n            + sum(d[\"cost_setup\"][p][mm] * m.y[p, mm] for p in P for mm in M)\n            + sum(d[\"cost_hold\"][p][mm] * m.I[p, mm] for p in P for mm in M)\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Inventory balance: I[p,m-1] + x[p,m] - I[p,m] = demand[p,m]\n    # with I[p,-1] = 0 (no initial inventory)\n    def balance_rule(m, p, mm):\n        prev = 0 if mm == M[0] else m.I[p, mm - 1]\n        return prev + m.x[p, mm] - m.I[p, mm] == demand[p][mm]\n\n    model.balance = pyo.Constraint(model.P, model.M, rule=balance_rule)\n\n    # No final inventory: I[p, last month] == 0\n    def final_inv_rule(m, p):\n        return m.I[p, M[-1]] == 0\n\n    model.final_inv = pyo.Constraint(model.P, rule=final_inv_rule)\n\n    # Setup linking: x[p,m] <= upper[p,m] * y[p,m]\n    def setup_rule(m, p, mm):\n        return m.x[p, mm] <= d[\"upper\"][p][mm] * m.y[p, mm]\n\n    model.setup_link = pyo.Constraint(model.P, model.M, rule=setup_rule)\n\n    # Resource capacity: sum_p usage[p] * x[p,m] <= capacity[m]\n    def capacity_rule(m, mm):\n        return sum(d[\"usage\"][p] * m.x[p, mm] for p in P) <= d[\"capacity\"][mm]\n\n    model.capacity = pyo.Constraint(model.M, rule=capacity_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1642,
+      "completion_tokens": 5120
+     },
+     "finish_reason": "stop"
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "syntax_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3275,
+      "completion_tokens": 1294
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 38.58773970603943,
+   "position": 9,
+   "recipe_index": 9
+  }
+ ],
+ "model": "deepseek-v4-flash",
+ "generated_at": "2026-09-14T09:56:01"
+}
