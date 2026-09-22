@@ -48,7 +48,13 @@ def test_lp_diag():
     sol, obj = lp_diagnostics(res)
     assert sol[0] == sol[1] == 1.0 and sol[3] == 0.0 and 0 < sol[2] < 1
     assert obj[0] == obj[1] == 1.0 and obj[2] == 0.0 and obj[3] == 0.0
-    assert len(profile([5, 1, 3])) == 30 and list(profile([5, 1, 3])[:3]) == [1, 3, 5]
+    # Eq. 15: sort DESCENDING, then truncate / zero-pad to 30
+    assert len(profile([5, 1, 3])) == 30 and list(profile([5, 1, 3])[:3]) == [5, 3, 1]
+    # padding must not shift informative entries: an extra zero variable
+    # (e.g. a declared slack) must leave the profile identical
+    assert list(profile([5, 1, 3])) == list(profile([5, 1, 3, 0]))
+    # truncation past dim keeps the LARGEST values, not the smallest
+    assert list(profile(list(range(40)))[:3]) == [39, 38, 37]
     # single feasible candidate: R < eps -> R = 1, score 1
     _, obj = lp_diagnostics([{"status": "optimal", "objective": 4.0, "values": [1]}])
     assert obj == [1.0]
