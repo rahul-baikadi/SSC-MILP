@@ -1,187 +1,284 @@
-import json, glob, os, sys, math, random
+"""Top-2 selection study: keep SSC's argmax, add one diverse second candidate.
+
+For every problem P in a benchmark the selector already commits to
+
+    c_1 = argmax_{c in C(P)} SSC(c)
+
+This script leaves c_1 untouched and asks how to spend one extra downstream
+solve on a second candidate c_2.  Acc@2 counts a problem as solved when either
+member of {c_1, c_2} is correct under the paper's tolerance test, which is
+already materialised in runs/<bench>/eval/*.json.
+
+Four rules, all reading cached features only (no LLM call, no MILP solve):
+
+  Top-2 naive      second highest SSC
+  MMR              lambda * SSC(c_i) - (1 - lambda) * sim(M_i, M_1)
+  Answer diversity highest SSC whose relaxed objective disagrees with c_1's
+  Hybrid           MMR restricted to the answer-diverse set, MMR as fallback
+
+Usage:
+    python scripts/eval_top2.py <repo_root> [scores_dir] [--delta D] [--md FILE]
+
+    scores_dir defaults to "scores" (the corrected re-score).  Pass
+    "scores_v1" to reproduce the pre-fix numbers.
+"""
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import math
+import os
+from collections import OrderedDict
+
 import numpy as np
 
-ROOT = sys.argv[1]
 BENCH = ["nl4opt", "mamo_easy", "mamo_complex", "complexor", "industryor", "optibench", "optmath"]
+LAMBDAS = [round(x, 1) for x in np.arange(0.0, 1.01, 0.1)]
+DELTA = 1e-4
 
 
-def load(b):
-    probs = []
-    for f in sorted(glob.glob(f"{ROOT}/runs/{b}/scores_v1/*.json")):
+# ----------------------------------------------------------------- loading
+def load_benchmark(root: str, bench: str, scores_dir: str) -> list[dict]:
+    """One record per problem: SSC vector, similarity matrix, clone groups,
+    relaxed objectives, correctness labels, and the selector's own choice."""
+    out = []
+    for f in sorted(glob.glob(os.path.join(root, "runs", bench, scores_dir, "*.json"))):
         s = json.load(open(f))
-        e = json.load(open(f.replace("scores_v1", "eval")))
-        K = len(s["candidates"])
-        probs.append(dict(
-            ssc=np.array(s["scores"]["SSC"], float),
-            S=np.array(s["similarity"], float),
-            grp=[c["clone_group"] for c in s["candidates"]],
-            lpz=[c["lp_objective"] if c["lp_status"] == "optimal" else None for c in s["candidates"]],
-            truez=[c["objective"] for c in e["candidates"]],
-            ok=np.array([bool(c["correct"]) for c in e["candidates"]]),
-            sel=s["selected"]["SSC"], K=K))
-    return probs
+        e = json.load(open(f.replace(os.sep + scores_dir + os.sep, os.sep + "eval" + os.sep)))
+        out.append({
+            "pid": s["pid"],
+            "bench": bench,
+            "K": len(s["candidates"]),
+            "ssc": np.asarray(s["scores"]["SSC"], dtype=float),
+            "sim": np.asarray(s["similarity"], dtype=float),
+            "group": [c["clone_group"] for c in s["candidates"]],
+            "z": [c["lp_objective"] if c["lp_status"] == "optimal" else None
+                  for c in s["candidates"]],
+            "correct": np.asarray([bool(c["correct"]) for c in e["candidates"]], dtype=bool),
+            "c1": int(s["selected"]["SSC"]),
+        })
+    return out
 
 
-def rel(a, b):
+# ----------------------------------------------------------------- helpers
+def rel_gap(a: float, b: float) -> float:
+    """Scale-free disagreement, same shape as the paper's correctness test."""
     return abs(a - b) / max(abs(a), abs(b), 1.0)
 
 
-def order(p):
-    # descending SSC, stable on index (matches argmax tie-break)
+def ssc_order(p: dict) -> list[int]:
+    """Candidates by descending SSC; ties broken by index, as argmax does."""
     return sorted(range(p["K"]), key=lambda i: (-p["ssc"][i], i))
 
 
-def pick_naive(p, c1):
-    return next(i for i in order(p) if i != c1)
+def diverse_set(p: dict, c1: int, delta: float) -> list[int]:
+    """Candidates whose relaxed objective disagrees with c_1's by > delta.
+    Empty when c_1 has no valid relaxation or every peer agrees with it."""
+    z1 = p["z"][c1]
+    if z1 is None:
+        return []
+    return [i for i in range(p["K"])
+            if i != c1 and p["z"][i] is not None and rel_gap(p["z"][i], z1) > delta]
 
 
-def pick_clone(p, c1):
-    for i in order(p):
-        if i != c1 and p["grp"][i] != p["grp"][c1]:
-            return i
-    return pick_naive(p, c1)
+# ----------------------------------------------------------------- the rules
+def pick_naive(p: dict, c1: int, **kw) -> int:
+    return next(i for i in ssc_order(p) if i != c1)
 
 
-def pick_simthr(p, c1, t):
-    for i in order(p):
-        if i != c1 and p["S"][i][c1] < t:
-            return i
-    return pick_clone(p, c1)
+def pick_mmr(p: dict, c1: int, lam: float = 0.7, **kw) -> int:
+    cands = [i for i in range(p["K"]) if i != c1]
+    return max(cands, key=lambda i: (lam * p["ssc"][i] - (1.0 - lam) * p["sim"][i][c1], -i))
 
 
-def pick_mmr(p, c1, lam):
-    best, bv = None, -1e9
-    for i in range(p["K"]):
-        if i == c1:
-            continue
-        v = lam * p["ssc"][i] - (1 - lam) * p["S"][i][c1]
-        if v > bv + 1e-12:
-            best, bv = i, v
-    return best
+def pick_ansdiv(p: dict, c1: int, delta: float = DELTA, **kw) -> int:
+    A = diverse_set(p, c1, delta)
+    if not A:
+        return pick_naive(p, c1)
+    return min(A, key=lambda i: (-p["ssc"][i], i))
 
 
-def pick_ans(p, c1, delta=1e-4, key="lpz", fallback="clone"):
-    z1 = p[key][c1]
-    if z1 is not None:
-        for i in order(p):
-            if i != c1 and p[key][i] is not None and rel(p[key][i], z1) > delta:
-                return i
-    return pick_clone(p, c1) if fallback == "clone" else pick_naive(p, c1)
+def pick_hybrid(p: dict, c1: int, lam: float = 0.7, delta: float = DELTA, **kw) -> int:
+    A = diverse_set(p, c1, delta)
+    if not A:
+        return pick_mmr(p, c1, lam=lam)
+    return max(A, key=lambda i: (lam * p["ssc"][i] - (1.0 - lam) * p["sim"][i][c1], -i))
 
 
-def acc2(probs, picker):
-    hits = 0
-    for p in probs:
-        c1 = p["sel"]
-        c2 = picker(p, c1)
-        hits += bool(p["ok"][c1] or p["ok"][c2])
-    return 100 * hits / len(probs)
+RULES = OrderedDict([
+    ("Top-2 naive", pick_naive),
+    ("MMR", pick_mmr),
+    ("Answer diversity", pick_ansdiv),
+    ("Hybrid (AnsDiv + MMR)", pick_hybrid),
+])
 
 
-def rand2_given_c1(probs):
-    t = 0
-    for p in probs:
-        c1 = p["sel"]
-        if p["ok"][c1]:
-            t += 1
+# ----------------------------------------------------------------- metrics
+def acc1(P: list[dict]) -> float:
+    return 100.0 * np.mean([p["correct"][p["c1"]] for p in P])
+
+
+def acc2(P: list[dict], rule, **kw) -> float:
+    hits = [bool(p["correct"][p["c1"]] or p["correct"][rule(p, p["c1"], **kw)]) for p in P]
+    return 100.0 * np.mean(hits)
+
+
+def hit_vector(P: list[dict], rule, **kw) -> np.ndarray:
+    return np.asarray([bool(p["correct"][p["c1"]] or p["correct"][rule(p, p["c1"], **kw)])
+                       for p in P], dtype=bool)
+
+
+def acc2_random_second(P: list[dict]) -> float:
+    """c_1 from SSC, c_2 uniform over the remaining K-1 candidates."""
+    tot = 0.0
+    for p in P:
+        if p["correct"][p["c1"]]:
+            tot += 1.0
         else:
-            t += p["ok"].sum() / (p["K"] - 1)
-    return 100 * t / len(probs)
+            tot += p["correct"].sum() / (p["K"] - 1)
+    return 100.0 * tot / len(P)
 
 
-def rand_pair(probs):
-    t = 0
-    for p in probs:
-        K, m = p["K"], int(p["ok"].sum())
-        t += 1 - math.comb(K - m, 2) / math.comb(K, 2)
-    return 100 * t / len(probs)
+def acc2_random_pair(P: list[dict]) -> float:
+    """Both drawn uniformly without replacement; no selector at all."""
+    tot = 0.0
+    for p in P:
+        K, m = p["K"], int(p["correct"].sum())
+        tot += 1.0 - math.comb(K - m, 2) / math.comb(K, 2)
+    return 100.0 * tot / len(P)
 
 
-data = {b: load(b) for b in BENCH}
-pooled = [p for b in BENCH for p in data[b]]
-LAMS = [round(x, 1) for x in np.arange(0, 1.01, 0.1)]
+def coverage(P: list[dict]) -> float:
+    return 100.0 * np.mean([p["correct"].any() for p in P])
 
-methods = {
-    "Top-2 naive": pick_naive,
-    "Clone-excl (tau=0.95)": pick_clone,
-    "Sim-excl (tau'=0.8)": lambda p, c: pick_simthr(p, c, 0.8),
-    "MMR lam=0.7": lambda p, c: pick_mmr(p, c, 0.7),
-    "MMR lam=0.5": lambda p, c: pick_mmr(p, c, 0.5),
-    "AnsDiv LP-obj": pick_ans,
-    "AnsDiv true-obj (oracle ceiling)": lambda p, c: pick_ans(p, c, key="truez"),
-}
 
-rows = []
-hdr = ["Method"] + BENCH + ["Pooled"]
-def row(name, f):
-    return [name] + [f(data[b]) for b in BENCH] + [f(pooled)]
+# ----------------------------------------------------------------- LOBO
+def lobo(data: dict, bench: str, rule, delta: float) -> tuple[float, float]:
+    """Fit lambda on the other six benchmarks, report accuracy on this one."""
+    train = [p for b, P in data.items() if b != bench for p in P]
+    best = max(LAMBDAS, key=lambda l: (acc2(train, rule, lam=l, delta=delta), l))
+    return best, acc2(data[bench], rule, lam=best, delta=delta)
 
-rows.append(row("Acc@1 SSC", lambda P: 100 * np.mean([p["ok"][p["sel"]] for p in P])))
-rows.append(row("Random c2 | c1=SSC", rand2_given_c1))
-rows.append(row("Random pair", rand_pair))
-for n, m in methods.items():
-    rows.append(row(n, lambda P, m=m: acc2(P, m)))
 
-# LOBO lambda for MMR
-def lobo_mmr(b):
-    train = [p for bb in BENCH if bb != b for p in data[bb]]
-    best = max(LAMS, key=lambda l: (acc2(train, lambda p, c: pick_mmr(p, c, l)), l))
-    return best, acc2(data[b], lambda p, c: pick_mmr(p, c, best))
-lo = {b: lobo_mmr(b) for b in BENCH}
-lo_pooled = 100 * sum(lo[b][1] * len(data[b]) / 100 for b in BENCH) / len(pooled)
-rows.append(["MMR (LOBO lam)"] + [lo[b][1] for b in BENCH] + [lo_pooled])
-rows.append(row("Coverage", lambda P: 100 * np.mean([p["ok"].any() for p in P])))
+# ----------------------------------------------------------------- report
+def table(rows: list[list], header: list[str]) -> str:
+    def fmt(v):
+        return v if isinstance(v, str) else f"{v:.1f}"
+    out = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+    for r in rows:
+        out.append("| " + " | ".join(fmt(v) for v in r) + " |")
+    return "\n".join(out)
 
-def fmt(v):
-    return v if isinstance(v, str) else f"{v:.1f}"
-print("| " + " | ".join(hdr) + " |")
-print("|" + "---|" * len(hdr))
-for r in rows:
-    print("| " + " | ".join(fmt(v) for v in r) + " |")
-print("\nLOBO lambdas:", {b: lo[b][0] for b in BENCH})
 
-print("\nMMR lambda sweep (pooled Acc@2):")
-print({l: round(acc2(pooled, lambda p, c, l=l: pick_mmr(p, c, l)), 1) for l in LAMS})
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("root")
+    ap.add_argument("scores_dir", nargs="?", default="scores")
+    ap.add_argument("--delta", type=float, default=DELTA)
+    ap.add_argument("--lam", type=float, default=0.7)
+    ap.add_argument("--md", default=None, help="also write the report to this file")
+    a = ap.parse_args()
 
-# Diagnostics on recoverable failures
-print("\nDiagnostics (pooled):")
-rec = [p for p in pooled if not p["ok"][p["sel"]] and p["ok"].any()]
-print("recoverable (c1 wrong, pool has correct):", len(rec))
-def frac(cond):
-    return sum(cond(p) for p in rec)
-c1 = lambda p: p["sel"]
-print(" naive c2 correct:", frac(lambda p: p["ok"][pick_naive(p, c1(p))]))
-print(" naive c2 same clone group as c1:", frac(lambda p: p["grp"][pick_naive(p, c1(p))] == p["grp"][c1(p)]))
-print(" naive c2 same LP obj as c1:", frac(lambda p: p["lpz"][c1(p)] is not None and p["lpz"][pick_naive(p, c1(p))] is not None and rel(p["lpz"][pick_naive(p, c1(p))], p["lpz"][c1(p)]) <= 1e-4))
-print(" c1 LP obj invalid:", frac(lambda p: p["lpz"][c1(p)] is None))
-print(" some correct cand has LP obj != c1 LP obj:", frac(lambda p: p["lpz"][c1(p)] is not None and any(p["ok"][i] and p["lpz"][i] is not None and rel(p["lpz"][i], p["lpz"][c1(p)]) > 1e-4 for i in range(p["K"]))))
-print(" some correct cand in different clone group:", frac(lambda p: any(p["ok"][i] and p["grp"][i] != p["grp"][c1(p)] for i in range(p["K"]))))
-print(" #correct in pool (mean):", round(np.mean([p["ok"].sum() for p in rec]), 2))
-print(" rank of best correct cand by SSC (median):", np.median([next(r for r, i in enumerate(order(p)) if p["ok"][i]) for p in rec]))
+    data = OrderedDict((b, load_benchmark(a.root, b, a.scores_dir)) for b in BENCH)
+    data = OrderedDict((b, P) for b, P in data.items() if P)
+    if not data:
+        raise SystemExit(f"no score files under {a.root}/runs/*/{a.scores_dir}/")
+    pooled = [p for P in data.values() for p in P]
+    benches = list(data)
+    L = []
 
-# How often does c2 'waste' (c1 correct anyway)? n/a for acc@2. Check LP-tightness: LP obj == true obj for correct cands
-tight = [rel(p["lpz"][i], p["truez"][i]) <= 1e-4 for p in pooled for i in range(p["K"]) if p["lpz"][i] is not None and p["truez"][i] is not None]
-print("\nLP relaxation obj == MILP obj (all cands):", f"{100*np.mean(tight):.1f}% of {len(tight)}")
-for b in BENCH:
-    t = [rel(p["lpz"][i], p["truez"][i]) <= 1e-4 for p in data[b] for i in range(p["K"]) if p["lpz"][i] is not None and p["truez"][i] is not None]
-    print(f"  {b}: {100*np.mean(t):.1f}%")
+    def row(name, fn):
+        return [name] + [fn(data[b]) for b in benches] + [fn(pooled)]
 
-# per-benchmark delta sweep for AnsDiv
-print("\nAnsDiv delta sweep (pooled):", {d: round(acc2(pooled, lambda p, c, d=d: pick_ans(p, c, delta=d)), 1) for d in [1e-6, 1e-4, 1e-2, 5e-2]})
+    header = ["Method"] + benches + ["Pooled"]
+    rows = [
+        row("Acc@1 (SSC)", acc1),
+        row("Random c2 given c1", acc2_random_second),
+        row("Random pair", acc2_random_pair),
+    ]
+    for name, rule in RULES.items():
+        rows.append(row(name, lambda P, r=rule: acc2(P, r, lam=a.lam, delta=a.delta)))
 
-def pick_hybrid(p, c1, lam, delta=1e-4):
-    z1 = p["lpz"][c1]
-    cand = [i for i in range(p["K"]) if i != c1 and p["lpz"][i] is not None and z1 is not None and rel(p["lpz"][i], z1) > delta]
-    if not cand:
-        return pick_mmr(p, c1, lam)
-    return max(cand, key=lambda i: (lam * p["ssc"][i] - (1 - lam) * p["S"][i][c1], -i))
-print("\nHybrid AnsDiv->MMR pooled:", {l: round(acc2(pooled, lambda p, c, l=l: pick_hybrid(p, c, l)), 1) for l in [0.3, 0.5, 0.7, 1.0]})
-for l in [0.5,0.7]:
-    print(l, [round(acc2(data[b], lambda p, c, l=l: pick_hybrid(p, c, l)),1) for b in BENCH])
+    for name, rule in [("MMR (LOBO lambda)", pick_mmr),
+                       ("Hybrid (LOBO lambda)", pick_hybrid)]:
+        per = {b: lobo(data, b, rule, a.delta) for b in benches}
+        pooled_acc = sum(per[b][1] * len(data[b]) for b in benches) / len(pooled)
+        rows.append([name] + [per[b][1] for b in benches] + [pooled_acc])
+        L.append((name, {b: per[b][0] for b in benches}))
+    rows.append(row("Pool coverage", coverage))
 
-# paired counts vs Acc@1 and vs naive
-def hits(P, f): return np.array([bool(p["ok"][p["sel"]] or p["ok"][f(p, p["sel"])]) for p in P])
-base = np.array([bool(p["ok"][p["sel"]]) for p in pooled])
-for n, f in [("naive", pick_naive), ("clone", pick_clone), ("MMR.7", lambda p,c: pick_mmr(p,c,.7)), ("AnsDiv", pick_ans), ("Hybrid.7", lambda p,c: pick_hybrid(p,c,.7))]:
-    h = hits(pooled, f); hn = hits(pooled, pick_naive)
-    print(f"{n}: +{int(h.sum()-base.sum())} problems over Acc@1; vs naive: wins {int((h&~hn).sum())}, losses {int((~h&hn).sum())}")
+    L.append(("header", None))
+    out = [f"# Top-2 selection  (scores={a.scores_dir}, lambda={a.lam}, delta={a.delta:g})",
+           "", f"{len(pooled)} problems, K={pooled[0]['K']}", "",
+           table(rows, header), ""]
+
+    for name, lams in L:
+        if lams is not None:
+            out.append(f"{name}: " + ", ".join(f"{b}={v}" for b, v in lams.items()))
+    out.append("")
+
+    # ---- lambda sensitivity, pooled
+    out.append("## Lambda sweep (pooled Acc@2)")
+    out.append(table(
+        [["MMR"] + [acc2(pooled, pick_mmr, lam=l, delta=a.delta) for l in LAMBDAS],
+         ["Hybrid"] + [acc2(pooled, pick_hybrid, lam=l, delta=a.delta) for l in LAMBDAS]],
+        ["Rule"] + [f"{l:.1f}" for l in LAMBDAS]))
+    out.append("")
+
+    # ---- delta sensitivity, pooled
+    deltas = [1e-6, 1e-4, 1e-2, 5e-2]
+    out.append("## Delta sweep (pooled Acc@2)")
+    out.append(table(
+        [["Answer diversity"] + [acc2(pooled, pick_ansdiv, delta=d) for d in deltas],
+         ["Hybrid"] + [acc2(pooled, pick_hybrid, lam=a.lam, delta=d) for d in deltas]],
+        ["Rule"] + [f"{d:g}" for d in deltas]))
+    out.append("")
+
+    # ---- paired comparison against Acc@1 and against the naive rule
+    out.append("## Paired counts (pooled)")
+    base = np.asarray([bool(p["correct"][p["c1"]]) for p in pooled], dtype=bool)
+    naive = hit_vector(pooled, pick_naive)
+    pc = []
+    for name, rule in RULES.items():
+        h = hit_vector(pooled, rule, lam=a.lam, delta=a.delta)
+        pc.append([name, int(h.sum() - base.sum()),
+                   int((h & ~naive).sum()), int((~h & naive).sum())])
+    out.append(table([[r[0], str(r[1]), str(r[2]), str(r[3])] for r in pc],
+                     ["Rule", "problems gained over Acc@1", "wins vs naive", "losses vs naive"]))
+    out.append("")
+
+    # ---- why the rules can or cannot help
+    rec = [p for p in pooled if not p["correct"][p["c1"]] and p["correct"].any()]
+    tight = [rel_gap(p["z"][i], p["z"][p["c1"]]) <= a.delta
+             for p in pooled for i in range(p["K"])
+             if i != p["c1"] and p["z"][i] is not None and p["z"][p["c1"]] is not None]
+    out.append("## Diagnostics (pooled)")
+    out.append(f"- recoverable problems (c1 wrong, pool holds a correct program): {len(rec)}")
+    if rec:
+        med = np.median([next(r for r, i in enumerate(ssc_order(p)) if p["correct"][i])
+                         for p in rec])
+        out.append(f"- median SSC rank of the best correct candidate on those: {med:.1f}")
+        out.append("- mean number of correct candidates in those pools: "
+                   f"{np.mean([p['correct'].sum() for p in rec]):.2f}")
+        same = sum(1 for p in rec if p["group"][pick_naive(p, p["c1"])] == p["group"][p["c1"]])
+        out.append(f"- naive c2 lands in c1's own clone group: {same} of {len(rec)}")
+        noz = sum(1 for p in rec if p["z"][p["c1"]] is None)
+        out.append(f"- c1 has no valid relaxation (answer diversity cannot fire): {noz} of {len(rec)}")
+        empt = sum(1 for p in rec if not diverse_set(p, p["c1"], a.delta))
+        out.append(f"- answer-diverse set empty, so Hybrid falls back to MMR: {empt} of {len(rec)}")
+    if tight:
+        out.append(f"- peers whose relaxed objective agrees with c1's within delta: "
+                   f"{100 * np.mean(tight):.1f}% of {len(tight)}")
+    out.append("")
+
+    text = "\n".join(out)
+    print(text)
+    if a.md:
+        with open(a.md, "w", encoding="utf-8") as f:
+            f.write(text + "\n")
+        print(f"[written] {a.md}")
+
+
+if __name__ == "__main__":
+    main()
