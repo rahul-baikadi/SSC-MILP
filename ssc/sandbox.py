@@ -45,7 +45,8 @@ def _run_worker(module: str, code: str, timeout: float, extra_args: list[str] | 
 
         try:
             proc = subprocess.run(cmd, cwd=td, env=env, capture_output=True, text=True,
-                                  timeout=timeout, stdin=subprocess.DEVNULL, preexec_fn=_limits)
+                                  timeout=timeout, stdin=subprocess.DEVNULL,
+                                  preexec_fn=_limits if os.name == "posix" else None)
         except subprocess.TimeoutExpired:
             return {"_status": "timeout"}
         if not os.path.exists(out_path):

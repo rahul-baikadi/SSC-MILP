@@ -1,0 +1,245 @@
+{
+ "pid": "mamo_complex_0024",
+ "question": "Consider four cities: E, F, G, and H. A delivery driver is tasked with delivering packages to each of these cities. The driver can start their route from any one of these cities. However, the driver must ensure that they visit each city exactly once and then return back to the city they started from. The ultimate goal is to minimize the total travel cost, which might include expenses such as fuel, toll fees, or time spent on the road.\n\nHere's a detailed breakdown of the travel costs between these cities:\n\nTo travel from City E to F costs 17 units, to G costs 52 units, and to H costs 79 units.\nFrom City F, the cost is 17 units to go to E, 15 units to reach G, and 71 units to go to H.\nIf the driver starts from City G, it costs 52 units to reach E, 15 units to go to F, and 54 units to reach H.\nLastly, if the journey begins from City H, it costs 79 units to go to E, 71 units to go to F, and 54 units to reach G.\n\nNow the question is: What is the minimum total travel cost for the driver to deliver packages in each city exactly once and then return to the starting city?",
+ "templates": [
+  "Vehicle Routing / TSP"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 0,
+    "assignment": [
+     {
+      "decision": "subtour_elimination_formulation",
+      "option": "MTZ order variables with u[start]=0 and u[j] >= u[i] + 1 - N*(1-x[i,j])",
+      "evidence": "\"the driver must ensure that they visit each city exactly once and then return back to the city they started from\"",
+      "plausibility": 0.6000000000000001
+     },
+     {
+      "decision": "start_city_handling",
+      "option": "Fix an arbitrary start city (e.g., E) since the tour is a cycle and start is irrelevant",
+      "evidence": "\"The driver can start their route from any one of these cities.\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary x[i,j] for all ordered pairs i != j",
+      "evidence": "\"visit each city exactly once and then return back to the city they started from\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "order_variable_domain",
+      "option": "NonNegativeIntegers u[i] with bounds [0, N-1]",
+      "evidence": "none (MTZ order variables are an auxiliary construct not mentioned in the text)",
+      "plausibility": 0.30000000000000004
+     },
+     {
+      "decision": "cost_matrix_orientation",
+      "option": "cost[i,j] = cost from row city i to column city j (asymmetric, as stated)",
+      "evidence": "\"To travel from City E to F costs 17 units... From City F, the cost is 17 units to go to E\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_units_and_scale",
+      "option": "Sum of arc costs in the given units (raw units)",
+      "evidence": "\"minimize the total travel cost, which might include expenses such as fuel, toll fees, or time spent on the road\"",
+      "plausibility": 0.9
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\n# All numeric constants from the problem statement.\nDATA = {\n    \"cities\": [\"E\", \"F\", \"G\", \"H\"],\n    \"start_city\": \"E\",  # assumption: fix an arbitrary start city since tour is a cycle\n    \"cost\": {\n        (\"E\", \"F\"): 17,\n        (\"E\", \"G\"): 52,\n        (\"E\", \"H\"): 79,\n        (\"F\", \"E\"): 17,\n        (\"F\", \"G\"): 15,\n        (\"F\", \"H\"): 71,\n        (\"G\", \"E\"): 52,\n        (\"G\", \"F\"): 15,\n        (\"G\", \"H\"): 54,\n        (\"H\", \"E\"): 79,\n        (\"H\", \"F\"): 71,\n        (\"H\", \"G\"): 54,\n    },\n    \"N\": 4,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    N = d[\"N\"]\n    start = d[\"start_city\"]\n    cost = d[\"cost\"]\n\n    model = pyo.ConcreteModel()\n\n    # Ordered pairs i != j for arc variables.\n    # assumption: arc_variable_domain - binary x[i,j] for all ordered pairs i != j\n    model.arcs = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n\n    model.cities = pyo.Set(initialize=cities)\n\n    # x[i,j] = 1 if the driver travels directly from city i to city j.\n    # \"visit each city exactly once and then return back to the city they started from\"\n    model.x = pyo.Var(model.arcs, within=pyo.Binary)\n\n    # u[i] = position/order of city i in the tour.\n    # assumption: order_variable_domain - NonNegativeIntegers u[i] with bounds [0, N-1]\n    model.u = pyo.Var(\n        model.cities, within=pyo.NonNegativeIntegers, bounds=(0, N - 1)\n    )\n\n    # Objective: minimize total travel cost.\n    # \"The ultimate goal is to minimize the total travel cost\"\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[i, j] for (i, j) in m.arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each city is departed exactly once.\n    # \"visit each city exactly once and then return back to the city they started from\"\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n\n    model.out_degree = pyo.Constraint(model.cities, rule=out_rule)\n\n    # Each city is entered exactly once.\n    # \"visit each city exactly once and then return back to the city they started from\"\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n\n    model.in_degree = pyo.Constraint(model.cities, rule=in_rule)\n\n    # Fix the start city's order to 0.\n    # assumption: start_city_handling - fix an arbitrary start city since tour is a cycle\n    def start_rule(m):\n        return m.u[start] == 0\n\n    model.start_order = pyo.Constraint(rule=start_rule)\n\n    # MTZ subtour elimination: u[j] >= u[i] + 1 - N*(1 - x[i,j]).\n    # assumption: subtour_elimination_formulation - MTZ order variables\n    def mtz_rule(m, i, j):\n        if i == start:\n            return pyo.Constraint.Skip\n        return m.u[j] >= m.u[i] + 1 - N * (1 - m.x[i, j])\n\n    model.mtz = pyo.Constraint(model.arcs, rule=mtz_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1103,
+      "completion_tokens": 918
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.5617499351501465,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 1,
+    "assignment": [
+     {
+      "decision": "subtour_elimination_formulation",
+      "option": "DFJ cut-set constraints: sum_{i in S, j not in S} x[i,j] >= 1 for all nonempty proper S",
+      "evidence": "\"the driver must ensure that they visit each city exactly once and then return back to the city they started from\"",
+      "plausibility": 0.30000000000000004
+     },
+     {
+      "decision": "start_city_handling",
+      "option": "Fix an arbitrary start city (e.g., E) since the tour is a cycle and start is irrelevant",
+      "evidence": "\"The driver can start their route from any one of these cities.\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary x[i,j] for all ordered pairs i != j",
+      "evidence": "\"visit each city exactly once and then return back to the city they started from\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "order_variable_domain",
+      "option": "NonNegativeReals u[i] with bounds [0, N-1]",
+      "evidence": "none (MTZ order variables are an auxiliary construct not mentioned in the text)",
+      "plausibility": 0.6000000000000001
+     },
+     {
+      "decision": "cost_matrix_orientation",
+      "option": "cost[i,j] = cost from row city i to column city j (asymmetric, as stated)",
+      "evidence": "\"To travel from City E to F costs 17 units... From City F, the cost is 17 units to go to E\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_units_and_scale",
+      "option": "Sum of arc costs in the given units (raw units)",
+      "evidence": "\"minimize the total travel cost, which might include expenses such as fuel, toll fees, or time spent on the road\"",
+      "plausibility": 0.9
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"cities\": [\"E\", \"F\", \"G\", \"H\"],\n    # cost[i][j] = cost from city i to city j (asymmetric)\n    \"cost\": {\n        \"E\": {\"E\": 0,  \"F\": 17, \"G\": 52, \"H\": 79},\n        \"F\": {\"E\": 17, \"F\": 0,  \"G\": 15, \"H\": 71},\n        \"G\": {\"E\": 52, \"F\": 15, \"G\": 0,  \"H\": 54},\n        \"H\": {\"E\": 79, \"F\": 71, \"G\": 54, \"H\": 0},\n    },\n    \"start_city\": \"E\",\n    \"n_cities\": 4,\n    \"u_upper\": 3,  # N-1\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    cost = d[\"cost\"]\n    n = d[\"n_cities\"]\n\n    model = pyo.ConcreteModel()\n\n    # Ordered pairs i != j\n    model.arcs = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n    model.cities = pyo.Set(initialize=cities)\n\n    # Binary x[i,j] for all ordered pairs i != j\n    # \"visit each city exactly once and then return back to the city they started from\"\n    model.x = pyo.Var(model.arcs, within=pyo.Binary)\n\n    # NonNegativeReals u[i] with bounds [0, N-1]\n    # assumption: order variable domain / bounds from modelling decisions\n    model.u = pyo.Var(\n        model.cities,\n        within=pyo.NonNegativeReals,\n        bounds=(0, d[\"u_upper\"]),\n    )\n\n    # Objective: minimize total travel cost\n    # \"minimize the total travel cost, which might include expenses such as fuel, toll fees, or time spent on the road\"\n    def obj_rule(m):\n        return sum(cost[i][j] * m.x[i, j] for (i, j) in m.arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each city has exactly one outgoing arc\n    # \"visit each city exactly once and then return back to the city they started from\"\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n\n    model.out_arc = pyo.Constraint(model.cities, rule=out_rule)\n\n    # Each city has exactly one incoming arc\n    # \"visit each city exactly once and then return back to the city they started from\"\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n\n    model.in_arc = pyo.Constraint(model.cities, rule=in_rule)\n\n    # DFJ subtour elimination: for all nonempty proper subsets S,\n    # sum_{i in S, j not in S} x[i,j] >= 1\n    # assumption: subtour_elimination_formulation = DFJ cut-set constraints\n    subsets = []\n    for mask in range(1, (1 << n) - 1):\n        S = [cities[k] for k in range(n) if (mask >> k) & 1]\n        subsets.append(S)\n\n    model.subsets = pyo.Set(initialize=range(len(subsets)))\n\n    def dfj_rule(m, s_idx):\n        S = subsets[s_idx]\n        S_set = set(S)\n        return sum(\n            m.x[i, j]\n            for i in S\n            for j in cities\n            if j not in S_set\n        ) >= 1\n\n    model.dfj = pyo.Constraint(model.subsets, rule=dfj_rule)\n\n    # MTZ ordering constraints to reinforce subtour elimination\n    # assumption: order_variable_domain = NonNegativeReals u[i] with bounds [0, N-1]\n    def mtz_rule(m, i, j):\n        if i == j:\n            return pyo.Constraint.Skip\n        return m.u[i] - m.u[j] + n * m.x[i, j] <= n - 1\n\n    model.mtz = pyo.Constraint(model.arcs, rule=mtz_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1105,
+      "completion_tokens": 1019
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.61936354637146,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 2,
+    "assignment": [
+     {
+      "decision": "subtour_elimination_formulation",
+      "option": "DFJ cut-set constraints: sum_{i in S, j not in S} x[i,j] >= 1 for all nonempty proper S",
+      "evidence": "\"the driver must ensure that they visit each city exactly once and then return back to the city they started from\"",
+      "plausibility": 0.30000000000000004
+     },
+     {
+      "decision": "start_city_handling",
+      "option": "Fix an arbitrary start city (e.g., E) since the tour is a cycle and start is irrelevant",
+      "evidence": "\"The driver can start their route from any one of these cities.\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary x[i,j] for all ordered pairs i != j",
+      "evidence": "\"visit each city exactly once and then return back to the city they started from\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "order_variable_domain",
+      "option": "NonNegativeIntegers u[i] with bounds [0, N-1]",
+      "evidence": "none (MTZ order variables are an auxiliary construct not mentioned in the text)",
+      "plausibility": 0.30000000000000004
+     },
+     {
+      "decision": "cost_matrix_orientation",
+      "option": "cost[i,j] = cost from row city i to column city j (asymmetric, as stated)",
+      "evidence": "\"To travel from City E to F costs 17 units... From City F, the cost is 17 units to go to E\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_units_and_scale",
+      "option": "Sum of arc costs in the given units (raw units)",
+      "evidence": "\"minimize the total travel cost, which might include expenses such as fuel, toll fees, or time spent on the road\"",
+      "plausibility": 0.9
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"cities\": [\"E\", \"F\", \"G\", \"H\"],\n    \"cost\": {\n        (\"E\", \"F\"): 17,\n        (\"E\", \"G\"): 52,\n        (\"E\", \"H\"): 79,\n        (\"F\", \"E\"): 17,\n        (\"F\", \"G\"): 15,\n        (\"F\", \"H\"): 71,\n        (\"G\", \"E\"): 52,\n        (\"G\", \"F\"): 15,\n        (\"G\", \"H\"): 54,\n        (\"H\", \"E\"): 79,\n        (\"H\", \"F\"): 71,\n        (\"H\", \"G\"): 54,\n    },\n    \"start_city\": \"E\",\n    \"n_cities\": 4,\n    \"u_upper\": 3,  # N-1\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    cost = d[\"cost\"]\n    n = d[\"n_cities\"]\n\n    model = pyo.ConcreteModel()\n\n    # Ordered pairs i != j\n    model.arcs = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n\n    # Binary x[i,j] for all ordered pairs i != j\n    # \"visit each city exactly once and then return back to the city they started from\"\n    model.x = pyo.Var(model.arcs, within=pyo.Binary)\n\n    # NonNegativeIntegers u[i] with bounds [0, N-1]\n    # assumption: order variable domain per modelling decisions\n    model.u = pyo.Var(\n        cities, within=pyo.NonNegativeIntegers, bounds=(0, d[\"u_upper\"])\n    )\n\n    # Objective: sum of arc costs in given units\n    # \"minimize the total travel cost, which might include expenses such as fuel, toll fees, or time spent on the road.\"\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[i, j] for (i, j) in m.arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each city has exactly one outgoing arc\n    # \"visit each city exactly once and then return back to the city they started from\"\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n\n    model.out_arc = pyo.Constraint(cities, rule=out_rule)\n\n    # Each city has exactly one incoming arc\n    # \"visit each city exactly once and then return back to the city they started from\"\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n\n    model.in_arc = pyo.Constraint(cities, rule=in_rule)\n\n    # DFJ subtour elimination: sum_{i in S, j not in S} x[i,j] >= 1\n    # \"the driver must ensure that they visit each city exactly once and then return back to the city they started from\"\n    # assumption: DFJ cut-set formulation per modelling decisions\n    subsets = []\n    for mask in range(1, (1 << n) - 1):\n        S = [cities[k] for k in range(n) if mask & (1 << k)]\n        subsets.append(S)\n\n    model.subsets = pyo.Set(initialize=list(range(len(subsets))), dimen=1)\n\n    def dfj_rule(m, s_idx):\n        S = subsets[s_idx]\n        Sset = set(S)\n        return (\n            sum(\n                m.x[i, j]\n                for i in S\n                for j in cities\n                if j not in Sset\n            )\n            >= 1\n        )\n\n    model.dfj = pyo.Constraint(model.subsets, rule=dfj_rule)\n\n    # MTZ ordering constraints (linear, big-M) to reinforce subtour elimination\n    # assumption: order variable domain per modelling decisions\n    def mtz_rule(m, i, j):\n        if i == j:\n            return pyo.Constraint.Skip\n        return m.u[i] - m.u[j] + n * m.x[i, j] <= n - 1\n\n    model.mtz = pyo.Constraint(model.arcs, rule=mtz_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1105,
+      "completion_tokens": 1009
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.398384094238281,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 3,
+    "assignment": [
+     {
+      "decision": "subtour_elimination_formulation",
+      "option": "MTZ order variables with u[start]=0 and u[j] >= u[i] + 1 - N*(1-x[i,j])",
+      "evidence": "\"the driver must ensure that they visit each city exactly once and then return back to the city they started from\"",
+      "plausibility": 0.6000000000000001
+     },
+     {
+      "decision": "start_city_handling",
+      "option": "Fix an arbitrary start city (e.g., E) since the tour is a cycle and start is irrelevant",
+      "evidence": "\"The driver can start their route from any one of these cities.\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary x[i,j] for all ordered pairs i != j",
+      "evidence": "\"visit each city exactly once and then return back to the city they started from\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "order_variable_domain",
+      "option": "Continuous Reals u[i] with bounds [0, N-1]",
+      "evidence": "none (MTZ order variables are an auxiliary construct not mentioned in the text)",
+      "plausibility": 0.10000000000000002
+     },
+     {
+      "decision": "cost_matrix_orientation",
+      "option": "cost[i,j] = cost from row city i to column city j (asymmetric, as stated)",
+      "evidence": "\"To travel from City E to F costs 17 units... From City F, the cost is 17 units to go to E\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_units_and_scale",
+      "option": "Sum of arc costs in the given units (raw units)",
+      "evidence": "\"minimize the total travel cost, which might include expenses such as fuel, toll fees, or time spent on the road\"",
+      "plausibility": 0.9
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\n# All numeric constants from the problem statement.\nDATA = {\n    \"cities\": [\"E\", \"F\", \"G\", \"H\"],\n    \"start_city\": \"E\",  # assumption: fix an arbitrary start city since the tour is a cycle\n    # cost[i][j] = cost from city i to city j (asymmetric)\n    \"cost\": {\n        (\"E\", \"F\"): 17,\n        (\"E\", \"G\"): 52,\n        (\"E\", \"H\"): 79,\n        (\"F\", \"E\"): 17,\n        (\"F\", \"G\"): 15,\n        (\"F\", \"H\"): 71,\n        (\"G\", \"E\"): 52,\n        (\"G\", \"F\"): 15,\n        (\"G\", \"H\"): 54,\n        (\"H\", \"E\"): 79,\n        (\"H\", \"F\"): 71,\n        (\"H\", \"G\"): 54,\n    },\n    \"N\": 4,  # number of cities\n    \"u_lb\": 0,  # assumption: order variable lower bound\n    \"u_ub\": 3,  # assumption: order variable upper bound = N-1\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    N = d[\"N\"]\n    cost = d[\"cost\"]\n    start = d[\"start_city\"]\n\n    model = pyo.ConcreteModel()\n\n    # Ordered pairs i != j\n    model.arcs = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n    model.cities = pyo.Set(initialize=cities)\n\n    # Binary x[i,j] for all ordered pairs i != j\n    # \"visit each city exactly once and then return back to the city they started from\"\n    model.x = pyo.Var(model.arcs, within=pyo.Binary)\n\n    # Continuous order variables u[i] in [0, N-1]\n    # assumption: order variable domain continuous Reals with bounds [0, N-1]\n    model.u = pyo.Var(\n        model.cities,\n        within=pyo.Reals,\n        bounds=(d[\"u_lb\"], d[\"u_ub\"]),\n    )\n\n    # Objective: minimize total travel cost\n    # \"minimize the total travel cost, which might include expenses such as fuel, toll fees, or time spent on the road\"\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[i, j] for (i, j) in m.arcs)\n\n    model.obj = pyo.Objective(expr=obj_rule(model), sense=pyo.minimize)\n\n    # Each city has exactly one outgoing arc\n    # \"visit each city exactly once and then return back to the city they started from\"\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n\n    model.out_degree = pyo.Constraint(model.cities, rule=out_rule)\n\n    # Each city has exactly one incoming arc\n    # \"visit each city exactly once and then return back to the city they started from\"\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n\n    model.in_degree = pyo.Constraint(model.cities, rule=in_rule)\n\n    # MTZ subtour elimination: u[j] >= u[i] + 1 - N*(1 - x[i,j]) for i != j, j != start\n    # assumption: MTZ order variables with u[start]=0\n    def mtz_rule(m, i, j):\n        return m.u[j] >= m.u[i] + 1 - N * (1 - m.x[i, j])\n\n    model.mtz = pyo.Constraint(\n        [(i, j) for (i, j) in model.arcs if j != start],\n        rule=mtz_rule,\n    )\n\n    # Fix start city order to 0\n    # assumption: u[start] = 0\n    def start_rule(m):\n        return m.u[start] == 0\n\n    model.start_order = pyo.Constraint(rule=start_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1102,
+      "completion_tokens": 973
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.718601226806641,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "branch",
+ "generated_at": "2026-11-02T07:17:54"
+}

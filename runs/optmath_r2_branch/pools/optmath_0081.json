@@ -1,0 +1,267 @@
+{
+ "pid": "optmath_0081",
+ "question": "A manufacturing facility produces custom parts for seven jobs, labeled Job 0 through Job 6. Each job consists of two operations that must be performed in sequence, with the second operation starting only after the first is completed. Operations are assigned to specific machines, and some operations share the same machine, meaning they cannot be processed simultaneously. The goal is to schedule all operations to minimize the total completion time, known as the makespan.\n\nEach operation has a processing time of 1 unit. For example, Operation 0 of Job 0 takes 1 unit of time, and Operation 1 of Job 0 also takes 1 unit of time. This applies to all operations across all jobs. Operations sharing the same machine must be scheduled such that one finishes before the other starts. Binary decision variables determine the order of operations on shared machines. For instance, if Operation 1 of Job 0 and Operation 0 of Job 1 share a machine, a binary variable decides whether Operation 1 of Job 0 finishes before Operation 0 of Job 1 starts, or vice versa.\n\nThe makespan must be at least as large as the completion time of every operation. For example, if Operation 1 of Job 0 finishes at time 2, the makespan must be at least 2. A large constant, 100,000, is used in the constraints to ensure that operations on the same machine do not overlap. The objective is to minimize the makespan, ensuring the facility operates as efficiently as possible while respecting all precedence and machine capacity constraints.",
+ "templates": [
+  "Scheduling"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 0,
+    "assignment": [
+     {
+      "decision": "start_time_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"Binary decision variables determine the order of operations on shared machines.\" (only the ordering variables are stated binary; start times are not specified)",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "makespan_domain",
+      "option": "NonNegativeIntegers",
+      "evidence": "\"The makespan must be at least as large as the completion time of every operation.\"",
+      "plausibility": 0.35
+     },
+     {
+      "decision": "machine_assignment_data",
+      "option": "cyclic assignment: op (j,o) on machine (j+o) mod 7, so (0,1) and (1,0) share machine 1",
+      "evidence": "\"Operations are assigned to specific machines, and some operations share the same machine\" and \"Operation 1 of Job 0 and Operation 0 of Job 1 share a machine\"",
+      "plausibility": 0.7000000000000001
+     },
+     {
+      "decision": "precedence_constraint_direction",
+      "option": "start[j,1] >= start[j,0] + p",
+      "evidence": "\"the second operation starting only after the first is completed\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "makespan_constraint_direction",
+      "option": "makespan >= start[j,o] + p for all (j,o)",
+      "evidence": "\"The makespan must be at least as large as the completion time of every operation.\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "objective_definition",
+      "option": "minimize makespan variable",
+      "evidence": "\"The goal is to schedule all operations to minimize the total completion time, known as the makespan.\"",
+      "plausibility": 0.9
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_jobs\": 7,\n    \"num_ops\": 2,\n    \"processing_time\": 1,\n    \"big_m\": 100000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n_jobs = d[\"num_jobs\"]\n    n_ops = d[\"num_ops\"]\n    p = d[\"processing_time\"]\n    M = d[\"big_m\"]\n\n    model = pyo.ConcreteModel()\n\n    # Set of jobs and operations\n    model.J = pyo.RangeSet(0, n_jobs - 1)\n    model.O = pyo.RangeSet(0, n_ops - 1)\n\n    # Set of operation pairs (j, o)\n    model.JO = pyo.Set(initialize=[(j, o) for j in range(n_jobs) for o in range(n_ops)])\n\n    # Machine assignment: op (j,o) on machine (j+o) mod n_jobs\n    # assumption: cyclic assignment per modelling decisions\n    def machine_of(j, o):\n        return (j + o) % n_jobs\n\n    # Set of pairs of operations that share a machine (unordered, distinct)\n    shared_pairs = []\n    ops = [(j, o) for j in range(n_jobs) for o in range(n_ops)]\n    for a in range(len(ops)):\n        for b in range(a + 1, len(ops)):\n            j1, o1 = ops[a]\n            j2, o2 = ops[b]\n            if machine_of(j1, o1) == machine_of(j2, o2):\n                shared_pairs.append((ops[a], ops[b]))\n    model.PAIRS = pyo.Set(initialize=shared_pairs, dimen=4)\n\n    # Start times: \"Binary decision variables determine the order of operations on shared machines.\"\n    # assumption: start_time_domain = NonNegativeReals\n    model.start = pyo.Var(model.JO, within=pyo.NonNegativeReals)\n\n    # Makespan: \"The makespan must be at least as large as the completion time of every operation.\"\n    # assumption: makespan_domain = NonNegativeIntegers\n    model.makespan = pyo.Var(within=pyo.NonNegativeIntegers)\n\n    # Binary ordering variables for each shared-machine pair\n    # \"a binary variable decides whether Operation 1 of Job 0 finishes before Operation 0 of Job 1 starts, or vice versa.\"\n    model.order = pyo.Var(model.PAIRS, within=pyo.Binary)\n\n    # Precedence: \"the second operation starting only after the first is completed\"\n    # assumption: start[j,1] >= start[j,0] + p\n    def precedence_rule(m, j):\n        return m.start[j, 1] >= m.start[j, 0] + p\n\n    model.precedence = pyo.Constraint(model.J, rule=precedence_rule)\n\n    # Machine non-overlap: \"Operations sharing the same machine must be scheduled such that one finishes before the other starts.\"\n    # \"A large constant, 100,000, is used in the constraints to ensure that operations on the same machine do not overlap.\"\n    def machine_rule(m, j1, o1, j2, o2):\n        # order == 1: (j1,o1) before (j2,o2); order == 0: (j2,o2) before (j1,o1)\n        return m.start[j2, o2] >= m.start[j1, o1] + p - M * (1 - m.order[j1, o1, j2, o2])\n\n    model.machine_forward = pyo.Constraint(model.PAIRS, rule=machine_rule)\n\n    def machine_rule_rev(m, j1, o1, j2, o2):\n        return m.start[j1, o1] >= m.start[j2, o2] + p - M * m.order[j1, o1, j2, o2]\n\n    model.machine_backward = pyo.Constraint(model.PAIRS, rule=machine_rule_rev)\n\n    # Makespan: \"makespan >= start[j,o] + p for all (j,o)\"\n    def makespan_rule(m, j, o):\n        return m.makespan >= m.start[j, o] + p\n\n    model.makespan_con = pyo.Constraint(model.JO, rule=makespan_rule)\n\n    # Objective: \"minimize makespan variable\"\n    model.obj = pyo.Objective(expr=model.makespan, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1134,
+      "completion_tokens": 1035
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.5113019943237305,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 1,
+    "assignment": [
+     {
+      "decision": "start_time_domain",
+      "option": "NonNegativeIntegers",
+      "evidence": "\"Binary decision variables determine the order of operations on shared machines.\" (only the ordering variables are stated binary; start times are not specified)",
+      "plausibility": 0.35
+     },
+     {
+      "decision": "makespan_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"The makespan must be at least as large as the completion time of every operation.\"",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "machine_assignment_data",
+      "option": "cyclic assignment: op (j,o) on machine (j+o) mod 7, so (0,1) and (1,0) share machine 1",
+      "evidence": "\"Operations are assigned to specific machines, and some operations share the same machine\" and \"Operation 1 of Job 0 and Operation 0 of Job 1 share a machine\"",
+      "plausibility": 0.7000000000000001
+     },
+     {
+      "decision": "precedence_constraint_direction",
+      "option": "start[j,1] >= start[j,0] + p",
+      "evidence": "\"the second operation starting only after the first is completed\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "makespan_constraint_direction",
+      "option": "makespan >= start[j,o] + p for all (j,o)",
+      "evidence": "\"The makespan must be at least as large as the completion time of every operation.\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "objective_definition",
+      "option": "minimize makespan variable",
+      "evidence": "\"The goal is to schedule all operations to minimize the total completion time, known as the makespan.\"",
+      "plausibility": 0.9
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_jobs\": 7,\n    \"num_ops\": 2,\n    \"processing_time\": 1,\n    \"big_m\": 100000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n_jobs = d[\"num_jobs\"]\n    n_ops = d[\"num_ops\"]\n    p = d[\"processing_time\"]\n    M = d[\"big_m\"]\n\n    model = pyo.ConcreteModel()\n\n    # Jobs and operations\n    model.J = pyo.RangeSet(0, n_jobs - 1)\n    model.O = pyo.RangeSet(0, n_ops - 1)\n\n    # Operations indexed by (job, op)\n    model.OPS = pyo.Set(initialize=[(j, o) for j in range(n_jobs) for o in range(n_ops)])\n\n    # Machine assignment: op (j,o) on machine (j+o) mod n_jobs\n    # assumption: cyclic assignment per modelling decisions\n    def machine_of(j, o):\n        return (j + o) % n_jobs\n\n    # Pairs of operations that share a machine (unordered, distinct operations)\n    machine_pairs = []\n    ops_list = [(j, o) for j in range(n_jobs) for o in range(n_ops)]\n    for a in range(len(ops_list)):\n        for b in range(a + 1, len(ops_list)):\n            j1, o1 = ops_list[a]\n            j2, o2 = ops_list[b]\n            if machine_of(j1, o1) == machine_of(j2, o2):\n                machine_pairs.append((ops_list[a], ops_list[b]))\n\n    model.PAIRS = pyo.Set(initialize=machine_pairs, dimen=4)\n\n    # Start times: \"Binary decision variables determine the order of operations on shared machines.\"\n    # assumption: start_time_domain = NonNegativeIntegers\n    model.start = pyo.Var(model.OPS, within=pyo.NonNegativeIntegers)\n\n    # Makespan: \"The makespan must be at least as large as the completion time of every operation.\"\n    # assumption: makespan_domain = NonNegativeReals\n    model.makespan = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Ordering binaries for each machine-sharing pair\n    # \"a binary variable decides whether Operation 1 of Job 0 finishes before Operation 0 of Job 1 starts, or vice versa.\"\n    model.order = pyo.Var(model.PAIRS, within=pyo.Binary)\n\n    # Precedence: \"the second operation starting only after the first is completed\"\n    # assumption: start[j,1] >= start[j,0] + p\n    def precedence_rule(m, j):\n        return m.start[j, 1] >= m.start[j, 0] + p\n\n    model.precedence = pyo.Constraint(model.J, rule=precedence_rule)\n\n    # Machine non-overlap: \"Operations sharing the same machine must be scheduled such that one finishes before the other starts.\"\n    # \"A large constant, 100,000, is used in the constraints to ensure that operations on the same machine do not overlap.\"\n    def machine_rule(m, j1, o1, j2, o2):\n        # If order == 1: op1 before op2; else op2 before op1\n        return m.start[j1, o1] + p <= m.start[j2, o2] + M * (1 - m.order[j1, o1, j2, o2])\n\n    model.machine_forward = pyo.Constraint(model.PAIRS, rule=machine_rule)\n\n    def machine_rule_rev(m, j1, o1, j2, o2):\n        return m.start[j2, o2] + p <= m.start[j1, o1] + M * m.order[j1, o1, j2, o2]\n\n    model.machine_backward = pyo.Constraint(model.PAIRS, rule=machine_rule_rev)\n\n    # Makespan: \"makespan >= start[j,o] + p for all (j,o)\"\n    def makespan_rule(m, j, o):\n        return m.makespan >= m.start[j, o] + p\n\n    model.makespan_con = pyo.Constraint(model.OPS, rule=makespan_rule)\n\n    # Objective: \"The goal is to schedule all operations to minimize the total completion time, known as the makespan.\"\n    # assumption: objective_definition = minimize makespan variable\n    model.obj = pyo.Objective(expr=model.makespan, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1134,
+      "completion_tokens": 1045
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.245524644851685,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 2,
+    "assignment": [
+     {
+      "decision": "start_time_domain",
+      "option": "NonNegativeIntegers",
+      "evidence": "\"Binary decision variables determine the order of operations on shared machines.\" (only the ordering variables are stated binary; start times are not specified)",
+      "plausibility": 0.35
+     },
+     {
+      "decision": "makespan_domain",
+      "option": "NonNegativeIntegers",
+      "evidence": "\"The makespan must be at least as large as the completion time of every operation.\"",
+      "plausibility": 0.35
+     },
+     {
+      "decision": "machine_assignment_data",
+      "option": "cyclic assignment: op (j,o) on machine (j+o) mod 7, so (0,1) and (1,0) share machine 1",
+      "evidence": "\"Operations are assigned to specific machines, and some operations share the same machine\" and \"Operation 1 of Job 0 and Operation 0 of Job 1 share a machine\"",
+      "plausibility": 0.7000000000000001
+     },
+     {
+      "decision": "precedence_constraint_direction",
+      "option": "start[j,1] >= start[j,0] + p",
+      "evidence": "\"the second operation starting only after the first is completed\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "makespan_constraint_direction",
+      "option": "makespan >= start[j,o] + p for all (j,o)",
+      "evidence": "\"The makespan must be at least as large as the completion time of every operation.\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "objective_definition",
+      "option": "minimize makespan variable",
+      "evidence": "\"The goal is to schedule all operations to minimize the total completion time, known as the makespan.\"",
+      "plausibility": 0.9
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_jobs\": 7,\n    \"num_ops\": 2,\n    \"processing_time\": 1,\n    \"big_m\": 100000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n_jobs = d[\"num_jobs\"]\n    n_ops = d[\"num_ops\"]\n    p = d[\"processing_time\"]\n    M = d[\"big_m\"]\n\n    model = pyo.ConcreteModel()\n\n    # Set of jobs and operations\n    model.JOBS = pyo.RangeSet(0, n_jobs - 1)\n    model.OPS = pyo.RangeSet(0, n_ops - 1)\n\n    # All (job, operation) pairs\n    model.TASKS = pyo.Set(\n        initialize=[(j, o) for j in range(n_jobs) for o in range(n_ops)],\n        dimen=2,\n    )\n\n    # Pairs of tasks that share a machine: op (j,o) on machine (j+o) mod n_jobs\n    # assumption: machine_assignment_data cyclic assignment (j+o) mod 7\n    def _shared_pairs():\n        pairs = []\n        tasks = [(j, o) for j in range(n_jobs) for o in range(n_ops)]\n        for a in range(len(tasks)):\n            for b in range(a + 1, len(tasks)):\n                j1, o1 = tasks[a]\n                j2, o2 = tasks[b]\n                if (j1 + o1) % n_jobs == (j2 + o2) % n_jobs:\n                    pairs.append((tasks[a], tasks[b]))\n        return pairs\n\n    model.SHARED = pyo.Set(initialize=_shared_pairs(), dimen=4)\n\n    # Start time of each operation\n    # assumption: start_time_domain NonNegativeIntegers\n    model.start = pyo.Var(\n        model.TASKS,\n        within=pyo.NonNegativeIntegers,\n    )\n\n    # Makespan variable\n    # assumption: makespan_domain NonNegativeIntegers\n    model.makespan = pyo.Var(within=pyo.NonNegativeIntegers)\n\n    # Binary ordering variables for shared-machine task pairs\n    # \"Binary decision variables determine the order of operations on shared machines.\"\n    model.order = pyo.Var(model.SHARED, within=pyo.Binary)\n\n    # Precedence within each job: second op starts after first completes\n    # \"the second operation starting only after the first is completed\"\n    # assumption: precedence_constraint_direction start[j,1] >= start[j,0] + p\n    def precedence_rule(m, j):\n        return m.start[j, 1] >= m.start[j, 0] + p\n\n    model.precedence = pyo.Constraint(model.JOBS, rule=precedence_rule)\n\n    # Machine capacity: for each shared pair, one must finish before the other starts\n    # \"Operations sharing the same machine must be scheduled such that one finishes before the other starts.\"\n    def machine_rule(m, j1, o1, j2, o2):\n        # order == 1: task1 before task2; order == 0: task2 before task1\n        return m.start[j2, o2] >= m.start[j1, o1] + p - M * (1 - m.order[j1, o1, j2, o2])\n\n    model.machine_forward = pyo.Constraint(model.SHARED, rule=machine_rule)\n\n    def machine_rule_rev(m, j1, o1, j2, o2):\n        return m.start[j1, o1] >= m.start[j2, o2] + p - M * m.order[j1, o1, j2, o2]\n\n    model.machine_backward = pyo.Constraint(model.SHARED, rule=machine_rule_rev)\n\n    # Makespan at least completion time of every operation\n    # \"The makespan must be at least as large as the completion time of every operation.\"\n    # assumption: makespan_constraint_direction makespan >= start[j,o] + p\n    def makespan_rule(m, j, o):\n        return m.makespan >= m.start[j, o] + p\n\n    model.makespan_con = pyo.Constraint(model.TASKS, rule=makespan_rule)\n\n    # Objective: minimize makespan\n    # \"The goal is to schedule all operations to minimize the total completion time, known as the makespan.\"\n    # assumption: objective_definition minimize makespan variable\n    model.obj = pyo.Objective(expr=model.makespan, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1134,
+      "completion_tokens": 1054
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.242884397506714,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 3,
+    "assignment": [
+     {
+      "decision": "start_time_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"Binary decision variables determine the order of operations on shared machines.\" (only the ordering variables are stated binary; start times are not specified)",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "makespan_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"The makespan must be at least as large as the completion time of every operation.\"",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "machine_assignment_data",
+      "option": "all operations on a single shared machine",
+      "evidence": "\"Operations are assigned to specific machines, and some operations share the same machine\" and \"Operation 1 of Job 0 and Operation 0 of Job 1 share a machine\"",
+      "plausibility": 0.20000000000000004
+     },
+     {
+      "decision": "precedence_constraint_direction",
+      "option": "start[j,1] >= start[j,0] + p",
+      "evidence": "\"the second operation starting only after the first is completed\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "makespan_constraint_direction",
+      "option": "makespan >= start[j,o] + p for all (j,o)",
+      "evidence": "\"The makespan must be at least as large as the completion time of every operation.\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "objective_definition",
+      "option": "minimize makespan variable",
+      "evidence": "\"The goal is to schedule all operations to minimize the total completion time, known as the makespan.\"",
+      "plausibility": 0.9
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_jobs\": 7,\n    \"num_ops\": 2,\n    \"processing_time\": 1,\n    \"big_m\": 100000,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.JOBS = pyo.RangeSet(0, d[\"num_jobs\"] - 1)\n    model.OPS = pyo.RangeSet(0, d[\"num_ops\"] - 1)\n\n    # All operations share a single machine.\n    model.OPERATIONS = pyo.Set(\n        initialize=[(j, o) for j in range(d[\"num_jobs\"]) for o in range(d[\"num_ops\"])],\n        dimen=2,\n    )\n\n    # Pairs of distinct operations that share the machine (unordered pairs).\n    model.PAIRS = pyo.Set(\n        initialize=[\n            ((j1, o1), (j2, o2))\n            for j1 in range(d[\"num_jobs\"])\n            for o1 in range(d[\"num_ops\"])\n            for j2 in range(d[\"num_jobs\"])\n            for o2 in range(d[\"num_ops\"])\n            if (j1, o1) < (j2, o2)\n        ],\n        dimen=4,\n    )\n\n    # Binary decision variables determine the order of operations on shared machines.\n    model.order = pyo.Var(model.PAIRS, within=pyo.Binary)\n\n    # Start times of each operation.\n    model.start = pyo.Var(model.OPERATIONS, within=pyo.NonNegativeReals)\n\n    # Makespan variable.\n    model.makespan = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Precedence: second operation starts after first completes.\n    def precedence_rule(m, j):\n        return m.start[j, 1] >= m.start[j, 0] + d[\"processing_time\"]\n\n    model.precedence = pyo.Constraint(model.JOBS, rule=precedence_rule)\n\n    # Machine non-overlap via big-M and binary ordering (two separate constraints).\n    def machine_rule_a(m, j1, o1, j2, o2):\n        p = d[\"processing_time\"]\n        big_m = d[\"big_m\"]\n        return m.start[j2, o2] >= m.start[j1, o1] + p - big_m * m.order[j1, o1, j2, o2]\n\n    def machine_rule_b(m, j1, o1, j2, o2):\n        p = d[\"processing_time\"]\n        big_m = d[\"big_m\"]\n        return m.start[j1, o1] >= m.start[j2, o2] + p - big_m * (1 - m.order[j1, o1, j2, o2])\n\n    model.machine_a = pyo.Constraint(model.PAIRS, rule=machine_rule_a)\n    model.machine_b = pyo.Constraint(model.PAIRS, rule=machine_rule_b)\n\n    # Makespan at least completion time of every operation.\n    def makespan_rule(m, j, o):\n        return m.makespan >= m.start[j, o] + d[\"processing_time\"]\n\n    model.makespan_con = pyo.Constraint(model.OPERATIONS, rule=makespan_rule)\n\n    # Objective: minimize makespan.\n    model.obj = pyo.Objective(expr=model.makespan, sense=pyo.minimize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1105,
+      "completion_tokens": 818
+     }
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2127,
+      "completion_tokens": 717
+     }
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2332,
+      "completion_tokens": 780
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 11.55434799194336,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "branch",
+ "generated_at": "2026-11-02T08:15:30"
+}

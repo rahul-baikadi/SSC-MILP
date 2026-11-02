@@ -1,0 +1,99 @@
+{
+ "pid": "optmath_0083",
+ "question": "You are tasked with selecting exactly 2 out of 5 nodes (node_0, node_1, node_2, node_3, node_4) to host facilities, with the goal of maximizing the minimum distance between any two selected facilities. The decision variables are binary: each node can either be selected (1) or not selected (0), and for every pair of nodes, a binary variable indicates whether both nodes in the pair are selected. The distances between nodes are derived from the LP constraints, where the distance between node_0 and node_1 is 18 units (1,000,018 - 1,000,000), node_0 and node_2 is 36 units (1,000,036 - 1,000,000), node_0 and node_3 is 28 units (1,000,028 - 1,000,000), node_0 and node_4 is 20 units (1,000,020 - 1,000,000), node_1 and node_0 is 25 units (1,000,025 - 1,000,000), node_1 and node_2 is 37 units (1,000,037 - 1,000,000), node_1 and node_3 is 36 units (1,000,036 - 1,000,000), node_1 and node_4 is 17 units (1,000,017 - 1,000,000), node_2 and node_0 is 42 units (1,000,042 - 1,000,000), node_2 and node_1 is 42 units (1,000,042 - 1,000,000), node_2 and node_3 is 23 units (1,000,023 - 1,000,000), node_2 and node_4 is 46 units (1,000,046 - 1,000,000), node_3 and node_0 is 31 units (1,000,031 - 1,000,000), node_3 and node_1 is 36 units (1,000,036 - 1,000,000), node_3 and node_2 is 11 units (1,000,011 - 1,000,000), node_3 and node_4 is 50 units (1,000,050 - 1,000,000), node_4 and node_0 is 10 units (1,000,010 - 1,000,000), node_4 and node_1 is 29 units (1,000,029 - 1,000,000), node_4 and node_2 is 24 units (1,000,024 - 1,000,000), and node_4 and node_3 is 42 units (1,000,042 - 1,000,000). The constraints ensure that exactly 2 nodes are selected, and for each pair of nodes, the minimum distance between any two selected facilities must be at least as large as the distance between those two nodes if both nodes in the pair are selected. If either node in the pair is not selected, the constraint is relaxed using a large constant (1,000,000). Additionally, the selection of a pair of nodes is only valid if both nodes in the pair are selected, enforced by ensuring that if a pair is selected, both nodes in the pair must be selected, and if both nodes in a pair are selected, the pair must be selected. The solution must ensure that the facilities are optimally dispersed across the network.",
+ "templates": [
+  "Network Flow",
+  "Knapsack / Project Selection",
+  "Blending / Diet"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "feedback",
+    "b": 0,
+    "temperature": 0.6
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"n_nodes\": 5,\n    \"n_select\": 2,\n    \"M\": 1_000_000,\n    # Distances as given in the problem text (directed, i -> j).\n    \"dist\": {\n        (0, 1): 18, (0, 2): 36, (0, 3): 28, (0, 4): 20,\n        (1, 0): 25, (1, 2): 37, (1, 3): 36, (1, 4): 17,\n        (2, 0): 42, (2, 1): 42, (2, 3): 23, (2, 4): 46,\n        (3, 0): 31, (3, 1): 36, (3, 2): 11, (3, 4): 50,\n        (4, 0): 10, (4, 1): 29, (4, 2): 24, (4, 3): 42,\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"n_nodes\"]\n    dist = d[\"dist\"]\n    M = d[\"M\"]\n\n    model = pyo.ConcreteModel()\n\n    model.N = pyo.RangeSet(0, n - 1)\n    # Ordered pairs i != j (the text gives directed distances).\n    model.P = pyo.Set(\n        initialize=[(i, j) for i in range(n) for j in range(n) if i != j],\n        dimen=2,\n    )\n\n    # Node selection: 1 if node hosts a facility.\n    model.x = pyo.Var(model.N, within=pyo.Binary)\n\n    # Pair selection: 1 iff both nodes of the ordered pair are selected.\n    model.y = pyo.Var(model.P, within=pyo.Binary)\n\n    # Minimum distance among selected facilities.\n    maxd = max(dist.values())\n    model.r = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, maxd))\n\n    # Maximize the minimum pairwise distance.\n    model.obj = pyo.Objective(expr=model.r, sense=pyo.maximize)\n\n    # Exactly 2 nodes selected.\n    def rule_exact(m):\n        return sum(m.x[i] for i in m.N) == d[\"n_select\"]\n    model.exact_selection = pyo.Constraint(rule=rule_exact)\n\n    # Pair linkage: y[i,j] <= x[i].\n    def rule_y_le_i(m, i, j):\n        return m.y[i, j] <= m.x[i]\n    model.y_le_i = pyo.Constraint(model.P, rule=rule_y_le_i)\n\n    # Pair linkage: y[i,j] <= x[j].\n    def rule_y_le_j(m, i, j):\n        return m.y[i, j] <= m.x[j]\n    model.y_le_j = pyo.Constraint(model.P, rule=rule_y_le_j)\n\n    # Pair linkage: y[i,j] >= x[i] + x[j] - 1.\n    def rule_y_ge_both(m, i, j):\n        return m.y[i, j] >= m.x[i] + m.x[j] - 1\n    model.y_ge_both = pyo.Constraint(model.P, rule=rule_y_ge_both)\n\n    # Minimum-distance: r <= dist[i,j] + M*(1 - y[i,j]).\n    def rule_min_dist(m, i, j):\n        return m.r <= dist[(i, j)] + M * (1 - m.y[i, j])\n    model.min_distance = pyo.Constraint(model.P, rule=rule_min_dist)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3154,
+      "completion_tokens": 842
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 3.876326560974121,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "feedback",
+    "b": 1,
+    "temperature": 0.8
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"n_nodes\": 5,\n    \"n_select\": 2,\n    \"M\": 1_000_000,\n    # d[i][j] = distance from node i to node j (from LP constants)\n    \"dist\": {\n        (0, 0): 0,  (0, 1): 18, (0, 2): 36, (0, 3): 28, (0, 4): 20,\n        (1, 0): 25, (1, 1): 0,  (1, 2): 37, (1, 3): 36, (1, 4): 17,\n        (2, 0): 42, (2, 1): 42, (2, 2): 0,  (2, 3): 23, (2, 4): 46,\n        (3, 0): 31, (3, 1): 36, (3, 2): 11, (3, 3): 0,  (3, 4): 50,\n        (4, 0): 10, (4, 1): 29, (4, 2): 24, (4, 3): 42, (4, 4): 0,\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"n_nodes\"]\n    dist = d[\"dist\"]\n    M = d[\"M\"]\n\n    model = pyo.ConcreteModel()\n\n    model.N = pyo.RangeSet(0, n - 1)\n    model.P = pyo.Set(\n        initialize=[(i, j) for i in range(n) for j in range(i + 1, n)]\n    )\n\n    # Decision: node selected\n    model.x = pyo.Var(model.N, within=pyo.Binary)\n    # Decision: pair (i,j) both selected\n    model.y = pyo.Var(model.P, within=pyo.Binary)\n    # Decision: min distance among selected facilities\n    model.r = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Objective: maximize the minimum distance\n    model.obj = pyo.Objective(expr=model.r, sense=pyo.maximize)\n\n    # Exactly 2 nodes selected\n    def rule_exact(m):\n        return sum(m.x[i] for i in m.N) == d[\"n_select\"]\n    model.exact_selection = pyo.Constraint(rule=rule_exact)\n\n    # Pair linkage: y[i,j] <= x[i]\n    def rule_ylt_xi(m, i, j):\n        return m.y[i, j] <= m.x[i]\n    model.y_le_xi = pyo.Constraint(model.P, rule=rule_ylt_xi)\n\n    # Pair linkage: y[i,j] <= x[j]\n    def rule_ylt_xj(m, i, j):\n        return m.y[i, j] <= m.x[j]\n    model.y_le_xj = pyo.Constraint(model.P, rule=rule_ylt_xj)\n\n    # Pair linkage: y[i,j] >= x[i] + x[j] - 1\n    def rule_yge(m, i, j):\n        return m.y[i, j] >= m.x[i] + m.x[j] - 1\n    model.y_ge_sum = pyo.Constraint(model.P, rule=rule_yge)\n\n    # Minimum-distance: if pair selected, r <= dist; relaxed via big-M\n    def rule_min_dist(m, i, j):\n        return m.r <= dist[(i, j)] + M * (1 - m.y[i, j])\n    model.min_distance = pyo.Constraint(model.P, rule=rule_min_dist)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3154,
+      "completion_tokens": 849
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 3.785992383956909,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "feedback",
+    "b": 2,
+    "temperature": 1.0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"n_nodes\": 5,\n    \"n_select\": 2,\n    \"M\": 1_000_000,\n    # Ordered asymmetric distances as reported by the problem text:\n    # d[(i, j)] = distance from node i to node j\n    \"dist\": {\n        (0, 1): 18, (0, 2): 36, (0, 3): 28, (0, 4): 20,\n        (1, 0): 25, (1, 2): 37, (1, 3): 36, (1, 4): 17,\n        (2, 0): 42, (2, 1): 42, (2, 3): 23, (2, 4): 46,\n        (3, 0): 31, (3, 1): 36, (3, 2): 11, (3, 4): 50,\n        (4, 0): 10, (4, 1): 29, (4, 2): 24, (4, 3): 42,\n    },\n    # Upper bound on the min-distance variable. The text gives 50 as the\n    # largest reported pairwise distance, so the minimum can never exceed it.\n    \"max_dist\": 50,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    \"\"\"\n    Facility dispersion / max-min distance model.\n\n    The problem text states the distances as an ORDERED table\n    (d[i,j] for i->j), e.g. d(0,1)=18 but d(1,0)=25. The constraint in the\n    text is \"the minimum distance between any two selected facilities must be\n    at least as large as the distance between those two nodes if both nodes\n    in the pair are selected\" -- i.e. r <= d[i,j] whenever the ordered pair\n    (i,j) is selected. We therefore impose the min-distance constraint over\n    ALL ordered pairs i != j using the ordered distances exactly as given.\n\n    Selecting a pair (i,j) means x[i] = x[j] = 1, encoded by:\n        y[i,j] <= x[i]\n        y[i,j] <= x[j]\n        y[i,j] >= x[i] + x[j] - 1\n    and the max-min constraint:\n        r <= d[i,j] + M * (1 - y[i,j])\n    \"\"\"\n    d = data or DATA\n    n = d[\"n_nodes\"]\n    dist = d[\"dist\"]\n    M = d[\"M\"]\n    max_dist = d[\"max_dist\"]\n\n    model = pyo.ConcreteModel()\n\n    model.N = pyo.RangeSet(0, n - 1)\n\n    # Ordered pairs i != j\n    ordered_pairs = [(i, j) for i in range(n) for j in range(n) if i != j]\n    model.P = pyo.Set(initialize=ordered_pairs, dimen=2)\n\n    # node selection: x[i] = 1 iff node i hosts a facility\n    model.x = pyo.Var(model.N, within=pyo.Binary)\n\n    # pair selection: y[i,j] = 1 iff both node i and node j are selected\n    model.y = pyo.Var(model.P, within=pyo.Binary)\n\n    # minimum pairwise distance among selected facilities\n    model.r = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, max_dist))\n\n    # maximize the minimum pairwise distance\n    model.obj = pyo.Objective(expr=model.r, sense=pyo.maximize)\n\n    # Exactly 2 nodes selected\n    def rule_exact(m):\n        return sum(m.x[i] for i in m.N) == d[\"n_select\"]\n\n    model.exact_selection = pyo.Constraint(rule=rule_exact)\n\n    # y[i,j] <= x[i]\n    def rule_y_le_xi(m, i, j):\n        return m.y[i, j] <= m.x[i]\n\n    model.y_le_xi = pyo.Constraint(model.P, rule=rule_y_le_xi)\n\n    # y[i,j] <= x[j]\n    def rule_y_le_xj(m, i, j):\n        return m.y[i, j] <= m.x[j]\n\n    model.y_le_xj = pyo.Constraint(model.P, rule=rule_y_le_xj)\n\n    # y[i,j] >= x[i] + x[j] - 1\n    def rule_y_ge_both(m, i, j):\n        return m.y[i, j] >= m.x[i] + m.x[j] - 1\n\n    model.y_ge_both = pyo.Constraint(model.P, rule=rule_y_ge_both)\n\n    # min-distance, relaxed by big-M if the pair is not selected:\n    # r <= d[i,j] + M * (1 - y[i,j])\n    def rule_min_dist(m, i, j):\n        return m.r <= dist[(i, j)] + M * (1 - m.y[i, j])\n\n    model.min_distance = pyo.Constraint(model.P, rule=rule_min_dist)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3154,
+      "completion_tokens": 1142
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.387151002883911,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "feedback",
+    "b": 3,
+    "temperature": 1.2
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"n_nodes\": 5,\n    \"n_select\": 2,\n    \"M\": 1_000_000,\n    # Ordered distances as reported in the problem text:\n    # d[(i,j)] = distance from node i to node j.\n    \"dist_ordered\": {\n        (0, 1): 18, (0, 2): 36, (0, 3): 28, (0, 4): 20,\n        (1, 0): 25, (1, 2): 37, (1, 3): 36, (1, 4): 17,\n        (2, 0): 42, (2, 1): 42, (2, 3): 23, (2, 4): 46,\n        (3, 0): 31, (3, 1): 36, (3, 2): 11, (3, 4): 50,\n        (4, 0): 10, (4, 1): 29, (4, 2): 24, (4, 3): 42,\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"n_nodes\"]\n    K = d[\"n_select\"]\n    M = d[\"M\"]\n    dist = d[\"dist_ordered\"]\n\n    model = pyo.ConcreteModel()\n\n    model.N = pyo.RangeSet(0, n - 1)\n\n    # Ordered pairs i != j, since distances are reported directionally.\n    ordered_pairs = [(i, j) for i in range(n) for j in range(n) if i != j]\n    model.P = pyo.Set(initialize=ordered_pairs, dimen=2)\n\n    # Decision: node selected\n    model.x = pyo.Var(model.N, within=pyo.Binary)\n\n    # Decision: ordered pair (i,j) both selected (indicator)\n    model.y = pyo.Var(model.P, within=pyo.Binary)\n\n    # Decision: minimum pairwise distance among selected facilities\n    # Upper bound by largest reported distance (avoids big magnitude floats on data).\n    max_dist = max(dist.values())\n    model.r = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, max_dist))\n\n    # Objective: maximize the minimum distance among selected facilities\n    model.obj = pyo.Objective(expr=model.r, sense=pyo.maximize)\n\n    # Exactly 2 nodes selected\n    def rule_exact(m):\n        return sum(m.x[i] for i in m.N) == K\n    model.exact_selection = pyo.Constraint(rule=rule_exact)\n\n    # Pair indicator: y[i,j] = x[i] * x[j]  (for i != j)\n    def rule_y_le_xi(m, i, j):\n        return m.y[i, j] <= m.x[i]\n    model.y_le_xi = pyo.Constraint(model.P, rule=rule_y_le_xi)\n\n    def rule_y_le_xj(m, i, j):\n        return m.y[i, j] <= m.x[j]\n    model.y_le_xj = pyo.Constraint(model.P, rule=rule_y_le_xj)\n\n    def rule_y_ge_both(m, i, j):\n        return m.y[i, j] >= m.x[i] + m.x[j] - 1\n    model.y_ge_both = pyo.Constraint(model.P, rule=rule_y_ge_both)\n\n    # Minimum distance constraint: if pair (i,j) selected, r <= dist[(i,j)]\n    # Relaxed using big-M if pair not selected.\n    def rule_min_dist(m, i, j):\n        return m.r <= dist[(i, j)] + M * (1 - m.y[i, j])\n    model.min_distance = pyo.Constraint(model.P, rule=rule_min_dist)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3154,
+      "completion_tokens": 1284
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.645693778991699,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "feedback",
+ "generated_at": "2026-11-02T07:56:42"
+}

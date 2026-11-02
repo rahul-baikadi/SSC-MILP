@@ -1,0 +1,97 @@
+{
+ "pid": "optmath_0039",
+ "question": "There are five clients, labeled Client 0 to Client 4, each requiring two operations to be performed in sequence. Each operation takes exactly 1 unit of time to complete. The operations for each client must follow a strict sequence: the second operation cannot start until the first operation is completed, with a minimum gap of 1 unit of time between them. Operations from different clients may need to be performed on the same machine, and no two operations can overlap on the same machine. To enforce this, binary decision variables determine the order of operations on shared machines. The goal is to minimize the total production time, known as the makespan, which is the time when the last operation across all clients is completed. The makespan must be at least as long as the completion time of every operation. Start times for all operations are continuous variables, and the binary variables ensure that operations on the same machine do not overlap. A large number (100,000) is used in the constraints to enforce the scheduling logic, ensuring that one operation finishes before another starts on the same machine. The problem involves determining the optimal start times for all operations and the sequence of operations on shared machines to minimize the total production time while satisfying all constraints.",
+ "templates": [
+  "Scheduling"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "feedback",
+    "b": 0,
+    "temperature": 0.6
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_clients\": 5,\n    \"num_operations\": 2,\n    \"processing_time\": 1,\n    \"min_gap\": 1,\n    \"big_m\": 100000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # Sets: clients 0..4, operations 0..1\n    model.I = pyo.RangeSet(0, d[\"num_clients\"] - 1)\n    model.O = pyo.RangeSet(0, d[\"num_operations\"] - 1)\n\n    # Ordered pairs of distinct operations (disjunctive sequencing)\n    op_pairs = [\n        (i, o, j, p)\n        for i in model.I\n        for o in model.O\n        for j in model.I\n        for p in model.O\n        if (i, o) < (j, p)\n    ]\n    model.P = pyo.Set(initialize=op_pairs, dimen=4)\n\n    # Variables\n    model.s = pyo.Var(model.I, model.O, within=pyo.NonNegativeReals)\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n    model.y = pyo.Var(model.P, within=pyo.Binary)\n\n    # (1) Precedence within a client: second op starts after first completes + gap\n    def precedence_rule(m, i):\n        return m.s[i, 1] >= m.s[i, 0] + d[\"processing_time\"] + d[\"min_gap\"]\n\n    model.precedence = pyo.Constraint(model.I, rule=precedence_rule)\n\n    # (2) Makespan at least the completion time of every operation\n    def makespan_rule(m, i, o):\n        return m.Cmax >= m.s[i, o] + d[\"processing_time\"]\n\n    model.makespan = pyo.Constraint(model.I, model.O, rule=makespan_rule)\n\n    # (3) Disjunctive non-overlap on the shared machine (both directions)\n    def nonoverlap_first_rule(m, i, o, j, p):\n        return (\n            m.s[j, p]\n            >= m.s[i, o]\n            + d[\"processing_time\"]\n            - d[\"big_m\"] * (1 - m.y[i, o, j, p])\n        )\n\n    def nonoverlap_second_rule(m, i, o, j, p):\n        return (\n            m.s[i, o]\n            >= m.s[j, p]\n            + d[\"processing_time\"]\n            - d[\"big_m\"] * m.y[i, o, j, p]\n        )\n\n    model.nonoverlap_first = pyo.Constraint(model.P, rule=nonoverlap_first_rule)\n    model.nonoverlap_second = pyo.Constraint(model.P, rule=nonoverlap_second_rule)\n\n    # Objective: minimize makespan\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2711,
+      "completion_tokens": 1320
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.867589235305786,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "feedback",
+    "b": 1,
+    "temperature": 0.8
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Five clients, two sequential operations each, unit processing time,\n# minimum gap of 1 between completion of op 1 and start of op 2,\n# single shared machine -> disjunctive big-M non-overlap for all op pairs.\n# Minimize makespan.\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"num_clients\": 5,        # \"There are five clients, labeled Client 0 to Client 4\"\n    \"num_operations\": 2,     # \"each requiring two operations to be performed in sequence\"\n    \"processing_time\": 1,    # \"Each operation takes exactly 1 unit of time\"\n    \"min_gap\": 1,            # \"with a minimum gap of 1 unit of time between them\"\n    \"big_m\": 100000,         # \"A large number (100,000) is used in the constraints\"\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.I = pyo.RangeSet(0, d[\"num_clients\"] - 1)       # clients\n    model.O = pyo.RangeSet(0, d[\"num_operations\"] - 1)    # operations per client\n\n    # Ordered pairs of distinct operations sharing the machine\n    op_pairs = [\n        (i, o, j, p)\n        for i in model.I\n        for o in model.O\n        for j in model.I\n        for p in model.O\n        if (i, o) < (j, p)\n    ]\n    model.P = pyo.Set(initialize=op_pairs, dimen=4)\n\n    # Variables\n    model.s = pyo.Var(model.I, model.O, within=pyo.NonNegativeReals)\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n    model.y = pyo.Var(model.P, within=pyo.Binary)\n\n    # (1) Precedence within each client:\n    #     second op starts at least (processing_time + min_gap) after first op starts\n    def precedence_rule(m, i):\n        return m.s[i, 1] >= m.s[i, 0] + d[\"processing_time\"] + d[\"min_gap\"]\n\n    model.precedence = pyo.Constraint(model.I, rule=precedence_rule)\n\n    # (2) Makespan at least completion time of every operation\n    def makespan_rule(m, i, o):\n        return m.Cmax >= m.s[i, o] + d[\"processing_time\"]\n\n    model.makespan = pyo.Constraint(model.I, model.O, rule=makespan_rule)\n\n    # (3) Disjunctive non-overlap on the shared machine (big-M, both directions)\n    def nonoverlap_first_rule(m, i, o, j, p):\n        return (\n            m.s[j, p]\n            >= m.s[i, o]\n            + d[\"processing_time\"]\n            - d[\"big_m\"] * (1 - m.y[i, o, j, p])\n        )\n\n    def nonoverlap_second_rule(m, i, o, j, p):\n        return (\n            m.s[i, o]\n            >= m.s[j, p]\n            + d[\"processing_time\"]\n            - d[\"big_m\"] * m.y[i, o, j, p]\n        )\n\n    model.nonoverlap_first = pyo.Constraint(model.P, rule=nonoverlap_first_rule)\n    model.nonoverlap_second = pyo.Constraint(model.P, rule=nonoverlap_second_rule)\n\n    # Objective\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2711,
+      "completion_tokens": 1344
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.014793395996094,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "feedback",
+    "b": 2,
+    "temperature": 1.0
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Decision variables\n#   s[i, o]  : start time of operation o (0 = first, 1 = second) of client i\n#   Cmax     : makespan\n#   y[i,o,j,p] : binary, 1 if op (i,o) precedes op (j,p) on the shared machine\n#\n# Constraints\n#   (1) Precedence within a client (strict sequence + minimum gap of 1):\n#         s[i,1] >= s[i,0] + processing_time + min_gap\n#   (2) Makespan: Cmax >= s[i,o] + processing_time  for every operation\n#   (3) Disjunctive non-overlap on the shared machine (big-M):\n#         s[j,p] >= s[i,o] + p - M*(1 - y[i,o,j,p])\n#         s[i,o] >= s[j,p] + p - M*y[i,o,j,p]\n# ---------------------------------------------------------------------------\n\nDATA = {\n    \"num_clients\": 5,\n    \"num_operations\": 2,\n    \"processing_time\": 1,\n    \"min_gap\": 1,\n    \"big_m\": 100000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.I = pyo.RangeSet(0, d[\"num_clients\"] - 1)          # clients\n    model.O = pyo.RangeSet(0, d[\"num_operations\"] - 1)       # operations per client\n\n    # Ordered pairs of distinct operations (for disjunctive constraints)\n    op_pairs = [\n        (i, o, j, p)\n        for i in model.I\n        for o in model.O\n        for j in model.I\n        for p in model.O\n        if (i, o) < (j, p)\n    ]\n    model.P = pyo.Set(initialize=op_pairs, dimen=4)\n\n    # Variables\n    model.s = pyo.Var(model.I, model.O, within=pyo.NonNegativeReals)\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n    model.y = pyo.Var(model.P, within=pyo.Binary)\n\n    # (1) Precedence within each client: op2 starts after op1 completes + min gap\n    def precedence_rule(m, i):\n        return m.s[i, 1] >= m.s[i, 0] + d[\"processing_time\"] + d[\"min_gap\"]\n\n    model.precedence = pyo.Constraint(model.I, rule=precedence_rule)\n\n    # (2) Makespan definition: Cmax >= completion of every operation\n    def makespan_rule(m, i, o):\n        return m.Cmax >= m.s[i, o] + d[\"processing_time\"]\n\n    model.makespan = pyo.Constraint(model.I, model.O, rule=makespan_rule)\n\n    # (3) Disjunctive non-overlap constraints (big-M)\n    def nonoverlap_first_rule(m, i, o, j, p):\n        return (\n            m.s[j, p]\n            >= m.s[i, o]\n            + d[\"processing_time\"]\n            - d[\"big_m\"] * (1 - m.y[i, o, j, p])\n        )\n\n    def nonoverlap_second_rule(m, i, o, j, p):\n        return (\n            m.s[i, o]\n            >= m.s[j, p]\n            + d[\"processing_time\"]\n            - d[\"big_m\"] * m.y[i, o, j, p]\n        )\n\n    model.nonoverlap_first = pyo.Constraint(model.P, rule=nonoverlap_first_rule)\n    model.nonoverlap_second = pyo.Constraint(model.P, rule=nonoverlap_second_rule)\n\n    # Objective: minimize makespan\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2711,
+      "completion_tokens": 1494
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.582631349563599,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "feedback",
+    "b": 3,
+    "temperature": 1.2
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_clients\": 5,\n    \"num_operations\": 2,\n    \"processing_time\": 1,\n    \"min_gap\": 1,\n    \"big_m\": 100000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.RangeSet(0, d[\"num_clients\"] - 1)\n    model.O = pyo.RangeSet(0, d[\"num_operations\"] - 1)\n\n    op_pairs = [\n        (i, o, j, p)\n        for i in model.I\n        for o in model.O\n        for j in model.I\n        for p in model.O\n        if (i, o) < (j, p)\n    ]\n    model.P = pyo.Set(initialize=op_pairs, dimen=4)\n\n    model.s = pyo.Var(model.I, model.O, within=pyo.NonNegativeReals)\n    model.makespan_time = pyo.Var(within=pyo.NonNegativeReals)\n    model.y = pyo.Var(model.P, within=pyo.Binary)\n\n    def precedence_rule(m, i):\n        return m.s[i, 1] >= m.s[i, 0] + d[\"processing_time\"] + d[\"min_gap\"]\n\n    model.precedence = pyo.Constraint(model.I, rule=precedence_rule)\n\n    def cmax_rule(m, i, o):\n        return m.makespan_time >= m.s[i, o] + d[\"processing_time\"]\n\n    model.cmax_def = pyo.Constraint(model.I, model.O, rule=cmax_rule)\n\n    def seq_first_rule(m, i, o, j, p):\n        return (\n            m.s[j, p]\n            >= m.s[i, o]\n            + d[\"processing_time\"]\n            - d[\"big_m\"] * (1 - m.y[i, o, j, p])\n        )\n\n    def seq_second_rule(m, i, o, j, p):\n        return (\n            m.s[i, o]\n            >= m.s[j, p]\n            + d[\"processing_time\"]\n            - d[\"big_m\"] * m.y[i, o, j, p]\n        )\n\n    model.seq_first = pyo.Constraint(model.P, rule=seq_first_rule)\n    model.seq_second = pyo.Constraint(model.P, rule=seq_second_rule)\n\n    model.obj = pyo.Objective(expr=model.makespan_time, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2711,
+      "completion_tokens": 1292
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.868937015533447,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "feedback",
+ "generated_at": "2026-11-02T07:53:50"
+}

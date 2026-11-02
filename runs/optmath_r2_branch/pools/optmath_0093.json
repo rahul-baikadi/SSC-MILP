@@ -1,0 +1,246 @@
+{
+ "pid": "optmath_0093",
+ "question": "The problem involves assigning employees to shifts across two restaurants to meet specific skill demands while minimizing costs. There are seven employees, each with specific availability and skill capabilities. Each shift at each restaurant requires one employee with Skill 0. Assigning an employee to a shift incurs a cost: some assignments cost 1 unit, while others cost 3 units. If a shift cannot be filled, a penalty of 100 units is incurred per unfulfilled position.\n\nEmployees are only available for certain shifts, as specified by the availability constraints. For example, Employee 0 is available for Shift 0 but not for Shift 1 at Restaurant 1, and Employee 1 is available for Shift 0 but not for Shift 1 at Restaurant 1. Employees can only be assigned to roles that match their skills, and each employee can be assigned to at most one shift across all restaurants and roles. The total number of employees assigned to a shift plus any unfulfilled positions must equal the demand for that shift.\n\nThe objective is to minimize the total cost, which includes the cost of assigning employees to roles based on their preferences and the penalty cost for any unfulfilled positions. The preference costs for assignments range from 1 to 3 units, and the penalty cost for unfulfilled positions is 100 units each. The demand for each shift is one employee with the required skill.",
+ "templates": [
+  "Workforce / Shift Scheduling",
+  "Assignment"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 0,
+    "assignment": [
+     {
+      "decision": "availability_and_cost_data",
+      "option": "Group B data: availability flags with only employees 0 and 1 restricted, and cost depends only on shift (1 for shift 0, 3 for shift 1)",
+      "evidence": "\"Employee 0 is available for Shift 0 but not for Shift 1 at Restaurant 1, and Employee 1 is available for Shift 0 but not for Shift 1 at Restaurant 1.\" / \"some assignments cost 1 unit, while others cost 3 units\"",
+      "plausibility": 0.45
+     },
+     {
+      "decision": "unfulfilled_variable_domain",
+      "option": "NonNegativeIntegers bounded by demand",
+      "evidence": "\"If a shift cannot be filled, a penalty of 100 units is incurred per unfulfilled position.\" / \"The total number of employees assigned to a shift plus any unfulfilled positions must equal the demand for that shift.\"",
+      "plausibility": 0.6000000000000001
+     },
+     {
+      "decision": "assignment_variable_domain",
+      "option": "Binary",
+      "evidence": "\"Each shift at each restaurant requires one employee with Skill 0.\" / \"each employee can be assigned to at most one shift across all restaurants and roles\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "demand_balance_direction",
+      "option": "assigned + unfulfilled == demand",
+      "evidence": "\"The total number of employees assigned to a shift plus any unfulfilled positions must equal the demand for that shift.\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "employee_once_direction",
+      "option": "sum over shifts <= 1",
+      "evidence": "\"each employee can be assigned to at most one shift across all restaurants and roles\"",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "objective_units_and_scale",
+      "option": "sum of assignment costs (1 or 3) plus 100 per unfulfilled position",
+      "evidence": "\"minimize the total cost, which includes the cost of assigning employees to roles based on their preferences and the penalty cost for any unfulfilled positions. The preference costs for assignments range from 1 to 3 units, and the penalty cost for unfulfilled positions is 100 units each.\"",
+      "plausibility": 0.9
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Employees 0..6\n    \"employees\": [0, 1, 2, 3, 4, 5, 6],\n    # Restaurants 1..2 (two restaurants)\n    \"restaurants\": [1, 2],\n    # Shifts 0..1 at each restaurant\n    \"shifts\": [0, 1],\n    # Required skill for every shift\n    \"required_skill\": 0,\n    # Skill capabilities: every employee has Skill 0\n    # assumption: all employees possess the required Skill 0 (text only restricts employees 0 and 1 by availability)\n    \"skills\": {0: [0], 1: [0], 2: [0], 3: [0], 4: [0], 5: [0], 6: [0]},\n    # Availability: only employees 0 and 1 are restricted (not available for shift 1 at restaurant 1)\n    # assumption: all other (employee, restaurant, shift) combinations are available\n    \"unavailable\": {\n        (0, 1, 1): True,\n        (1, 1, 1): True,\n    },\n    # Cost depends only on shift: 1 for shift 0, 3 for shift 1\n    \"shift_cost\": {0: 1, 1: 3},\n    # Penalty per unfulfilled position\n    \"penalty\": 100,\n    # Demand per (restaurant, shift): one employee with required skill\n    \"demand\": {(1, 0): 1, (1, 1): 1, (2, 0): 1, (2, 1): 1},\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.E = pyo.Set(initialize=d[\"employees\"])\n    model.R = pyo.Set(initialize=d[\"restaurants\"])\n    model.S = pyo.Set(initialize=d[\"shifts\"])\n    model.RS = pyo.Set(initialize=[(r, s) for r in d[\"restaurants\"] for s in d[\"shifts\"]])\n    model.ERS = pyo.Set(\n        initialize=[\n            (e, r, s)\n            for e in d[\"employees\"]\n            for r in d[\"restaurants\"]\n            for s in d[\"shifts\"]\n        ]\n    )\n\n    # Binary assignment variable: 1 if employee e is assigned to shift s at restaurant r\n    # \"Each shift at each restaurant requires one employee with Skill 0.\"\n    # \"each employee can be assigned to at most one shift across all restaurants and roles\"\n    model.x = pyo.Var(model.ERS, within=pyo.Binary)\n\n    # Unfulfilled positions per (restaurant, shift), bounded by demand\n    # \"If a shift cannot be filled, a penalty of 100 units is incurred per unfulfilled position.\"\n    # assumption: NonNegativeIntegers bounded by demand (decision above)\n    model.u = pyo.Var(\n        model.RS,\n        within=pyo.NonNegativeIntegers,\n        bounds=lambda m, r, s: (0, d[\"demand\"][(r, s)]),\n    )\n\n    # Availability: forbid assignments where employee is unavailable\n    # \"Employee 0 is available for Shift 0 but not for Shift 1 at Restaurant 1, and Employee 1 is available for Shift 0 but not for Shift 1 at Restaurant 1.\"\n    def avail_rule(m, e, r, s):\n        if d[\"unavailable\"].get((e, r, s), False):\n            return m.x[e, r, s] == 0\n        return pyo.Constraint.Skip\n\n    model.avail = pyo.Constraint(model.ERS, rule=avail_rule)\n\n    # Skill match: employee must have the required skill\n    # \"Employees can only be assigned to roles that match their skills\"\n    def skill_rule(m, e, r, s):\n        if d[\"required_skill\"] not in d[\"skills\"][e]:\n            return m.x[e, r, s] == 0\n        return pyo.Constraint.Skip\n\n    model.skill = pyo.Constraint(model.ERS, rule=skill_rule)\n\n    # Demand balance: assigned + unfulfilled == demand\n    # \"The total number of employees assigned to a shift plus any unfulfilled positions must equal the demand for that shift.\"\n    def demand_rule(m, r, s):\n        return sum(m.x[e, r, s] for e in m.E) + m.u[r, s] == d[\"demand\"][(r, s)]\n\n    model.demand_balance = pyo.Constraint(model.RS, rule=demand_rule)\n\n    # Each employee assigned at most once across all restaurants and shifts\n    # \"each employee can be assigned to at most one shift across all restaurants and roles\"\n    def once_rule(m, e):\n        return sum(m.x[e, r, s] for r in m.R for s in m.S) <= 1\n\n    model.employee_once = pyo.Constraint(model.E, rule=once_rule)\n\n    # Objective: assignment costs (1 or 3 by shift) plus 100 per unfulfilled position\n    # \"minimize the total cost, which includes the cost of assigning employees to roles based on their preferences and the penalty cost for any unfulfilled positions.\"\n    def obj_rule(m):\n        assign_cost = sum(\n            d[\"shift_cost\"][s] * m.x[e, r, s] for (e, r, s) in m.ERS\n        )\n        penalty_cost = sum(d[\"penalty\"] * m.u[r, s] for (r, s) in m.RS)\n        return assign_cost + penalty_cost\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1204,
+      "completion_tokens": 1305
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.003438711166382,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 1,
+    "assignment": [
+     {
+      "decision": "availability_and_cost_data",
+      "option": "Group A data: full 7x2x2 cost table with alternating 1/3 costs and all triples feasible",
+      "evidence": "\"Employee 0 is available for Shift 0 but not for Shift 1 at Restaurant 1, and Employee 1 is available for Shift 0 but not for Shift 1 at Restaurant 1.\" / \"some assignments cost 1 unit, while others cost 3 units\"",
+      "plausibility": 0.45
+     },
+     {
+      "decision": "unfulfilled_variable_domain",
+      "option": "Binary",
+      "evidence": "\"If a shift cannot be filled, a penalty of 100 units is incurred per unfulfilled position.\" / \"The total number of employees assigned to a shift plus any unfulfilled positions must equal the demand for that shift.\"",
+      "plausibility": 0.30000000000000004
+     },
+     {
+      "decision": "assignment_variable_domain",
+      "option": "Binary",
+      "evidence": "\"Each shift at each restaurant requires one employee with Skill 0.\" / \"each employee can be assigned to at most one shift across all restaurants and roles\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "demand_balance_direction",
+      "option": "assigned + unfulfilled == demand",
+      "evidence": "\"The total number of employees assigned to a shift plus any unfulfilled positions must equal the demand for that shift.\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "employee_once_direction",
+      "option": "sum over shifts <= 1",
+      "evidence": "\"each employee can be assigned to at most one shift across all restaurants and roles\"",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "objective_units_and_scale",
+      "option": "sum of assignment costs (1 or 3) plus 100 per unfulfilled position",
+      "evidence": "\"minimize the total cost, which includes the cost of assigning employees to roles based on their preferences and the penalty cost for any unfulfilled positions. The preference costs for assignments range from 1 to 3 units, and the penalty cost for unfulfilled positions is 100 units each.\"",
+      "plausibility": 0.9
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Data\n# ---------------------------------------------------------------------------\n# Employees: 0..6 ; Restaurants: 0..1 ; Shifts: 0..1\n# Cost table: alternating 1/3 costs, all triples feasible.\n#   cost[e][r][s] = 1 if (e + r + s) even else 3\n# assumption: availability_and_cost_data -- Group A data: full 7x2x2 cost\n#   table with alternating 1/3 costs and all triples feasible.\nDATA = {\n    \"employees\": list(range(7)),\n    \"restaurants\": list(range(2)),\n    \"shifts\": list(range(2)),\n    \"cost\": {\n        (e, r, s): (1 if (e + r + s) % 2 == 0 else 3)\n        for e in range(7)\n        for r in range(2)\n        for s in range(2)\n    },\n    \"demand\": {(r, s): 1 for r in range(2) for s in range(2)},\n    \"penalty\": 100,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    model.EMPLOYEES = pyo.Set(initialize=d[\"employees\"])\n    model.RESTAURANTS = pyo.Set(initialize=d[\"restaurants\"])\n    model.SHIFTS = pyo.Set(initialize=d[\"shifts\"])\n    model.ROLES = pyo.Set(initialize=[(r, s) for r in d[\"restaurants\"] for s in d[\"shifts\"]])\n\n    # Assignment variable: employee e to restaurant r shift s.\n    # \"Each shift at each restaurant requires one employee with Skill 0.\"\n    # \"each employee can be assigned to at most one shift across all restaurants and roles\"\n    # assumption: assignment_variable_domain -- Binary\n    model.x = pyo.Var(\n        model.EMPLOYEES, model.RESTAURANTS, model.SHIFTS,\n        within=pyo.Binary,\n    )\n\n    # Unfulfilled variable per restaurant/shift.\n    # \"If a shift cannot be filled, a penalty of 100 units is incurred per unfulfilled position.\"\n    # assumption: unfulfilled_variable_domain -- Binary\n    model.u = pyo.Var(\n        model.RESTAURANTS, model.SHIFTS,\n        within=pyo.Binary,\n    )\n\n    # Objective: assignment costs + penalty per unfulfilled position.\n    # \"minimize the total cost, which includes the cost of assigning employees to roles\n    #  based on their preferences and the penalty cost for any unfulfilled positions.\"\n    # assumption: objective_units_and_scale -- sum of assignment costs (1 or 3) plus 100 per unfulfilled\n    def obj_rule(m):\n        assign_cost = sum(\n            d[\"cost\"][(e, r, s)] * m.x[e, r, s]\n            for e in m.EMPLOYEES\n            for r in m.RESTAURANTS\n            for s in m.SHIFTS\n        )\n        penalty_cost = sum(\n            d[\"penalty\"] * m.u[r, s]\n            for r in m.RESTAURANTS\n            for s in m.SHIFTS\n        )\n        return assign_cost + penalty_cost\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand balance: assigned + unfulfilled == demand.\n    # \"The total number of employees assigned to a shift plus any unfulfilled positions\n    #  must equal the demand for that shift.\"\n    # assumption: demand_balance_direction -- assigned + unfulfilled == demand\n    def demand_rule(m, r, s):\n        return (\n            sum(m.x[e, r, s] for e in m.EMPLOYEES) + m.u[r, s]\n            == d[\"demand\"][(r, s)]\n        )\n\n    model.demand_balance = pyo.Constraint(\n        model.RESTAURANTS, model.SHIFTS, rule=demand_rule\n    )\n\n    # Each employee at most once across all restaurants and shifts.\n    # \"each employee can be assigned to at most one shift across all restaurants and roles\"\n    # assumption: employee_once_direction -- sum over shifts <= 1\n    def once_rule(m, e):\n        return (\n            sum(m.x[e, r, s] for r in m.RESTAURANTS for s in m.SHIFTS) <= 1\n        )\n\n    model.employee_once = pyo.Constraint(model.EMPLOYEES, rule=once_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1187,
+      "completion_tokens": 1046
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.21786642074585,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 2,
+    "assignment": [
+     {
+      "decision": "availability_and_cost_data",
+      "option": "Group B data: availability flags with only employees 0 and 1 restricted, and cost depends only on shift (1 for shift 0, 3 for shift 1)",
+      "evidence": "\"Employee 0 is available for Shift 0 but not for Shift 1 at Restaurant 1, and Employee 1 is available for Shift 0 but not for Shift 1 at Restaurant 1.\" / \"some assignments cost 1 unit, while others cost 3 units\"",
+      "plausibility": 0.45
+     },
+     {
+      "decision": "unfulfilled_variable_domain",
+      "option": "Binary",
+      "evidence": "\"If a shift cannot be filled, a penalty of 100 units is incurred per unfulfilled position.\" / \"The total number of employees assigned to a shift plus any unfulfilled positions must equal the demand for that shift.\"",
+      "plausibility": 0.30000000000000004
+     },
+     {
+      "decision": "assignment_variable_domain",
+      "option": "Binary",
+      "evidence": "\"Each shift at each restaurant requires one employee with Skill 0.\" / \"each employee can be assigned to at most one shift across all restaurants and roles\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "demand_balance_direction",
+      "option": "assigned + unfulfilled == demand",
+      "evidence": "\"The total number of employees assigned to a shift plus any unfulfilled positions must equal the demand for that shift.\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "employee_once_direction",
+      "option": "sum over shifts <= 1",
+      "evidence": "\"each employee can be assigned to at most one shift across all restaurants and roles\"",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "objective_units_and_scale",
+      "option": "sum of assignment costs (1 or 3) plus 100 per unfulfilled position",
+      "evidence": "\"minimize the total cost, which includes the cost of assigning employees to roles based on their preferences and the penalty cost for any unfulfilled positions. The preference costs for assignments range from 1 to 3 units, and the penalty cost for unfulfilled positions is 100 units each.\"",
+      "plausibility": 0.9
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\n# ---------------------------------------------------------------------------\n# Data\n# ---------------------------------------------------------------------------\n# Restaurants: 2, Shifts: 2 (shift 0 requires skill 0, shift 1 requires skill 0)\n# Employees: 7, each with skill 0 capability.\n#\n# Availability: only employees 0 and 1 are restricted (not available for\n# shift 1 at restaurant 1). All other employees are available everywhere.\n# Cost depends only on shift: 1 for shift 0, 3 for shift 1.\n# Penalty for unfulfilled position: 100.\n# Demand per (restaurant, shift): 1 employee with skill 0.\n\nDATA = {\n    \"num_restaurants\": 2,\n    \"num_shifts\": 2,\n    \"num_employees\": 7,\n    \"required_skill\": 0,\n    \"demand\": 1,\n    \"penalty\": 100,\n    \"shift_cost\": {0: 1, 1: 3},\n    # assumption: employees 0 and 1 are unavailable for shift 1 at restaurant 1;\n    # all other (employee, restaurant, shift) combinations are available.\n    \"unavailable\": [(0, 1, 1), (1, 1, 1)],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.R = pyo.RangeSet(0, d[\"num_restaurants\"] - 1)\n    model.S = pyo.RangeSet(0, d[\"num_shifts\"] - 1)\n    model.E = pyo.RangeSet(0, d[\"num_employees\"] - 1)\n\n    # Allowed (employee, restaurant, shift) triples\n    # assumption: availability derived from DATA[\"unavailable\"]\n    unavailable = set(d[\"unavailable\"])\n    allowed = [\n        (e, r, s)\n        for e in range(d[\"num_employees\"])\n        for r in range(d[\"num_restaurants\"])\n        for s in range(d[\"num_shifts\"])\n        if (e, r, s) not in unavailable\n    ]\n    model.A = pyo.Set(initialize=allowed, dimen=3)\n\n    # Assignment variable: binary\n    # \"Each shift at each restaurant requires one employee with Skill 0.\"\n    # \"each employee can be assigned to at most one shift across all restaurants and roles\"\n    model.x = pyo.Var(model.A, within=pyo.Binary)\n\n    # Unfulfilled variable: binary\n    # \"If a shift cannot be filled, a penalty of 100 units is incurred per unfulfilled position.\"\n    model.u = pyo.Var(model.R, model.S, within=pyo.Binary)\n\n    # Objective: sum of assignment costs plus penalty per unfulfilled position\n    # \"minimize the total cost, which includes the cost of assigning employees to\n    #  roles based on their preferences and the penalty cost for any unfulfilled positions.\"\n    def obj_rule(m):\n        assign_cost = sum(\n            d[\"shift_cost\"][s] * m.x[e, r, s] for (e, r, s) in m.A\n        )\n        penalty_cost = sum(d[\"penalty\"] * m.u[r, s] for r in m.R for s in m.S)\n        return assign_cost + penalty_cost\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Demand balance: assigned + unfulfilled == demand\n    # \"The total number of employees assigned to a shift plus any unfulfilled\n    #  positions must equal the demand for that shift.\"\n    def demand_rule(m, r, s):\n        assigned = sum(\n            m.x[e, rr, ss]\n            for (e, rr, ss) in m.A\n            if rr == r and ss == s\n        )\n        return assigned + m.u[r, s] == d[\"demand\"]\n\n    model.demand_balance = pyo.Constraint(model.R, model.S, rule=demand_rule)\n\n    # Employee assigned at most once across all restaurants and shifts\n    # \"each employee can be assigned to at most one shift across all restaurants and roles\"\n    def once_rule(m, e):\n        return sum(\n            m.x[ee, r, s] for (ee, r, s) in m.A if ee == e\n        ) <= 1\n\n    model.employee_once = pyo.Constraint(model.E, rule=once_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1198,
+      "completion_tokens": 994
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.469112157821655,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 3,
+    "assignment": [
+     {
+      "decision": "availability_and_cost_data",
+      "option": "Some other availability/cost pattern consistent with the quoted sentences",
+      "evidence": "\"Employee 0 is available for Shift 0 but not for Shift 1 at Restaurant 1, and Employee 1 is available for Shift 0 but not for Shift 1 at Restaurant 1.\" / \"some assignments cost 1 unit, while others cost 3 units\"",
+      "plausibility": 0.1
+     },
+     {
+      "decision": "unfulfilled_variable_domain",
+      "option": "NonNegativeIntegers bounded by demand",
+      "evidence": "\"If a shift cannot be filled, a penalty of 100 units is incurred per unfulfilled position.\" / \"The total number of employees assigned to a shift plus any unfulfilled positions must equal the demand for that shift.\"",
+      "plausibility": 0.6000000000000001
+     },
+     {
+      "decision": "assignment_variable_domain",
+      "option": "Binary",
+      "evidence": "\"Each shift at each restaurant requires one employee with Skill 0.\" / \"each employee can be assigned to at most one shift across all restaurants and roles\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "demand_balance_direction",
+      "option": "assigned + unfulfilled == demand",
+      "evidence": "\"The total number of employees assigned to a shift plus any unfulfilled positions must equal the demand for that shift.\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "employee_once_direction",
+      "option": "sum over shifts <= 1",
+      "evidence": "\"each employee can be assigned to at most one shift across all restaurants and roles\"",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "objective_units_and_scale",
+      "option": "sum of assignment costs (1 or 3) plus 100 per unfulfilled position",
+      "evidence": "\"minimize the total cost, which includes the cost of assigning employees to roles based on their preferences and the penalty cost for any unfulfilled positions. The preference costs for assignments range from 1 to 3 units, and the penalty cost for unfulfilled positions is 100 units each.\"",
+      "plausibility": 0.9
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Employees\n    \"employees\": [0, 1, 2, 3, 4, 5, 6],\n    # Restaurants\n    \"restaurants\": [0, 1],\n    # Shifts per restaurant\n    \"shifts\": [0, 1],\n    # Required skill per (restaurant, shift)\n    \"required_skill\": {\n        (0, 0): 0,\n        (0, 1): 0,\n        (1, 0): 0,\n        (1, 1): 0,\n    },\n    # Employee skills\n    \"employee_skills\": {\n        0: {0},\n        1: {0},\n        2: {0},\n        3: {0},\n        4: {0},\n        5: {0},\n        6: {0},\n    },\n    # Availability: (employee, restaurant, shift) -> bool\n    # assumption: availability_and_cost_data - some pattern consistent with the text\n    \"available\": {\n        (0, 0, 0): True,  (0, 0, 1): True,\n        (0, 1, 0): True,  (0, 1, 1): False,\n        (1, 0, 0): True,  (1, 0, 1): True,\n        (1, 1, 0): True,  (1, 1, 1): False,\n        (2, 0, 0): True,  (2, 0, 1): False,\n        (2, 1, 0): True,  (2, 1, 1): True,\n        (3, 0, 0): False, (3, 0, 1): True,\n        (3, 1, 0): True,  (3, 1, 1): True,\n        (4, 0, 0): True,  (4, 0, 1): True,\n        (4, 1, 0): False, (4, 1, 1): True,\n        (5, 0, 0): True,  (5, 0, 1): False,\n        (5, 1, 0): False, (5, 1, 1): True,\n        (6, 0, 0): False, (6, 0, 1): True,\n        (6, 1, 0): True,  (6, 1, 1): False,\n    },\n    # Assignment cost: 1 or 3 units\n    # assumption: availability_and_cost_data - some pattern consistent with the text\n    \"cost\": {\n        (0, 0, 0): 1, (0, 0, 1): 3,\n        (0, 1, 0): 1, (0, 1, 1): 3,\n        (1, 0, 0): 3, (1, 0, 1): 1,\n        (1, 1, 0): 3, (1, 1, 1): 1,\n        (2, 0, 0): 1, (2, 0, 1): 3,\n        (2, 1, 0): 1, (2, 1, 1): 3,\n        (3, 0, 0): 3, (3, 0, 1): 1,\n        (3, 1, 0): 3, (3, 1, 1): 1,\n        (4, 0, 0): 1, (4, 0, 1): 3,\n        (4, 1, 0): 1, (4, 1, 1): 3,\n        (5, 0, 0): 3, (5, 0, 1): 1,\n        (5, 1, 0): 3, (5, 1, 1): 1,\n        (6, 0, 0): 1, (6, 0, 1): 3,\n        (6, 1, 0): 1, (6, 1, 1): 3,\n    },\n    # Demand per (restaurant, shift): one employee with required skill\n    \"demand\": {\n        (0, 0): 1,\n        (0, 1): 1,\n        (1, 0): 1,\n        (1, 1): 1,\n    },\n    # Penalty per unfulfilled position\n    \"penalty\": 100,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    employees = d[\"employees\"]\n    restaurants = d[\"restaurants\"]\n    shifts = d[\"shifts\"]\n\n    # Feasible assignment triples: employee available and skilled for the shift\n    feasible = []\n    for e in employees:\n        for r in restaurants:\n            for s in shifts:\n                if d[\"available\"].get((e, r, s), False):\n                    req = d[\"required_skill\"][(r, s)]\n                    if req in d[\"employee_skills\"][e]:\n                        feasible.append((e, r, s))\n\n    model.E = pyo.Set(initialize=employees)\n    model.R = pyo.Set(initialize=restaurants)\n    model.S = pyo.Set(initialize=shifts)\n    model.RS = pyo.Set(initialize=[(r, s) for r in restaurants for s in shifts])\n    model.TRIPLES = pyo.Set(initialize=feasible, dimen=3)\n\n    # Assignment variable: binary\n    # \"each employee can be assigned to at most one shift across all restaurants and roles\"\n    model.x = pyo.Var(model.TRIPLES, within=pyo.Binary)\n\n    # Unfulfilled variable: nonnegative integer bounded by demand\n    # \"If a shift cannot be filled, a penalty of 100 units is incurred per unfulfilled position.\"\n    def ub_unfulfilled(m, r, s):\n        return d[\"demand\"][(r, s)]\n\n    model.u = pyo.Var(\n        model.RS,\n        within=pyo.NonNegativeIntegers,\n        bounds=lambda m, r, s: (0, ub_unfulfilled(m, r, s)),\n    )\n\n    # Demand balance: assigned + unfulfilled == demand\n    # \"The total number of employees assigned to a shift plus any unfulfilled positions must equal the demand for that shift.\"\n    def demand_balance_rule(m, r, s):\n        assigned = sum(\n            m.x[e, rr, ss]\n            for (e, rr, ss) in feasible\n            if rr == r and ss == s\n        )\n        return assigned + m.u[r, s] == d[\"demand\"][(r, s)]\n\n    model.demand_balance = pyo.Constraint(model.RS, rule=demand_balance_rule)\n\n    # Employee at most once\n    # \"each employee can be assigned to at most one shift across all restaurants and roles\"\n    def employee_once_rule(m, e):\n        return sum(\n            m.x[ee, r, s]\n            for (ee, r, s) in feasible\n            if ee == e\n        ) <= 1\n\n    model.employee_once = pyo.Constraint(model.E, rule=employee_once_rule)\n\n    # Objective: minimize assignment costs + penalty per unfulfilled\n    # \"minimize the total cost, which includes the cost of assigning employees to roles based on their preferences and the penalty cost for any unfulfilled positions.\"\n    def obj_rule(m):\n        assign_cost = sum(\n            d[\"cost\"][(e, r, s)] * m.x[e, r, s]\n            for (e, r, s) in feasible\n        )\n        penalty_cost = sum(\n            d[\"penalty\"] * m.u[r, s]\n            for (r, s) in model.RS\n        )\n        return assign_cost + penalty_cost\n\n    model.obj = pyo.Objective(expr=obj_rule(model), sense=pyo.minimize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1179,
+      "completion_tokens": 1809
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.399620532989502,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "branch",
+ "generated_at": "2026-11-02T08:16:15"
+}

@@ -1,0 +1,245 @@
+{
+ "pid": "optmath_0089",
+ "question": "Assign six staff members to four projects such that each staff member is assigned to exactly one project. Each staff member has specific skill levels in three skills, and each project has required skill levels for each skill. The skill level attained for each project is determined by the highest skill level among the staff members assigned to that project. The skill shortage for each project is the difference between the required skill level and the attained skill level. The goal is to minimize the maximum skill shortage across all projects and skills. Staff members and their skill levels are as follows: Person 0 has Skill 0 (Level 5), Skill 1 (Level 5), Skill 2 (Level 5); Person 1 has Skill 0 (Level 6), Skill 1 (Level 5), Skill 2 (Level 7); Person 2 has Skill 0 (Level 6), Skill 1 (Level 5), Skill 2 (Level 7); Person 3 has Skill 0 (Level 5), Skill 1 (Level 5), Skill 2 (Level 6); Person 4 has Skill 0 (Level 7), Skill 1 (Level 5), Skill 2 (Level 6); Person 5 has Skill 0 (Level 6), Skill 1 (Level 7), Skill 2 (Level 5). Project skill requirements are as follows: Project 0 requires Skill 0 (Level 9), Skill 1 (Level 9), Skill 2 (Level 7); Project 1 requires Skill 0 (Level 7), Skill 1 (Level 7), Skill 2 (Level 8); Project 2 requires Skill 0 (Level 9), Skill 1 (Level 9), Skill 2 (Level 7); Project 3 requires Skill 0 (Level 7), Skill 1 (Level 8), Skill 2 (Level 9). The objective is to minimize the maximum skill shortage across all projects and skills.",
+ "templates": [
+  "Assignment"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 0,
+    "assignment": [
+     {
+      "decision": "attained_skill_definition",
+      "option": "a[j,k] >= skill[i,k]*x[i,j] with a minimized implicitly via shortage (max over assigned)",
+      "evidence": "\"The skill level attained for each project is determined by the highest skill level among the staff members assigned to that project.\"",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "shortage_sign_and_floor",
+      "option": "shortage = req - attained, allowed to be negative (no floor)",
+      "evidence": "\"The skill shortage for each project is the difference between the required skill level and the attained skill level.\"",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "max_shortage_variable_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"minimize the maximum skill shortage across all projects and skills\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "project_nonempty_constraint",
+      "option": "sum_i x[i,j] >= 1 for every project",
+      "evidence": "\"Assign six staff members to four projects such that each staff member is assigned to exactly one project.\"",
+      "plausibility": 0.7
+     },
+     {
+      "decision": "attained_variable_domain",
+      "option": "NonNegativeReals",
+      "evidence": "none",
+      "plausibility": 0.8
+     },
+     {
+      "decision": "objective_units_scale",
+      "option": "raw skill-level units (difference in levels)",
+      "evidence": "\"minimize the maximum skill shortage across all projects and skills\"",
+      "plausibility": 0.9
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_staff\": 6,\n    \"num_projects\": 4,\n    \"num_skills\": 3,\n    # Person skill levels: skill[i][k]\n    \"skill\": [\n        [5, 5, 5],  # Person 0\n        [6, 5, 7],  # Person 1\n        [6, 5, 7],  # Person 2\n        [5, 5, 6],  # Person 3\n        [7, 5, 6],  # Person 4\n        [6, 7, 5],  # Person 5\n    ],\n    # Project requirements: req[j][k]\n    \"req\": [\n        [9, 9, 7],  # Project 0\n        [7, 7, 8],  # Project 1\n        [9, 9, 7],  # Project 2\n        [7, 8, 9],  # Project 3\n    ],\n    # Big-M for linearising attained >= skill*x\n    \"big_m\": 100,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.RangeSet(0, d[\"num_staff\"] - 1)\n    model.J = pyo.RangeSet(0, d[\"num_projects\"] - 1)\n    model.K = pyo.RangeSet(0, d[\"num_skills\"] - 1)\n\n    # x[i,j] = 1 if staff i assigned to project j\n    # \"Assign six staff members to four projects such that each staff member is assigned to exactly one project.\"\n    model.x = pyo.Var(model.I, model.J, within=pyo.Binary)\n\n    # attained skill a[j,k]\n    # assumption: attained_variable_domain NonNegativeReals\n    model.a = pyo.Var(model.J, model.K, within=pyo.NonNegativeReals)\n\n    # maximum skill shortage variable\n    # \"minimize the maximum skill shortage across all projects and skills\"\n    # assumption: max_shortage_variable_domain NonNegativeReals\n    model.z = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Each staff member assigned to exactly one project\n    # \"Assign six staff members to four projects such that each staff member is assigned to exactly one project.\"\n    def assign_rule(m, i):\n        return sum(m.x[i, j] for j in m.J) == 1\n    model.assign = pyo.Constraint(model.I, rule=assign_rule)\n\n    # Each project nonempty\n    # assumption: project_nonempty_constraint sum_i x[i,j] >= 1\n    def nonempty_rule(m, j):\n        return sum(m.x[i, j] for i in m.I) >= 1\n    model.nonempty = pyo.Constraint(model.J, rule=nonempty_rule)\n\n    # attained >= skill[i,k]*x[i,j]  (big-M linearisation)\n    # \"The skill level attained for each project is determined by the highest skill level among the staff members assigned to that project.\"\n    # assumption: attained_skill_definition a[j,k] >= skill[i,k]*x[i,j]\n    def attained_rule(m, j, k, i):\n        return m.a[j, k] >= d[\"skill\"][i][k] * m.x[i, j] - d[\"big_m\"] * (1 - m.x[i, j])\n    model.attained = pyo.Constraint(model.J, model.K, model.I, rule=attained_rule)\n\n    # z >= shortage = req - attained for all j,k\n    # \"The skill shortage for each project is the difference between the required skill level and the attained skill level.\"\n    # assumption: shortage_sign_and_floor shortage = req - attained, allowed to be negative (no floor)\n    def shortage_rule(m, j, k):\n        return m.z >= d[\"req\"][j][k] - m.a[j, k]\n    model.shortage = pyo.Constraint(model.J, model.K, rule=shortage_rule)\n\n    # Objective: minimize maximum shortage\n    # \"The objective is to minimize the maximum skill shortage across all projects and skills.\"\n    # assumption: objective_units_scale raw skill-level units\n    model.obj = pyo.Objective(expr=model.z, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1190,
+      "completion_tokens": 997
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.859824895858765,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 1,
+    "assignment": [
+     {
+      "decision": "attained_skill_definition",
+      "option": "a[j,k] == max over assigned staff exactly (enforced with big-M equality)",
+      "evidence": "\"The skill level attained for each project is determined by the highest skill level among the staff members assigned to that project.\"",
+      "plausibility": 0.35
+     },
+     {
+      "decision": "shortage_sign_and_floor",
+      "option": "shortage = req - attained, allowed to be negative (no floor)",
+      "evidence": "\"The skill shortage for each project is the difference between the required skill level and the attained skill level.\"",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "max_shortage_variable_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"minimize the maximum skill shortage across all projects and skills\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "project_nonempty_constraint",
+      "option": "sum_i x[i,j] >= 1 for every project",
+      "evidence": "\"Assign six staff members to four projects such that each staff member is assigned to exactly one project.\"",
+      "plausibility": 0.7
+     },
+     {
+      "decision": "attained_variable_domain",
+      "option": "NonNegativeReals",
+      "evidence": "none",
+      "plausibility": 0.8
+     },
+     {
+      "decision": "objective_units_scale",
+      "option": "raw skill-level units (difference in levels)",
+      "evidence": "\"minimize the maximum skill shortage across all projects and skills\"",
+      "plausibility": 0.9
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"staff\": [0, 1, 2, 3, 4, 5],\n    \"projects\": [0, 1, 2, 3],\n    \"skills\": [0, 1, 2],\n    # Person skill levels: staff_skill[i][k]\n    \"staff_skill\": {\n        0: {0: 5, 1: 5, 2: 5},\n        1: {0: 6, 1: 5, 2: 7},\n        2: {0: 6, 1: 5, 2: 7},\n        3: {0: 5, 1: 5, 2: 6},\n        4: {0: 7, 1: 5, 2: 6},\n        5: {0: 6, 1: 7, 2: 5},\n    },\n    # Project required skill levels: project_req[j][k]\n    \"project_req\": {\n        0: {0: 9, 1: 9, 2: 7},\n        1: {0: 7, 1: 7, 2: 8},\n        2: {0: 9, 1: 9, 2: 7},\n        3: {0: 7, 1: 8, 2: 9},\n    },\n    # Big-M for attained-skill max linearisation\n    \"bigM\": 100,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=d[\"staff\"])\n    model.J = pyo.Set(initialize=d[\"projects\"])\n    model.K = pyo.Set(initialize=d[\"skills\"])\n\n    # x[i,j] = 1 if staff i assigned to project j\n    # \"Assign six staff members to four projects such that each staff member is assigned to exactly one project.\"\n    model.x = pyo.Var(model.I, model.J, within=pyo.Binary)\n\n    # a[j,k] = attained skill level for project j, skill k\n    # \"The skill level attained for each project is determined by the highest skill level among the staff members assigned to that project.\"\n    # assumption: attained_variable_domain -> NonNegativeReals\n    model.a = pyo.Var(model.J, model.K, within=pyo.NonNegativeReals)\n\n    # z = maximum skill shortage across all projects and skills\n    # \"The objective is to minimize the maximum skill shortage across all projects and skills.\"\n    # assumption: max_shortage_variable_domain -> NonNegativeReals\n    model.z = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Each staff member assigned to exactly one project\n    # \"Assign six staff members to four projects such that each staff member is assigned to exactly one project.\"\n    def assign_rule(m, i):\n        return sum(m.x[i, j] for j in m.J) == 1\n\n    model.assign = pyo.Constraint(model.I, rule=assign_rule)\n\n    # Each project must have at least one staff member\n    # assumption: project_nonempty_constraint -> sum_i x[i,j] >= 1 for every project\n    def nonempty_rule(m, j):\n        return sum(m.x[i, j] for i in m.I) >= 1\n\n    model.nonempty = pyo.Constraint(model.J, rule=nonempty_rule)\n\n    # a[j,k] >= staff_skill[i,k] * x[i,j]  (attained is at least each assigned member's level)\n    # \"The skill level attained for each project is determined by the highest skill level among the staff members assigned to that project.\"\n    def attained_lb_rule(m, j, k):\n        return m.a[j, k] >= sum(d[\"staff_skill\"][i][k] * m.x[i, j] for i in m.I)\n\n    model.attained_lb = pyo.Constraint(model.J, model.K, rule=attained_lb_rule)\n\n    # a[j,k] <= staff_skill[i,k] + M*(1 - x[i,j]) for each i\n    # \"The skill level attained for each project is determined by the highest skill level among the staff members assigned to that project.\"\n    def attained_ub_rule(m, j, k, i):\n        return m.a[j, k] <= d[\"staff_skill\"][i][k] + d[\"bigM\"] * (1 - m.x[i, j])\n\n    model.attained_ub = pyo.Constraint(model.J, model.K, model.I, rule=attained_ub_rule)\n\n    # z >= req[j,k] - a[j,k]  (shortage may be negative, no floor)\n    # \"The skill shortage for each project is the difference between the required skill level and the attained skill level.\"\n    # assumption: shortage_sign_and_floor -> shortage = req - attained, allowed to be negative\n    def maxshort_rule(m, j, k):\n        return m.z >= d[\"project_req\"][j][k] - m.a[j, k]\n\n    model.maxshort = pyo.Constraint(model.J, model.K, rule=maxshort_rule)\n\n    # Minimize maximum skill shortage\n    # \"The objective is to minimize the maximum skill shortage across all projects and skills.\"\n    # assumption: objective_units_scale -> raw skill-level units\n    model.obj = pyo.Objective(expr=model.z, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1184,
+      "completion_tokens": 1237
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.038665533065796,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 2,
+    "assignment": [
+     {
+      "decision": "attained_skill_definition",
+      "option": "a[j,k] == max over assigned staff exactly (enforced with big-M equality)",
+      "evidence": "\"The skill level attained for each project is determined by the highest skill level among the staff members assigned to that project.\"",
+      "plausibility": 0.35
+     },
+     {
+      "decision": "shortage_sign_and_floor",
+      "option": "shortage = max(0, req - attained) (nonnegative)",
+      "evidence": "\"The skill shortage for each project is the difference between the required skill level and the attained skill level.\"",
+      "plausibility": 0.45
+     },
+     {
+      "decision": "max_shortage_variable_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"minimize the maximum skill shortage across all projects and skills\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "project_nonempty_constraint",
+      "option": "sum_i x[i,j] >= 1 for every project",
+      "evidence": "\"Assign six staff members to four projects such that each staff member is assigned to exactly one project.\"",
+      "plausibility": 0.7
+     },
+     {
+      "decision": "attained_variable_domain",
+      "option": "NonNegativeReals",
+      "evidence": "none",
+      "plausibility": 0.8
+     },
+     {
+      "decision": "objective_units_scale",
+      "option": "raw skill-level units (difference in levels)",
+      "evidence": "\"minimize the maximum skill shortage across all projects and skills\"",
+      "plausibility": 0.9
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"staff\": [0, 1, 2, 3, 4, 5],\n    \"projects\": [0, 1, 2, 3],\n    \"skills\": [0, 1, 2],\n    # Person skill levels: staff_skill[i][k]\n    \"staff_skill\": {\n        0: {0: 5, 1: 5, 2: 5},\n        1: {0: 6, 1: 5, 2: 7},\n        2: {0: 6, 1: 5, 2: 7},\n        3: {0: 5, 1: 5, 2: 6},\n        4: {0: 7, 1: 5, 2: 6},\n        5: {0: 6, 1: 7, 2: 5},\n    },\n    # Project required skill levels: project_req[j][k]\n    \"project_req\": {\n        0: {0: 9, 1: 9, 2: 7},\n        1: {0: 7, 1: 7, 2: 8},\n        2: {0: 9, 1: 9, 2: 7},\n        3: {0: 7, 1: 8, 2: 9},\n    },\n    # Big-M for attained-skill max linearisation: larger than any skill level\n    \"big_m\": 100,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=d[\"staff\"])\n    model.J = pyo.Set(initialize=d[\"projects\"])\n    model.K = pyo.Set(initialize=d[\"skills\"])\n\n    # x[i,j] = 1 if staff i assigned to project j\n    # \"Assign six staff members to four projects such that each staff member is assigned to exactly one project.\"\n    model.x = pyo.Var(model.I, model.J, within=pyo.Binary)\n\n    # a[j,k] = attained skill level for project j, skill k\n    # \"The skill level attained for each project is determined by the highest skill level among the staff members assigned to that project.\"\n    # assumption: attained_variable_domain NonNegativeReals\n    model.a = pyo.Var(model.J, model.K, within=pyo.NonNegativeReals)\n\n    # shortage[j,k] = max(0, req - attained)\n    # \"The skill shortage for each project is the difference between the required skill level and the attained skill level.\"\n    # assumption: shortage_sign_and_floor max(0, req - attained), nonnegative\n    model.shortage = pyo.Var(model.J, model.K, within=pyo.NonNegativeReals)\n\n    # z = maximum skill shortage across all projects and skills\n    # \"minimize the maximum skill shortage across all projects and skills\"\n    # assumption: max_shortage_variable_domain NonNegativeReals\n    model.z = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Each staff member assigned to exactly one project\n    # \"Assign six staff members to four projects such that each staff member is assigned to exactly one project.\"\n    def assign_once_rule(m, i):\n        return sum(m.x[i, j] for j in m.J) == 1\n\n    model.assign_once = pyo.Constraint(model.I, rule=assign_once_rule)\n\n    # Each project nonempty\n    # assumption: project_nonempty_constraint sum_i x[i,j] >= 1 for every project\n    def project_nonempty_rule(m, j):\n        return sum(m.x[i, j] for i in m.I) >= 1\n\n    model.project_nonempty = pyo.Constraint(model.J, rule=project_nonempty_rule)\n\n    # attained skill a[j,k] >= staff_skill[i,k] * x[i,j] for all i\n    # \"The skill level attained for each project is determined by the highest skill level among the staff members assigned to that project.\"\n    def attained_lb_rule(m, j, k):\n        return m.a[j, k] >= sum(d[\"staff_skill\"][i][k] * m.x[i, j] for i in m.I)\n\n    model.attained_lb = pyo.Constraint(model.J, model.K, rule=attained_lb_rule)\n\n    # attained skill a[j,k] <= staff_skill[i,k] + M*(1 - x[i,j]) for all i\n    # \"The skill level attained for each project is determined by the highest skill level among the staff members assigned to that project.\"\n    def attained_ub_rule(m, i, j, k):\n        return m.a[j, k] <= d[\"staff_skill\"][i][k] + d[\"big_m\"] * (1 - m.x[i, j])\n\n    model.attained_ub = pyo.Constraint(model.I, model.J, model.K, rule=attained_ub_rule)\n\n    # shortage >= req - attained\n    # \"The skill shortage for each project is the difference between the required skill level and the attained skill level.\"\n    def shortage_lb_rule(m, j, k):\n        return m.shortage[j, k] >= d[\"project_req\"][j][k] - m.a[j, k]\n\n    model.shortage_lb = pyo.Constraint(model.J, model.K, rule=shortage_lb_rule)\n\n    # z >= shortage[j,k]\n    # \"minimize the maximum skill shortage across all projects and skills\"\n    def max_shortage_rule(m, j, k):\n        return m.z >= m.shortage[j, k]\n\n    model.max_shortage = pyo.Constraint(model.J, model.K, rule=max_shortage_rule)\n\n    # Objective: minimize maximum skill shortage\n    # \"The objective is to minimize the maximum skill shortage across all projects and skills.\"\n    model.obj = pyo.Objective(expr=model.z, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1184,
+      "completion_tokens": 1349
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.123847007751465,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 3,
+    "assignment": [
+     {
+      "decision": "attained_skill_definition",
+      "option": "a[j,k] >= skill[i,k]*x[i,j] with a minimized implicitly via shortage (max over assigned)",
+      "evidence": "\"The skill level attained for each project is determined by the highest skill level among the staff members assigned to that project.\"",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "shortage_sign_and_floor",
+      "option": "shortage = req - attained, allowed to be negative (no floor)",
+      "evidence": "\"The skill shortage for each project is the difference between the required skill level and the attained skill level.\"",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "max_shortage_variable_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"minimize the maximum skill shortage across all projects and skills\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "project_nonempty_constraint",
+      "option": "no explicit nonempty constraint (projects may be empty)",
+      "evidence": "\"Assign six staff members to four projects such that each staff member is assigned to exactly one project.\"",
+      "plausibility": 0.25
+     },
+     {
+      "decision": "attained_variable_domain",
+      "option": "NonNegativeReals",
+      "evidence": "none",
+      "plausibility": 0.8
+     },
+     {
+      "decision": "objective_units_scale",
+      "option": "raw skill-level units (difference in levels)",
+      "evidence": "\"minimize the maximum skill shortage across all projects and skills\"",
+      "plausibility": 0.9
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # staff skill levels: skill[i][k]\n    \"skill\": {\n        0: {0: 5, 1: 5, 2: 5},\n        1: {0: 6, 1: 5, 2: 7},\n        2: {0: 6, 1: 5, 2: 7},\n        3: {0: 5, 1: 5, 2: 6},\n        4: {0: 7, 1: 5, 2: 6},\n        5: {0: 6, 1: 7, 2: 5},\n    },\n    # project requirements: req[j][k]\n    \"req\": {\n        0: {0: 9, 1: 9, 2: 7},\n        1: {0: 7, 1: 7, 2: 8},\n        2: {0: 9, 1: 9, 2: 7},\n        3: {0: 7, 1: 8, 2: 9},\n    },\n    \"staff\": [0, 1, 2, 3, 4, 5],\n    \"projects\": [0, 1, 2, 3],\n    \"skills\": [0, 1, 2],\n    # big-M for attained >= skill*x linearisation\n    \"bigM\": 100,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=d[\"staff\"])\n    model.J = pyo.Set(initialize=d[\"projects\"])\n    model.K = pyo.Set(initialize=d[\"skills\"])\n\n    # x[i,j] = 1 if staff i assigned to project j\n    # \"Assign six staff members to four projects such that each staff member is assigned to exactly one project.\"\n    model.x = pyo.Var(model.I, model.J, within=pyo.Binary)\n\n    # a[j,k] = attained skill level for project j, skill k\n    # assumption: attained_variable_domain -> NonNegativeReals\n    model.a = pyo.Var(model.J, model.K, within=pyo.NonNegativeReals)\n\n    # s[j,k] = shortage = req - attained (allowed negative)\n    # \"The skill shortage for each project is the difference between the required skill level and the attained skill level.\"\n    model.s = pyo.Var(model.J, model.K, within=pyo.Reals)\n\n    # z = maximum shortage\n    # \"minimize the maximum skill shortage across all projects and skills\"\n    # assumption: max_shortage_variable_domain -> NonNegativeReals\n    model.z = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Each staff member assigned to exactly one project\n    # \"Assign six staff members to four projects such that each staff member is assigned to exactly one project.\"\n    def assign_rule(m, i):\n        return sum(m.x[i, j] for j in m.J) == 1\n\n    model.assign = pyo.Constraint(model.I, rule=assign_rule)\n\n    # attained >= skill[i,k]*x[i,j]  (max over assigned staff)\n    # \"The skill level attained for each project is determined by the highest skill level among the staff members assigned to that project.\"\n    # assumption: attained_skill_definition\n    def attained_rule(m, j, k):\n        return m.a[j, k] >= sum(d[\"skill\"][i][k] * m.x[i, j] for i in m.I)\n\n    model.attained = pyo.Constraint(model.J, model.K, rule=attained_rule)\n\n    # shortage = req - attained\n    # \"The skill shortage for each project is the difference between the required skill level and the attained skill level.\"\n    # assumption: shortage_sign_and_floor -> allowed negative\n    def shortage_rule(m, j, k):\n        return m.s[j, k] == d[\"req\"][j][k] - m.a[j, k]\n\n    model.shortage = pyo.Constraint(model.J, model.K, rule=shortage_rule)\n\n    # z >= shortage for all j,k\n    # \"minimize the maximum skill shortage across all projects and skills\"\n    def max_rule(m, j, k):\n        return m.z >= m.s[j, k]\n\n    model.maxshort = pyo.Constraint(model.J, model.K, rule=max_rule)\n\n    # Objective: minimize maximum shortage\n    # \"The objective is to minimize the maximum skill shortage across all projects and skills.\"\n    model.obj = pyo.Objective(expr=model.z, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1189,
+      "completion_tokens": 1056
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.202714681625366,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "branch",
+ "generated_at": "2026-11-02T08:16:00"
+}

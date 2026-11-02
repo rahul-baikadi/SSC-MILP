@@ -1,0 +1,245 @@
+{
+ "pid": "mamo_complex_0005",
+ "question": "Consider a delivery company that needs to deliver packages to five different cities, named E, F, G, H, and I. The delivery truck can start its route from any of these cities, but needs to visit each city exactly once and then return to the starting point. The challenge is to find the route that minimizes the total delivery cost, which could be influenced by factors such as fuel, distance, or time.\nHere is a breakdown of the delivery costs between the cities:\nThe cost to deliver from City E to F is 31 units, to G is 19 units, to H is 71 units, and to I is 74 units.\nFrom City F, it costs 31 units to reach E, 39 units to get to G, 77 units to H, and 84 units to I.\nWhen delivering from City G, the costs are 19 units to E, 39 units to F, 65 units to H, and 78 units to I.\nFrom City H, it costs 71 units to go to E, 77 units to F, 65 units to G, and 38 units to I.\nFinally, from City I, it costs 74 units to reach E, 84 units to F, 78 units to G, and 38 units to H.\nWhat is the minimum total delivery cost for the truck to visit each city exactly once and return to the starting city?",
+ "templates": [
+  "Vehicle Routing / TSP"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 0,
+    "assignment": [
+     {
+      "decision": "subtour_elimination_formulation",
+      "option": "MTZ with integer u in [1,n] and big-M n",
+      "evidence": "needs to visit each city exactly once and then return to the starting point",
+      "plausibility": 0.25
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary x[i,j] for all i != j",
+      "evidence": "The delivery truck can start its route from any of these cities, but needs to visit each city exactly once and then return to the starting point.",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize total cost",
+      "evidence": "find the route that minimizes the total delivery cost",
+      "plausibility": 0.99
+     },
+     {
+      "decision": "cost_matrix_orientation",
+      "option": "cost[(i,j)] = cost from i to j (row = origin)",
+      "evidence": "The cost to deliver from City E to F is 31 units ... From City F, it costs 31 units to reach E",
+      "plausibility": 0.97
+     },
+     {
+      "decision": "degree_constraint_direction",
+      "option": "out-degree == 1 and in-degree == 1 for every city",
+      "evidence": "visit each city exactly once and then return to the starting point",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "symmetry_breaking",
+      "option": "no symmetry-breaking constraint (all tours allowed)",
+      "evidence": "The delivery truck can start its route from any of these cities",
+      "plausibility": 0.85
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\n# All numeric constants from the problem statement.\nDATA = {\n    \"cities\": [\"E\", \"F\", \"G\", \"H\", \"I\"],\n    \"cost\": {\n        (\"E\", \"F\"): 31,\n        (\"E\", \"G\"): 19,\n        (\"E\", \"H\"): 71,\n        (\"E\", \"I\"): 74,\n        (\"F\", \"E\"): 31,\n        (\"F\", \"G\"): 39,\n        (\"F\", \"H\"): 77,\n        (\"F\", \"I\"): 84,\n        (\"G\", \"E\"): 19,\n        (\"G\", \"F\"): 39,\n        (\"G\", \"H\"): 65,\n        (\"G\", \"I\"): 78,\n        (\"H\", \"E\"): 71,\n        (\"H\", \"F\"): 77,\n        (\"H\", \"G\"): 65,\n        (\"H\", \"I\"): 38,\n        (\"I\", \"E\"): 74,\n        (\"I\", \"F\"): 84,\n        (\"I\", \"G\"): 78,\n        (\"I\", \"H\"): 38,\n    },\n    \"n\": 5,\n    \"big_m\": 5,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    cost = d[\"cost\"]\n    n = d[\"n\"]\n    big_m = d[\"big_m\"]\n\n    model = pyo.ConcreteModel()\n\n    # Set of cities.\n    model.I = pyo.Set(initialize=cities)\n\n    # Set of directed arcs (i, j) with i != j.\n    # assumption: arc_variable_domain - Binary x[i,j] for all i != j\n    model.A = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n\n    # Binary arc variables: x[i,j] = 1 if the truck travels from i to j.\n    # \"The delivery truck can start its route from any of these cities, but needs\n    #  to visit each city exactly once and then return to the starting point.\"\n    model.x = pyo.Var(model.A, within=pyo.Binary)\n\n    # MTZ ordering variables u[i] in [1, n].\n    # assumption: subtour_elimination_formulation - MTZ with integer u in [1,n] and big-M n\n    model.u = pyo.Var(model.I, within=pyo.Integers, bounds=(1, n))\n\n    # Objective: minimize total delivery cost.\n    # \"find the route that minimizes the total delivery cost\"\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[i, j] for (i, j) in m.A)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Out-degree constraint: exactly one outgoing arc per city.\n    # \"visit each city exactly once and then return to the starting point\"\n    def out_degree_rule(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n\n    model.out_degree = pyo.Constraint(model.I, rule=out_degree_rule)\n\n    # In-degree constraint: exactly one incoming arc per city.\n    # \"visit each city exactly once and then return to the starting point\"\n    def in_degree_rule(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n\n    model.in_degree = pyo.Constraint(model.I, rule=in_degree_rule)\n\n    # MTZ subtour elimination constraints.\n    # assumption: subtour_elimination_formulation - MTZ with integer u in [1,n] and big-M n\n    def mtz_rule(m, i, j):\n        if i == j:\n            return pyo.Constraint.Skip\n        return m.u[i] - m.u[j] + big_m * m.x[i, j] <= big_m - 1\n\n    model.mtz = pyo.Constraint(model.I, model.I, rule=mtz_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1072,
+      "completion_tokens": 944
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.837478876113892,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 1,
+    "assignment": [
+     {
+      "decision": "subtour_elimination_formulation",
+      "option": "DFJ cut-set constraints (exponential, added lazily)",
+      "evidence": "needs to visit each city exactly once and then return to the starting point",
+      "plausibility": 0.15
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary x[i,j] for all i != j",
+      "evidence": "The delivery truck can start its route from any of these cities, but needs to visit each city exactly once and then return to the starting point.",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize total cost",
+      "evidence": "find the route that minimizes the total delivery cost",
+      "plausibility": 0.99
+     },
+     {
+      "decision": "cost_matrix_orientation",
+      "option": "cost[(i,j)] = cost from i to j (row = origin)",
+      "evidence": "The cost to deliver from City E to F is 31 units ... From City F, it costs 31 units to reach E",
+      "plausibility": 0.97
+     },
+     {
+      "decision": "degree_constraint_direction",
+      "option": "out-degree == 1 and in-degree == 1 for every city",
+      "evidence": "visit each city exactly once and then return to the starting point",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "symmetry_breaking",
+      "option": "no symmetry-breaking constraint (all tours allowed)",
+      "evidence": "The delivery truck can start its route from any of these cities",
+      "plausibility": 0.85
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"cities\": [\"E\", \"F\", \"G\", \"H\", \"I\"],\n    # cost[(i, j)] = cost from i to j (row = origin)\n    \"cost\": {\n        (\"E\", \"F\"): 31,\n        (\"E\", \"G\"): 19,\n        (\"E\", \"H\"): 71,\n        (\"E\", \"I\"): 74,\n        (\"F\", \"E\"): 31,\n        (\"F\", \"G\"): 39,\n        (\"F\", \"H\"): 77,\n        (\"F\", \"I\"): 84,\n        (\"G\", \"E\"): 19,\n        (\"G\", \"F\"): 39,\n        (\"G\", \"H\"): 65,\n        (\"G\", \"I\"): 78,\n        (\"H\", \"E\"): 71,\n        (\"H\", \"F\"): 77,\n        (\"H\", \"G\"): 65,\n        (\"H\", \"I\"): 38,\n        (\"I\", \"E\"): 74,\n        (\"I\", \"F\"): 84,\n        (\"I\", \"G\"): 78,\n        (\"I\", \"H\"): 38,\n    },\n    # assumption: big-M for subtour elimination cuts (DFJ), larger than number of cities\n    \"big_m\": 100,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    cost = d[\"cost\"]\n\n    model = pyo.ConcreteModel()\n\n    # Set of cities\n    model.C = pyo.Set(initialize=cities)\n\n    # Arcs: all ordered pairs i != j\n    # assumption: arc_variable_domain - Binary x[i,j] for all i != j\n    model.A = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n\n    # Binary arc variables x[i,j]\n    # assumption: arc_variable_domain - Binary x[i,j] for all i != j\n    model.x = pyo.Var(model.A, within=pyo.Binary)\n\n    # Objective: minimize total delivery cost\n    # \"find the route that minimizes the total delivery cost\"\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[i, j] for (i, j) in m.A)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Out-degree == 1 for every city\n    # \"needs to visit each city exactly once and then return to the starting point\"\n    # assumption: degree_constraint_direction - out-degree == 1 for every city\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n\n    model.out_degree = pyo.Constraint(model.C, rule=out_rule)\n\n    # In-degree == 1 for every city\n    # \"needs to visit each city exactly once and then return to the starting point\"\n    # assumption: degree_constraint_direction - in-degree == 1 for every city\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n\n    model.in_degree = pyo.Constraint(model.C, rule=in_rule)\n\n    # Subtour elimination (DFJ cut-set constraints).\n    # assumption: subtour_elimination_formulation - DFJ cut-set constraints\n    # For every proper non-empty subset S of cities, sum of arcs within S <= |S| - 1.\n    # Enumerated here for all subsets of size 2..n-1 (n=5 -> small enough).\n    subsets = []\n    n = len(cities)\n    for mask in range(1, (1 << n) - 1):\n        S = [cities[k] for k in range(n) if (mask >> k) & 1]\n        if 2 <= len(S) <= n - 1:\n            subsets.append(S)\n\n    model.S = pyo.Set(initialize=list(range(len(subsets))), dimen=1)\n\n    def subtour_rule(m, s):\n        S = subsets[s]\n        return (\n            sum(m.x[i, j] for i in S for j in S if i != j)\n            <= len(S) - 1\n        )\n\n    model.subtour_elim = pyo.Constraint(model.S, rule=subtour_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1071,
+      "completion_tokens": 1018
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.466186285018921,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 2,
+    "assignment": [
+     {
+      "decision": "subtour_elimination_formulation",
+      "option": "MTZ with continuous u in [1,n] and big-M n",
+      "evidence": "needs to visit each city exactly once and then return to the starting point",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary x[i,j] for all i != j",
+      "evidence": "The delivery truck can start its route from any of these cities, but needs to visit each city exactly once and then return to the starting point.",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize total cost",
+      "evidence": "find the route that minimizes the total delivery cost",
+      "plausibility": 0.99
+     },
+     {
+      "decision": "cost_matrix_orientation",
+      "option": "cost[(i,j)] = cost from i to j (row = origin)",
+      "evidence": "The cost to deliver from City E to F is 31 units ... From City F, it costs 31 units to reach E",
+      "plausibility": 0.97
+     },
+     {
+      "decision": "degree_constraint_direction",
+      "option": "out-degree == 1 and in-degree == 1 for every city",
+      "evidence": "visit each city exactly once and then return to the starting point",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "symmetry_breaking",
+      "option": "fix start city (e.g., u[E] = 1)",
+      "evidence": "The delivery truck can start its route from any of these cities",
+      "plausibility": 0.1
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"cities\": [\"E\", \"F\", \"G\", \"H\", \"I\"],\n    \"cost\": {\n        (\"E\", \"F\"): 31,\n        (\"E\", \"G\"): 19,\n        (\"E\", \"H\"): 71,\n        (\"E\", \"I\"): 74,\n        (\"F\", \"E\"): 31,\n        (\"F\", \"G\"): 39,\n        (\"F\", \"H\"): 77,\n        (\"F\", \"I\"): 84,\n        (\"G\", \"E\"): 19,\n        (\"G\", \"F\"): 39,\n        (\"G\", \"H\"): 65,\n        (\"G\", \"I\"): 78,\n        (\"H\", \"E\"): 71,\n        (\"H\", \"F\"): 77,\n        (\"H\", \"G\"): 65,\n        (\"H\", \"I\"): 38,\n        (\"I\", \"E\"): 74,\n        (\"I\", \"F\"): 84,\n        (\"I\", \"G\"): 78,\n        (\"I\", \"H\"): 38,\n    },\n    \"n\": 5,\n    \"start_city\": \"E\",\n    \"u_lb\": 1,\n    \"u_ub\": 5,\n    \"big_m\": 5,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    n = d[\"n\"]\n    cost = d[\"cost\"]\n    start = d[\"start_city\"]\n\n    model = pyo.ConcreteModel()\n\n    # assumption: arc variable x[i,j] binary for all i != j (arc_variable_domain decision)\n    model.arcs = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n\n    # assumption: binary arc variables representing whether the truck travels from i to j\n    model.x = pyo.Var(model.arcs, within=pyo.Binary)\n\n    # assumption: MTZ continuous order variables u in [1, n] (subtour_elimination_formulation decision)\n    model.cities_set = pyo.Set(initialize=cities)\n    model.u = pyo.Var(\n        model.cities_set,\n        within=pyo.NonNegativeReals,\n        bounds=(d[\"u_lb\"], d[\"u_ub\"]),\n    )\n\n    # objective: minimize total delivery cost (objective_sense decision)\n    # \"find the route that minimizes the total delivery cost\"\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[(i, j)] for (i, j) in m.arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # out-degree == 1 for every city (degree_constraint_direction decision)\n    # \"needs to visit each city exactly once and then return to the starting point\"\n    def out_degree_rule(m, i):\n        return sum(m.x[(i, j)] for j in cities if j != i) == 1\n\n    model.out_degree = pyo.Constraint(model.cities_set, rule=out_degree_rule)\n\n    # in-degree == 1 for every city (degree_constraint_direction decision)\n    # \"needs to visit each city exactly once and then return to the starting point\"\n    def in_degree_rule(m, j):\n        return sum(m.x[(i, j)] for i in cities if i != j) == 1\n\n    model.in_degree = pyo.Constraint(model.cities_set, rule=in_degree_rule)\n\n    # MTZ subtour elimination constraints (subtour_elimination_formulation decision)\n    # \"needs to visit each city exactly once and then return to the starting point\"\n    def mtz_rule(m, i, j):\n        if i == j or i == start or j == start:\n            return pyo.Constraint.Skip\n        return m.u[i] - m.u[j] + d[\"big_m\"] * m.x[(i, j)] <= d[\"big_m\"] - 1\n\n    model.mtz = pyo.Constraint(model.arcs, rule=mtz_rule)\n\n    # symmetry breaking: fix start city (symmetry_breaking decision)\n    # \"The delivery truck can start its route from any of these cities\"\n    def start_rule(m):\n        return m.u[start] == d[\"u_lb\"]\n\n    model.start_fix = pyo.Constraint(rule=start_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1078,
+      "completion_tokens": 1024
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.432232141494751,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 3,
+    "assignment": [
+     {
+      "decision": "subtour_elimination_formulation",
+      "option": "MTZ with continuous u in [1,n] and big-M n",
+      "evidence": "needs to visit each city exactly once and then return to the starting point",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary x[i,j] for all i != j",
+      "evidence": "The delivery truck can start its route from any of these cities, but needs to visit each city exactly once and then return to the starting point.",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize total cost",
+      "evidence": "find the route that minimizes the total delivery cost",
+      "plausibility": 0.99
+     },
+     {
+      "decision": "cost_matrix_orientation",
+      "option": "cost[(i,j)] = cost from i to j (row = origin)",
+      "evidence": "The cost to deliver from City E to F is 31 units ... From City F, it costs 31 units to reach E",
+      "plausibility": 0.97
+     },
+     {
+      "decision": "degree_constraint_direction",
+      "option": "out-degree == 1 and in-degree == 1 for every city",
+      "evidence": "visit each city exactly once and then return to the starting point",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "symmetry_breaking",
+      "option": "add x[E,F] + x[F,E] <= 1 style symmetry cut",
+      "evidence": "The delivery truck can start its route from any of these cities",
+      "plausibility": 0.05
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\n# All numeric constants from the problem statement.\nDATA = {\n    \"cities\": [\"E\", \"F\", \"G\", \"H\", \"I\"],\n    # cost[(i, j)] = cost from i to j (row = origin)\n    \"cost\": {\n        (\"E\", \"F\"): 31, (\"E\", \"G\"): 19, (\"E\", \"H\"): 71, (\"E\", \"I\"): 74,\n        (\"F\", \"E\"): 31, (\"F\", \"G\"): 39, (\"F\", \"H\"): 77, (\"F\", \"I\"): 84,\n        (\"G\", \"E\"): 19, (\"G\", \"F\"): 39, (\"G\", \"H\"): 65, (\"G\", \"I\"): 78,\n        (\"H\", \"E\"): 71, (\"H\", \"F\"): 77, (\"H\", \"G\"): 65, (\"H\", \"I\"): 38,\n        (\"I\", \"E\"): 74, (\"I\", \"F\"): 84, (\"I\", \"G\"): 78, (\"I\", \"H\"): 38,\n    },\n    \"n\": 5,          # number of cities\n    \"big_m\": 5,      # big-M for MTZ = n\n    \"u_lb\": 1,       # MTZ continuous variable lower bound\n    \"u_ub\": 5,       # MTZ continuous variable upper bound = n\n    \"sym_i\": \"E\",    # symmetry-breaking arc origin\n    \"sym_j\": \"F\",    # symmetry-breaking arc destination\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    n = d[\"n\"]\n    cost = d[\"cost\"]\n\n    model = pyo.ConcreteModel()\n\n    # Set of cities\n    model.C = pyo.Set(initialize=cities)\n\n    # Set of directed arcs (i, j) with i != j\n    model.A = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n\n    # Binary arc variable x[i,j]: 1 if truck travels from i to j\n    # \"The delivery truck can start its route from any of these cities, but needs to\n    #  visit each city exactly once and then return to the starting point.\"\n    # assumption: arc_variable_domain = Binary x[i,j] for all i != j\n    model.x = pyo.Var(model.A, within=pyo.Binary)\n\n    # MTZ continuous ordering variable u[i] in [1, n]\n    # assumption: subtour_elimination_formulation = MTZ with continuous u in [1,n] and big-M n\n    model.u = pyo.Var(\n        model.C,\n        within=pyo.NonNegativeReals,\n        bounds=(d[\"u_lb\"], d[\"u_ub\"]),\n    )\n\n    # Objective: minimize total delivery cost\n    # \"find the route that minimizes the total delivery cost\"\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[i, j] for (i, j) in m.A)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Out-degree constraint: exactly one outgoing arc per city\n    # \"needs to visit each city exactly once and then return to the starting point\"\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n\n    model.out_degree = pyo.Constraint(model.C, rule=out_rule)\n\n    # In-degree constraint: exactly one incoming arc per city\n    # \"needs to visit each city exactly once and then return to the starting point\"\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n\n    model.in_degree = pyo.Constraint(model.C, rule=in_rule)\n\n    # MTZ subtour elimination constraints for arcs between non-root cities\n    # assumption: subtour_elimination_formulation = MTZ with continuous u in [1,n] and big-M n\n    root = cities[0]\n    non_root = [c for c in cities if c != root]\n\n    def mtz_rule(m, i, j):\n        return m.u[i] - m.u[j] + n * m.x[i, j] <= n - 1\n\n    model.mtz = pyo.Constraint(\n        [(i, j) for i in non_root for j in non_root if i != j],\n        rule=mtz_rule,\n    )\n\n    # Symmetry-breaking cut: x[E,F] + x[F,E] <= 1\n    # assumption: symmetry_breaking = add x[E,F] + x[F,E] <= 1 style symmetry cut\n    def sym_rule(m):\n        return m.x[d[\"sym_i\"], d[\"sym_j\"]] + m.x[d[\"sym_j\"], d[\"sym_i\"]] <= 1\n\n    model.symmetry_cut = pyo.Constraint(rule=sym_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1081,
+      "completion_tokens": 1175
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.7339372634887695,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "branch",
+ "generated_at": "2026-11-02T07:16:49"
+}

@@ -1,0 +1,245 @@
+{
+ "pid": "optmath_0039",
+ "question": "There are five clients, labeled Client 0 to Client 4, each requiring two operations to be performed in sequence. Each operation takes exactly 1 unit of time to complete. The operations for each client must follow a strict sequence: the second operation cannot start until the first operation is completed, with a minimum gap of 1 unit of time between them. Operations from different clients may need to be performed on the same machine, and no two operations can overlap on the same machine. To enforce this, binary decision variables determine the order of operations on shared machines. The goal is to minimize the total production time, known as the makespan, which is the time when the last operation across all clients is completed. The makespan must be at least as long as the completion time of every operation. Start times for all operations are continuous variables, and the binary variables ensure that operations on the same machine do not overlap. A large number (100,000) is used in the constraints to enforce the scheduling logic, ensuring that one operation finishes before another starts on the same machine. The problem involves determining the optimal start times for all operations and the sequence of operations on shared machines to minimize the total production time while satisfying all constraints.",
+ "templates": [
+  "Scheduling"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 0,
+    "assignment": [
+     {
+      "decision": "precedence_gap_interpretation",
+      "option": "s[i,1] >= s[i,0] + p + gap (gap added on top of processing time)",
+      "evidence": "\"the second operation cannot start until the first operation is completed, with a minimum gap of 1 unit of time between them\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "machine_sharing_scope",
+      "option": "Only operations of different clients share a machine; skip non-overlap for same-client pairs",
+      "evidence": "\"Operations from different clients may need to be performed on the same machine, and no two operations can overlap on the same machine\"",
+      "plausibility": 0.2
+     },
+     {
+      "decision": "makespan_lower_bound_form",
+      "option": "Cmax >= s[i,o] + p for every operation (completion time)",
+      "evidence": "\"The makespan must be at least as long as the completion time of every operation\"",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "start_time_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"Start times for all operations are continuous variables\"",
+      "plausibility": 0.97
+     },
+     {
+      "decision": "ordering_variable_pairing",
+      "option": "One binary y per unordered pair of distinct operations (single y, two big-M constraints)",
+      "evidence": "\"binary decision variables determine the order of operations on shared machines\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_quantity",
+      "option": "minimize Cmax (makespan variable)",
+      "evidence": "\"minimize the total production time, known as the makespan, which is the time when the last operation across all clients is completed\"",
+      "plausibility": 0.98
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_clients\": 5,\n    \"num_operations\": 2,\n    \"processing_time\": 1,\n    \"gap\": 1,\n    \"big_m\": 100000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"num_clients\"]\n    ops = d[\"num_operations\"]\n    p = d[\"processing_time\"]\n    gap = d[\"gap\"]\n    M = d[\"big_m\"]\n\n    model = pyo.ConcreteModel()\n\n    # Clients and operations\n    model.C = pyo.RangeSet(0, n - 1)\n    model.O = pyo.RangeSet(0, ops - 1)\n\n    # Start times: \"Start times for all operations are continuous variables\"\n    # assumption: start_time_domain -> NonNegativeReals\n    model.s = pyo.Var(model.C, model.O, within=pyo.NonNegativeReals)\n\n    # Makespan variable\n    # \"minimize the total production time, known as the makespan\"\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Precedence within each client:\n    # \"the second operation cannot start until the first operation is completed,\n    #  with a minimum gap of 1 unit of time between them\"\n    # assumption: precedence_gap_interpretation -> s[i,1] >= s[i,0] + p + gap\n    def precedence_rule(m, i):\n        return m.s[i, 1] >= m.s[i, 0] + p + gap\n\n    model.precedence = pyo.Constraint(model.C, rule=precedence_rule)\n\n    # Makespan lower bound:\n    # \"The makespan must be at least as long as the completion time of every operation\"\n    # assumption: makespan_lower_bound_form -> Cmax >= s[i,o] + p\n    def makespan_rule(m, i, o):\n        return m.Cmax >= m.s[i, o] + p\n\n    model.makespan_lb = pyo.Constraint(model.C, model.O, rule=makespan_rule)\n\n    # Ordering binaries for pairs of distinct operations from different clients.\n    # \"binary decision variables determine the order of operations on shared machines\"\n    # assumption: ordering_variable_pairing -> one binary y per unordered pair\n    # assumption: machine_sharing_scope -> only different-client pairs\n    pairs = []\n    for i in range(n):\n        for j in range(i + 1, n):\n            for oi in range(ops):\n                for oj in range(ops):\n                    pairs.append((i, oi, j, oj))\n\n    model.P = pyo.Set(initialize=pairs, dimen=4)\n\n    model.y = pyo.Var(model.P, within=pyo.Binary)\n\n    # Non-overlap constraints:\n    # \"no two operations can overlap on the same machine\"\n    # y=1 -> op (i,oi) before (j,oj); y=0 -> (j,oj) before (i,oi)\n    def nonoverlap_1_rule(m, i, oi, j, oj):\n        return m.s[j, oj] >= m.s[i, oi] + p - M * (1 - m.y[i, oi, j, oj])\n\n    def nonoverlap_2_rule(m, i, oi, j, oj):\n        return m.s[i, oi] >= m.s[j, oj] + p - M * m.y[i, oi, j, oj]\n\n    model.nonoverlap_1 = pyo.Constraint(model.P, rule=nonoverlap_1_rule)\n    model.nonoverlap_2 = pyo.Constraint(model.P, rule=nonoverlap_2_rule)\n\n    # Objective: minimize makespan\n    # \"minimize the total production time, known as the makespan\"\n    # assumption: objective_quantity -> minimize Cmax\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1067,
+      "completion_tokens": 908
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.691304445266724,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 1,
+    "assignment": [
+     {
+      "decision": "precedence_gap_interpretation",
+      "option": "s[i,1] >= s[i,0] + gap (gap measured from start of first operation)",
+      "evidence": "\"the second operation cannot start until the first operation is completed, with a minimum gap of 1 unit of time between them\"",
+      "plausibility": 0.15
+     },
+     {
+      "decision": "machine_sharing_scope",
+      "option": "All operations share one machine; enforce non-overlap for every pair of distinct operations",
+      "evidence": "\"Operations from different clients may need to be performed on the same machine, and no two operations can overlap on the same machine\"",
+      "plausibility": 0.8
+     },
+     {
+      "decision": "makespan_lower_bound_form",
+      "option": "Cmax >= s[i,o] + p for every operation (completion time)",
+      "evidence": "\"The makespan must be at least as long as the completion time of every operation\"",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "start_time_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"Start times for all operations are continuous variables\"",
+      "plausibility": 0.97
+     },
+     {
+      "decision": "ordering_variable_pairing",
+      "option": "One binary y per unordered pair of distinct operations (single y, two big-M constraints)",
+      "evidence": "\"binary decision variables determine the order of operations on shared machines\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_quantity",
+      "option": "minimize Cmax (makespan variable)",
+      "evidence": "\"minimize the total production time, known as the makespan, which is the time when the last operation across all clients is completed\"",
+      "plausibility": 0.98
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_clients\": 5,\n    \"num_operations\": 2,\n    \"processing_time\": 1,\n    \"gap\": 1,\n    \"big_m\": 100000,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"num_clients\"]\n    ops = d[\"num_operations\"]\n    p = d[\"processing_time\"]\n    gap = d[\"gap\"]\n    M = d[\"big_m\"]\n\n    model = pyo.ConcreteModel()\n\n    # Clients and operations\n    model.C = pyo.RangeSet(0, n - 1)\n    model.O = pyo.RangeSet(0, ops - 1)\n\n    # All (client, operation) tasks\n    model.T = pyo.Set(initialize=[(i, o) for i in range(n) for o in range(ops)], dimen=2)\n\n    # Unordered pairs of distinct tasks\n    tasks = [(i, o) for i in range(n) for o in range(ops)]\n    pairs = []\n    for a in range(len(tasks)):\n        for b in range(a + 1, len(tasks)):\n            pairs.append((tasks[a], tasks[b]))\n    model.P = pyo.Set(initialize=pairs, dimen=4)\n\n    # Start times: continuous nonnegative\n    # \"Start times for all operations are continuous variables\"\n    model.s = pyo.Var(model.T, within=pyo.NonNegativeReals)\n\n    # Makespan variable\n    # \"minimize the total production time, known as the makespan\"\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Ordering binaries for each unordered pair\n    # \"binary decision variables determine the order of operations on shared machines\"\n    model.y = pyo.Var(model.P, within=pyo.Binary)\n\n    # Precedence within each client: s[i,1] >= s[i,0] + gap\n    # \"the second operation cannot start until the first operation is completed,\n    #  with a minimum gap of 1 unit of time between them\"\n    def prec_rule(m, i):\n        return m.s[i, 1] >= m.s[i, 0] + gap\n\n    model.prec = pyo.Constraint(model.C, rule=prec_rule)\n\n    # Non-overlap for every pair of distinct tasks (single shared machine)\n    # \"no two operations can overlap on the same machine\"\n    # assumption: single y per unordered pair, two big-M constraints\n    def no_overlap_rule(m, i1, o1, i2, o2):\n        # y = 1 -> task1 before task2 ; y = 0 -> task2 before task1\n        return m.s[i2, o2] >= m.s[i1, o1] + p - M * m.y[i1, o1, i2, o2]\n\n    model.no_overlap_1 = pyo.Constraint(model.P, rule=no_overlap_rule)\n\n    def no_overlap_rule2(m, i1, o1, i2, o2):\n        return m.s[i1, o1] >= m.s[i2, o2] + p - M * (1 - m.y[i1, o1, i2, o2])\n\n    model.no_overlap_2 = pyo.Constraint(model.P, rule=no_overlap_rule2)\n\n    # Makespan at least completion time of every operation\n    # \"The makespan must be at least as long as the completion time of every operation\"\n    def makespan_rule(m, i, o):\n        return m.Cmax >= m.s[i, o] + p\n\n    model.makespan = pyo.Constraint(model.T, rule=makespan_rule)\n\n    # Objective: minimize makespan\n    # \"minimize the total production time, known as the makespan\"\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1064,
+      "completion_tokens": 892
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.682705640792847,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 2,
+    "assignment": [
+     {
+      "decision": "precedence_gap_interpretation",
+      "option": "s[i,1] >= s[i,0] + p + gap (gap added on top of processing time)",
+      "evidence": "\"the second operation cannot start until the first operation is completed, with a minimum gap of 1 unit of time between them\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "machine_sharing_scope",
+      "option": "All operations share one machine; enforce non-overlap for every pair of distinct operations",
+      "evidence": "\"Operations from different clients may need to be performed on the same machine, and no two operations can overlap on the same machine\"",
+      "plausibility": 0.8
+     },
+     {
+      "decision": "makespan_lower_bound_form",
+      "option": "Cmax >= s[i,o] + p for every operation (completion time)",
+      "evidence": "\"The makespan must be at least as long as the completion time of every operation\"",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "start_time_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"Start times for all operations are continuous variables\"",
+      "plausibility": 0.97
+     },
+     {
+      "decision": "ordering_variable_pairing",
+      "option": "Two binaries per pair (one per direction) with separate big-M constraints",
+      "evidence": "\"binary decision variables determine the order of operations on shared machines\"",
+      "plausibility": 0.1
+     },
+     {
+      "decision": "objective_quantity",
+      "option": "minimize Cmax (makespan variable)",
+      "evidence": "\"minimize the total production time, known as the makespan, which is the time when the last operation across all clients is completed\"",
+      "plausibility": 0.98
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_clients\": 5,\n    \"num_operations\": 2,\n    \"processing_time\": 1,\n    \"gap\": 1,\n    \"big_m\": 100000,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n_clients = d[\"num_clients\"]\n    n_ops = d[\"num_operations\"]\n    p = d[\"processing_time\"]\n    gap = d[\"gap\"]\n    big_m = d[\"big_m\"]\n\n    model = pyo.ConcreteModel()\n\n    # Clients and operations\n    model.Clients = pyo.RangeSet(0, n_clients - 1)\n    model.Operations = pyo.RangeSet(0, n_ops - 1)\n\n    # All (client, operation) pairs\n    model.Tasks = pyo.Set(\n        initialize=[(i, o) for i in range(n_clients) for o in range(n_ops)],\n        dimen=2,\n    )\n\n    # All unordered pairs of distinct tasks, used for machine non-overlap\n    tasks = [(i, o) for i in range(n_clients) for o in range(n_ops)]\n    pairs = []\n    for a in range(len(tasks)):\n        for b in range(a + 1, len(tasks)):\n            pairs.append((tasks[a], tasks[b]))\n    model.Pairs = pyo.Set(initialize=pairs, dimen=4)\n\n    # Start times for all operations are continuous variables\n    # \"Start times for all operations are continuous variables\"\n    model.s = pyo.Var(\n        model.Tasks,\n        within=pyo.NonNegativeReals,\n    )\n\n    # Makespan variable\n    # \"minimize the total production time, known as the makespan\"\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Binary ordering variables: one per direction for each pair\n    # \"binary decision variables determine the order of operations on shared machines\"\n    # assumption: two binaries per pair (one per direction) with separate big-M constraints\n    model.y = pyo.Var(model.Pairs, within=pyo.Binary)\n    model.z = pyo.Var(model.Pairs, within=pyo.Binary)\n\n    # Precedence within each client: s[i,1] >= s[i,0] + p + gap\n    # \"the second operation cannot start until the first operation is completed,\n    #  with a minimum gap of 1 unit of time between them\"\n    def precedence_rule(m, i):\n        return m.s[i, 1] >= m.s[i, 0] + p + gap\n\n    model.precedence = pyo.Constraint(model.Clients, rule=precedence_rule)\n\n    # Machine non-overlap for every pair of distinct tasks\n    # \"no two operations can overlap on the same machine\"\n    # assumption: all operations share one machine; enforce non-overlap for every pair\n    def nonoverlap_a_rule(m, i, o, j, q):\n        # if y = 1 then task (i,o) precedes task (j,q)\n        return m.s[j, q] >= m.s[i, o] + p - big_m * (1 - m.y[(i, o, j, q)])\n\n    def nonoverlap_b_rule(m, i, o, j, q):\n        # if z = 1 then task (j,q) precedes task (i,o)\n        return m.s[i, o] >= m.s[j, q] + p - big_m * (1 - m.z[(i, o, j, q)])\n\n    model.nonoverlap_a = pyo.Constraint(model.Pairs, rule=nonoverlap_a_rule)\n    model.nonoverlap_b = pyo.Constraint(model.Pairs, rule=nonoverlap_b_rule)\n\n    # At least one ordering must hold for each pair\n    # assumption: exactly one direction is selected (y + z >= 1 suffices for non-overlap)\n    def order_rule(m, i, o, j, q):\n        return m.y[(i, o, j, q)] + m.z[(i, o, j, q)] >= 1\n\n    model.order = pyo.Constraint(model.Pairs, rule=order_rule)\n\n    # Makespan lower bound: Cmax >= s[i,o] + p for every operation\n    # \"The makespan must be at least as long as the completion time of every operation\"\n    def makespan_rule(m, i, o):\n        return m.Cmax >= m.s[i, o] + p\n\n    model.makespan = pyo.Constraint(model.Tasks, rule=makespan_rule)\n\n    # Objective: minimize Cmax\n    # \"minimize the total production time, known as the makespan\"\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1062,
+      "completion_tokens": 1091
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.488547086715698,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 3,
+    "assignment": [
+     {
+      "decision": "precedence_gap_interpretation",
+      "option": "s[i,1] >= s[i,0] + p + gap (gap added on top of processing time)",
+      "evidence": "\"the second operation cannot start until the first operation is completed, with a minimum gap of 1 unit of time between them\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "machine_sharing_scope",
+      "option": "All operations share one machine; enforce non-overlap for every pair of distinct operations",
+      "evidence": "\"Operations from different clients may need to be performed on the same machine, and no two operations can overlap on the same machine\"",
+      "plausibility": 0.8
+     },
+     {
+      "decision": "makespan_lower_bound_form",
+      "option": "Cmax >= s[i,o] for every operation (start time only)",
+      "evidence": "\"The makespan must be at least as long as the completion time of every operation\"",
+      "plausibility": 0.05
+     },
+     {
+      "decision": "start_time_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"Start times for all operations are continuous variables\"",
+      "plausibility": 0.97
+     },
+     {
+      "decision": "ordering_variable_pairing",
+      "option": "One binary y per unordered pair of distinct operations (single y, two big-M constraints)",
+      "evidence": "\"binary decision variables determine the order of operations on shared machines\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_quantity",
+      "option": "minimize Cmax (makespan variable)",
+      "evidence": "\"minimize the total production time, known as the makespan, which is the time when the last operation across all clients is completed\"",
+      "plausibility": 0.98
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_clients\": 5,\n    \"num_operations\": 2,\n    \"processing_time\": 1,\n    \"gap\": 1,\n    \"big_m\": 100000,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"num_clients\"]\n    o = d[\"num_operations\"]\n    p = d[\"processing_time\"]\n    gap = d[\"gap\"]\n    M = d[\"big_m\"]\n\n    model = pyo.ConcreteModel()\n\n    # Clients and operations\n    model.CLIENTS = pyo.RangeSet(0, n - 1)\n    model.OPS = pyo.RangeSet(0, o - 1)\n\n    # All operations as (client, operation) pairs\n    model.ALL_OPS = pyo.Set(\n        initialize=[(i, k) for i in range(n) for k in range(o)], dimen=2\n    )\n\n    # Unordered pairs of distinct operations\n    all_ops_list = [(i, k) for i in range(n) for k in range(o)]\n    pairs = []\n    for a in range(len(all_ops_list)):\n        for b in range(a + 1, len(all_ops_list)):\n            pairs.append((all_ops_list[a], all_ops_list[b]))\n    model.PAIRS = pyo.Set(initialize=pairs, dimen=4)\n\n    # Start times: continuous, nonnegative\n    # \"Start times for all operations are continuous variables\"\n    model.s = pyo.Var(model.ALL_OPS, within=pyo.NonNegativeReals)\n\n    # Makespan variable\n    # \"minimize the total production time, known as the makespan\"\n    model.Cmax = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Ordering binaries for each unordered pair\n    # \"binary decision variables determine the order of operations on shared machines\"\n    model.y = pyo.Var(model.PAIRS, within=pyo.Binary)\n\n    # Precedence within each client: s[i,1] >= s[i,0] + p + gap\n    # \"the second operation cannot start until the first operation is completed,\n    #  with a minimum gap of 1 unit of time between them\"\n    def precedence_rule(m, i):\n        return m.s[i, 1] >= m.s[i, 0] + p + gap\n\n    model.precedence = pyo.Constraint(model.CLIENTS, rule=precedence_rule)\n\n    # Non-overlap for every pair of distinct operations (all share one machine)\n    # \"no two operations can overlap on the same machine\"\n    # y = 1 => op a before op b ; y = 0 => op b before op a\n    def nonoverlap_ab_rule(m, i, k, j, l):\n        return m.s[i, k] + p <= m.s[j, l] + M * (1 - m.y[i, k, j, l])\n\n    def nonoverlap_ba_rule(m, i, k, j, l):\n        return m.s[j, l] + p <= m.s[i, k] + M * m.y[i, k, j, l]\n\n    model.nonoverlap_ab = pyo.Constraint(model.PAIRS, rule=nonoverlap_ab_rule)\n    model.nonoverlap_ba = pyo.Constraint(model.PAIRS, rule=nonoverlap_ba_rule)\n\n    # Makespan lower bound: Cmax >= s[i,o] for every operation\n    # \"The makespan must be at least as long as the completion time of every operation\"\n    # assumption: start-time-only form per modelling decision\n    def makespan_rule(m, i, k):\n        return m.Cmax >= m.s[i, k]\n\n    model.makespan = pyo.Constraint(model.ALL_OPS, rule=makespan_rule)\n\n    # Objective: minimize Cmax\n    # \"minimize the total production time, known as the makespan\"\n    model.obj = pyo.Objective(expr=model.Cmax, sense=pyo.minimize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1064,
+      "completion_tokens": 923
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.947535991668701,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "branch",
+ "generated_at": "2026-11-02T08:12:25"
+}

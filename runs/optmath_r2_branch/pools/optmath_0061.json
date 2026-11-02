@@ -1,0 +1,245 @@
+{
+ "pid": "optmath_0061",
+ "question": "Select two facilities from five potential locations (Node 0, Node 1, Node 2, Node 3, and Node 4) to maximize the minimum distance between any two selected facilities. Each location can either be selected (1) or not selected (0). For every pair of locations, determine whether both are selected as facilities, represented by a binary decision variable. The distances between the locations are scaled by a factor of 1,000,000 and are as follows: Node 0 and Node 1: 19 units, Node 0 and Node 2: 21 units, Node 0 and Node 3: 31 units, Node 0 and Node 4: 35 units, Node 1 and Node 0: 29 units, Node 1 and Node 2: 13 units, Node 1 and Node 3: 46 units, Node 1 and Node 4: 37 units, Node 2 and Node 0: 50 units, Node 2 and Node 1: 22 units, Node 2 and Node 3: 49 units, Node 2 and Node 4: 33 units, Node 3 and Node 0: 18 units, Node 3 and Node 1: 20 units, Node 3 and Node 2: 46 units, Node 3 and Node 4: 33 units, Node 4 and Node 0: 18 units, Node 4 and Node 1: 26 units, Node 4 and Node 2: 39 units, Node 4 and Node 3: 43 units. The total number of selected facilities must equal two. For every pair of locations, the selection of both facilities in the pair is only possible if both individual facilities are selected, enforced through constraints linking the pairwise selection variables to the individual facility selection variables. All decision variables are binary, ensuring facilities are either fully selected or not selected at all. The objective is to maximize the minimum distance between any two selected facilities, ensuring geographical dispersion while adhering to the constraints on pairwise selection and total facility count.",
+ "templates": [
+  "Facility Location"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 0,
+    "assignment": [
+     {
+      "decision": "distance_orientation_for_ordered_pairs",
+      "option": "Use the ordered-pair distance d[i,j] exactly as tabulated for pair (i,j)",
+      "evidence": "\"Node 0 and Node 1: 19 units ... Node 1 and Node 0: 29 units\" (asymmetric values given for ordered pairs)",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "big_M_value_in_min_distance_link",
+      "option": "Use big_M = d_max = 50000000 (max scaled distance) as in Group B",
+      "evidence": "none (the text does not specify a big-M constant)",
+      "plausibility": 0.45
+     },
+     {
+      "decision": "min_distance_variable_domain_and_bounds",
+      "option": "NonNegativeReals with no upper bound",
+      "evidence": "\"maximize the minimum distance between any two selected facilities\"",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "pairwise_variable_linking_direction",
+      "option": "Upper links plus forcing lower link: pair[i,j] >= select[i] + select[j] - 1",
+      "evidence": "\"the selection of both facilities in the pair is only possible if both individual facilities are selected, enforced through constraints linking the pairwise selection variables to the individual facility selection variables\"",
+      "plausibility": 0.7000000000000001
+     },
+     {
+      "decision": "objective_scale_units",
+      "option": "Optimize the scaled distance (value * 1e6)",
+      "evidence": "\"The distances between the locations are scaled by a factor of 1,000,000\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "pair_variable_indexing_scope",
+      "option": "Include all ordered pairs (i,j) with i != j, including both (i,j) and (j,i)",
+      "evidence": "\"For every pair of locations, determine whether both are selected as facilities\"",
+      "plausibility": 0.6
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"nodes\": [0, 1, 2, 3, 4],\n    \"num_selected\": 2,\n    \"scale\": 1000000,\n    # ordered-pair distances (units), scaled by 1e6\n    \"dist\": {\n        (0, 1): 19, (0, 2): 21, (0, 3): 31, (0, 4): 35,\n        (1, 0): 29, (1, 2): 13, (1, 3): 46, (1, 4): 37,\n        (2, 0): 50, (2, 1): 22, (2, 3): 49, (2, 4): 33,\n        (3, 0): 18, (3, 1): 20, (3, 2): 46, (3, 4): 33,\n        (4, 0): 18, (4, 1): 26, (4, 2): 39, (4, 3): 43,\n    },\n    \"big_M\": 50000000,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    nodes = d[\"nodes\"]\n    scale = d[\"scale\"]\n    big_M = d[\"big_M\"]\n\n    # scaled distance lookup\n    dist = {(i, j): d[\"dist\"][(i, j)] * scale for (i, j) in d[\"dist\"]}\n\n    model = pyo.ConcreteModel()\n\n    # ordered pairs (i,j), i != j\n    model.Pairs = pyo.Set(\n        initialize=[(i, j) for i in nodes for j in nodes if i != j],\n        dimen=2,\n    )\n\n    # \"Each location can either be selected (1) or not selected (0).\"\n    model.select = pyo.Var(nodes, within=pyo.Binary)\n\n    # \"For every pair of locations, determine whether both are selected as facilities,\n    #  represented by a binary decision variable.\"\n    model.pair = pyo.Var(model.Pairs, within=pyo.Binary)\n\n    # \"maximize the minimum distance between any two selected facilities\"\n    # assumption: NonNegativeReals with no upper bound\n    model.min_dist = pyo.Var(within=pyo.NonNegativeReals)\n\n    # \"The total number of selected facilities must equal two.\"\n    def total_rule(m):\n        return sum(m.select[i] for i in nodes) == d[\"num_selected\"]\n    model.total_selected = pyo.Constraint(rule=total_rule)\n\n    # \"the selection of both facilities in the pair is only possible if both individual\n    #  facilities are selected, enforced through constraints linking the pairwise\n    #  selection variables to the individual facility selection variables.\"\n    # Upper links: pair[i,j] <= select[i], pair[i,j] <= select[j]\n    def pair_upper_i_rule(m, i, j):\n        return m.pair[i, j] <= m.select[i]\n    model.pair_upper_i = pyo.Constraint(model.Pairs, rule=pair_upper_i_rule)\n\n    def pair_upper_j_rule(m, i, j):\n        return m.pair[i, j] <= m.select[j]\n    model.pair_upper_j = pyo.Constraint(model.Pairs, rule=pair_upper_j_rule)\n\n    # assumption: forcing lower link pair[i,j] >= select[i] + select[j] - 1\n    def pair_lower_rule(m, i, j):\n        return m.pair[i, j] >= m.select[i] + m.select[j] - 1\n    model.pair_lower = pyo.Constraint(model.Pairs, rule=pair_lower_rule)\n\n    # min_dist <= d[i,j] + big_M * (1 - pair[i,j])\n    # assumption: big_M = d_max = 50000000\n    def min_dist_link_rule(m, i, j):\n        return m.min_dist <= dist[(i, j)] + big_M * (1 - m.pair[i, j])\n    model.min_dist_link = pyo.Constraint(model.Pairs, rule=min_dist_link_rule)\n\n    # \"The objective is to maximize the minimum distance between any two selected facilities\"\n    model.obj = pyo.Objective(expr=model.min_dist, sense=pyo.maximize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1287,
+      "completion_tokens": 992
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.783993244171143,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 1,
+    "assignment": [
+     {
+      "decision": "distance_orientation_for_ordered_pairs",
+      "option": "Use the ordered-pair distance d[i,j] exactly as tabulated for pair (i,j)",
+      "evidence": "\"Node 0 and Node 1: 19 units ... Node 1 and Node 0: 29 units\" (asymmetric values given for ordered pairs)",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "big_M_value_in_min_distance_link",
+      "option": "Use big_M = 100000000 (1e8) as in Group A",
+      "evidence": "none (the text does not specify a big-M constant)",
+      "plausibility": 0.45
+     },
+     {
+      "decision": "min_distance_variable_domain_and_bounds",
+      "option": "NonNegativeReals bounded above by d_max (max scaled distance)",
+      "evidence": "\"maximize the minimum distance between any two selected facilities\"",
+      "plausibility": 0.4
+     },
+     {
+      "decision": "pairwise_variable_linking_direction",
+      "option": "Upper links plus forcing lower link: pair[i,j] >= select[i] + select[j] - 1",
+      "evidence": "\"the selection of both facilities in the pair is only possible if both individual facilities are selected, enforced through constraints linking the pairwise selection variables to the individual facility selection variables\"",
+      "plausibility": 0.7000000000000001
+     },
+     {
+      "decision": "objective_scale_units",
+      "option": "Optimize the scaled distance (value * 1e6)",
+      "evidence": "\"The distances between the locations are scaled by a factor of 1,000,000\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "pair_variable_indexing_scope",
+      "option": "Include all ordered pairs (i,j) with i != j, including both (i,j) and (j,i)",
+      "evidence": "\"For every pair of locations, determine whether both are selected as facilities\"",
+      "plausibility": 0.6
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\n# All numeric constants from the problem statement and the fixed modelling decisions.\nDATA = {\n    \"nodes\": [0, 1, 2, 3, 4],\n    # Ordered-pair distances as tabulated (units), scaled by 1e6 in the model.\n    \"distance\": {\n        (0, 1): 19, (0, 2): 21, (0, 3): 31, (0, 4): 35,\n        (1, 0): 29, (1, 2): 13, (1, 3): 46, (1, 4): 37,\n        (2, 0): 50, (2, 1): 22, (2, 3): 49, (2, 4): 33,\n        (3, 0): 18, (3, 1): 20, (3, 2): 46, (3, 4): 33,\n        (4, 0): 18, (4, 1): 26, (4, 2): 39, (4, 3): 43,\n    },\n    \"scale\": 1000000,          # \"scaled by a factor of 1,000,000\"\n    \"num_selected\": 2,         # \"Select two facilities\"\n    \"big_M\": 100000000,        # assumption: big_M = 1e8 (Group A)\n    \"d_max\": 50 * 1000000,     # max scaled distance (50 units * 1e6) for upper bound\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    nodes = d[\"nodes\"]\n    scale = d[\"scale\"]\n    big_M = d[\"big_M\"]\n    num_selected = d[\"num_selected\"]\n    d_max = d[\"d_max\"]\n\n    # Scaled ordered-pair distances.\n    dist = {(i, j): d[\"distance\"][(i, j)] * scale for (i, j) in d[\"distance\"]}\n\n    # Ordered pairs (i, j) with i != j, including both orientations.\n    # assumption: pair_variable_indexing_scope includes all ordered pairs i != j\n    pairs = [(i, j) for i in nodes for j in nodes if i != j]\n\n    model = pyo.ConcreteModel()\n\n    model.N = pyo.Set(initialize=nodes)\n    model.P = pyo.Set(initialize=pairs, dimen=2)\n\n    # \"Each location can either be selected (1) or not selected (0).\"\n    model.select = pyo.Var(model.N, within=pyo.Binary)\n\n    # \"For every pair of locations, determine whether both are selected as facilities,\n    #  represented by a binary decision variable.\"\n    model.pair = pyo.Var(model.P, within=pyo.Binary)\n\n    # \"maximize the minimum distance between any two selected facilities\"\n    # assumption: min_distance_variable_domain_and_bounds -> NonNegativeReals bounded by d_max\n    model.min_dist = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, d_max))\n\n    # \"The total number of selected facilities must equal two.\"\n    def total_selected_rule(m):\n        return sum(m.select[i] for i in m.N) == num_selected\n    model.total_selected = pyo.Constraint(rule=total_selected_rule)\n\n    # \"the selection of both facilities in the pair is only possible if both individual\n    #  facilities are selected, enforced through constraints linking the pairwise\n    #  selection variables to the individual facility selection variables.\"\n    # Upper links: pair[i,j] <= select[i] and pair[i,j] <= select[j].\n    def pair_upper_i_rule(m, i, j):\n        return m.pair[i, j] <= m.select[i]\n    model.pair_upper_i = pyo.Constraint(model.P, rule=pair_upper_i_rule)\n\n    def pair_upper_j_rule(m, i, j):\n        return m.pair[i, j] <= m.select[j]\n    model.pair_upper_j = pyo.Constraint(model.P, rule=pair_upper_j_rule)\n\n    # assumption: pairwise_variable_linking_direction -> forcing lower link\n    # pair[i,j] >= select[i] + select[j] - 1\n    def pair_lower_rule(m, i, j):\n        return m.pair[i, j] >= m.select[i] + m.select[j] - 1\n    model.pair_lower = pyo.Constraint(model.P, rule=pair_lower_rule)\n\n    # Big-M link: min_dist <= dist[i,j] + big_M * (1 - pair[i,j])\n    # \"maximize the minimum distance between any two selected facilities\"\n    # assumption: big_M_value_in_min_distance_link = 1e8\n    def min_dist_link_rule(m, i, j):\n        return m.min_dist <= dist[(i, j)] + big_M * (1 - m.pair[i, j])\n    model.min_dist_link = pyo.Constraint(model.P, rule=min_dist_link_rule)\n\n    # \"The objective is to maximize the minimum distance between any two selected facilities\"\n    # assumption: objective_scale_units -> optimize the scaled distance\n    model.obj = pyo.Objective(expr=model.min_dist, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1290,
+      "completion_tokens": 1203
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.497809410095215,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 2,
+    "assignment": [
+     {
+      "decision": "distance_orientation_for_ordered_pairs",
+      "option": "Use the ordered-pair distance d[i,j] exactly as tabulated for pair (i,j)",
+      "evidence": "\"Node 0 and Node 1: 19 units ... Node 1 and Node 0: 29 units\" (asymmetric values given for ordered pairs)",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "big_M_value_in_min_distance_link",
+      "option": "Use big_M = d_max = 50000000 (max scaled distance) as in Group B",
+      "evidence": "none (the text does not specify a big-M constant)",
+      "plausibility": 0.45
+     },
+     {
+      "decision": "min_distance_variable_domain_and_bounds",
+      "option": "NonNegativeReals bounded above by d_max (max scaled distance)",
+      "evidence": "\"maximize the minimum distance between any two selected facilities\"",
+      "plausibility": 0.4
+     },
+     {
+      "decision": "pairwise_variable_linking_direction",
+      "option": "Upper links plus forcing lower link: pair[i,j] >= select[i] + select[j] - 1",
+      "evidence": "\"the selection of both facilities in the pair is only possible if both individual facilities are selected, enforced through constraints linking the pairwise selection variables to the individual facility selection variables\"",
+      "plausibility": 0.7000000000000001
+     },
+     {
+      "decision": "objective_scale_units",
+      "option": "Optimize the scaled distance (value * 1e6)",
+      "evidence": "\"The distances between the locations are scaled by a factor of 1,000,000\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "pair_variable_indexing_scope",
+      "option": "Include all ordered pairs (i,j) with i != j, including both (i,j) and (j,i)",
+      "evidence": "\"For every pair of locations, determine whether both are selected as facilities\"",
+      "plausibility": 0.6
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\n# All numeric constants from the problem statement.\nDATA = {\n    \"nodes\": [0, 1, 2, 3, 4],\n    \"num_facilities\": 2,\n    \"scale\": 1000000,\n    # Ordered-pair distances (units), as tabulated.\n    \"dist_units\": {\n        (0, 1): 19, (0, 2): 21, (0, 3): 31, (0, 4): 35,\n        (1, 0): 29, (1, 2): 13, (1, 3): 46, (1, 4): 37,\n        (2, 0): 50, (2, 1): 22, (2, 3): 49, (2, 4): 33,\n        (3, 0): 18, (3, 1): 20, (3, 2): 46, (3, 4): 33,\n        (4, 0): 18, (4, 1): 26, (4, 2): 39, (4, 3): 43,\n    },\n    # assumption: big_M = d_max = 50000000 (max scaled distance)\n    \"big_M\": 50000000,\n    # assumption: d_max used as upper bound on min-distance variable\n    \"d_max\": 50000000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    nodes = d[\"nodes\"]\n    scale = d[\"scale\"]\n    big_M = d[\"big_M\"]\n    d_max = d[\"d_max\"]\n\n    # Scaled ordered-pair distances.\n    dist = {(i, j): d[\"dist_units\"][(i, j)] * scale for (i, j) in d[\"dist_units\"]}\n\n    model = pyo.ConcreteModel()\n\n    # Ordered pairs (i,j) with i != j, including both (i,j) and (j,i).\n    # assumption: pair_variable_indexing_scope includes all ordered pairs i != j\n    model.P = pyo.Set(initialize=[(i, j) for i in nodes for j in nodes if i != j],\n                      dimen=2)\n    model.N = pyo.Set(initialize=nodes)\n\n    # \"Each location can either be selected (1) or not selected (0).\"\n    model.select = pyo.Var(model.N, within=pyo.Binary)\n\n    # \"For every pair of locations, determine whether both are selected as facilities,\n    #  represented by a binary decision variable.\"\n    model.pair = pyo.Var(model.P, within=pyo.Binary)\n\n    # \"maximize the minimum distance between any two selected facilities\"\n    # assumption: min_distance_variable_domain_and_bounds NonNegativeReals bounded by d_max\n    model.min_dist = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, d_max))\n\n    # \"The total number of selected facilities must equal two.\"\n    def rule_total(m):\n        return sum(m.select[i] for i in m.N) == d[\"num_facilities\"]\n    model.total_facilities = pyo.Constraint(rule=rule_total)\n\n    # \"the selection of both facilities in the pair is only possible if both\n    #  individual facilities are selected, enforced through constraints linking\n    #  the pairwise selection variables to the individual facility selection variables.\"\n    # Upper links: pair[i,j] <= select[i] and pair[i,j] <= select[j].\n    def rule_pair_upper_i(m, i, j):\n        return m.pair[i, j] <= m.select[i]\n    model.pair_upper_i = pyo.Constraint(model.P, rule=rule_pair_upper_i)\n\n    def rule_pair_upper_j(m, i, j):\n        return m.pair[i, j] <= m.select[j]\n    model.pair_upper_j = pyo.Constraint(model.P, rule=rule_pair_upper_j)\n\n    # assumption: pairwise_variable_linking_direction forcing lower link\n    # pair[i,j] >= select[i] + select[j] - 1\n    def rule_pair_lower(m, i, j):\n        return m.pair[i, j] >= m.select[i] + m.select[j] - 1\n    model.pair_lower = pyo.Constraint(model.P, rule=rule_pair_lower)\n\n    # Link min_dist to selected pairs: min_dist <= dist[i,j] + big_M*(1 - pair[i,j]).\n    # assumption: big_M_value_in_min_distance_link uses big_M = d_max\n    def rule_min_link(m, i, j):\n        return m.min_dist <= dist[(i, j)] + big_M * (1 - m.pair[i, j])\n    model.min_link = pyo.Constraint(model.P, rule=rule_min_link)\n\n    # \"The objective is to maximize the minimum distance between any two selected facilities\"\n    # assumption: objective_scale_units optimize the scaled distance\n    model.obj = pyo.Objective(expr=model.min_dist, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1293,
+      "completion_tokens": 1136
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.308253526687622,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 3,
+    "assignment": [
+     {
+      "decision": "distance_orientation_for_ordered_pairs",
+      "option": "Use the ordered-pair distance d[i,j] exactly as tabulated for pair (i,j)",
+      "evidence": "\"Node 0 and Node 1: 19 units ... Node 1 and Node 0: 29 units\" (asymmetric values given for ordered pairs)",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "big_M_value_in_min_distance_link",
+      "option": "Use big_M = 100000000 (1e8) as in Group A",
+      "evidence": "none (the text does not specify a big-M constant)",
+      "plausibility": 0.45
+     },
+     {
+      "decision": "min_distance_variable_domain_and_bounds",
+      "option": "NonNegativeReals with no upper bound",
+      "evidence": "\"maximize the minimum distance between any two selected facilities\"",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "pairwise_variable_linking_direction",
+      "option": "Upper links plus forcing lower link: pair[i,j] >= select[i] + select[j] - 1",
+      "evidence": "\"the selection of both facilities in the pair is only possible if both individual facilities are selected, enforced through constraints linking the pairwise selection variables to the individual facility selection variables\"",
+      "plausibility": 0.7000000000000001
+     },
+     {
+      "decision": "objective_scale_units",
+      "option": "Optimize the scaled distance (value * 1e6)",
+      "evidence": "\"The distances between the locations are scaled by a factor of 1,000,000\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "pair_variable_indexing_scope",
+      "option": "Include only unordered pairs i < j",
+      "evidence": "\"For every pair of locations, determine whether both are selected as facilities\"",
+      "plausibility": 0.4
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"nodes\": [0, 1, 2, 3, 4],\n    \"num_selected\": 2,\n    \"scale\": 1000000,\n    \"big_M\": 100000000,\n    # ordered-pair distances exactly as tabulated (in units, before scaling)\n    \"dist\": {\n        (0, 1): 19, (0, 2): 21, (0, 3): 31, (0, 4): 35,\n        (1, 0): 29, (1, 2): 13, (1, 3): 46, (1, 4): 37,\n        (2, 0): 50, (2, 1): 22, (2, 3): 49, (2, 4): 33,\n        (3, 0): 18, (3, 1): 20, (3, 2): 46, (3, 4): 33,\n        (4, 0): 18, (4, 1): 26, (4, 2): 39, (4, 3): 43,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    nodes = d[\"nodes\"]\n    scale = d[\"scale\"]\n    big_m = d[\"big_M\"]\n    dist = d[\"dist\"]\n\n    # unordered pairs i < j\n    pairs = [(i, j) for i in nodes for j in nodes if i < j]\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=nodes)\n    model.P = pyo.Set(initialize=pairs, dimen=2)\n\n    # \"Each location can either be selected (1) or not selected (0).\"\n    model.select = pyo.Var(model.I, within=pyo.Binary)\n\n    # \"For every pair of locations, determine whether both are selected as facilities,\n    #  represented by a binary decision variable.\"\n    model.pair = pyo.Var(model.P, within=pyo.Binary)\n\n    # \"maximize the minimum distance between any two selected facilities\"\n    # assumption: NonNegativeReals with no upper bound\n    model.min_dist = pyo.Var(within=pyo.NonNegativeReals)\n\n    # \"The total number of selected facilities must equal two.\"\n    def total_rule(m):\n        return sum(m.select[i] for i in m.I) == d[\"num_selected\"]\n    model.total_selected = pyo.Constraint(rule=total_rule)\n\n    # \"the selection of both facilities in the pair is only possible if both individual\n    #  facilities are selected, enforced through constraints linking the pairwise\n    #  selection variables to the individual facility selection variables.\"\n    # Upper links: pair[i,j] <= select[i], pair[i,j] <= select[j]\n    def pair_upper_i_rule(m, i, j):\n        return m.pair[i, j] <= m.select[i]\n    model.pair_upper_i = pyo.Constraint(model.P, rule=pair_upper_i_rule)\n\n    def pair_upper_j_rule(m, i, j):\n        return m.pair[i, j] <= m.select[j]\n    model.pair_upper_j = pyo.Constraint(model.P, rule=pair_upper_j_rule)\n\n    # assumption: forcing lower link pair[i,j] >= select[i] + select[j] - 1\n    def pair_lower_rule(m, i, j):\n        return m.pair[i, j] >= m.select[i] + m.select[j] - 1\n    model.pair_lower = pyo.Constraint(model.P, rule=pair_lower_rule)\n\n    # \"maximize the minimum distance between any two selected facilities\"\n    # min_dist <= scaled distance when pair selected, via big-M.\n    # assumption: big_M = 1e8; objective optimizes scaled distance (value * 1e6)\n    def min_dist_rule(m, i, j):\n        return m.min_dist <= scale * dist[(i, j)] + big_m * (1 - m.pair[i, j])\n    model.min_dist_link = pyo.Constraint(model.P, rule=min_dist_rule)\n\n    # \"The objective is to maximize the minimum distance between any two selected facilities\"\n    model.obj = pyo.Objective(expr=model.min_dist, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1267,
+      "completion_tokens": 985
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.743634462356567,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "branch",
+ "generated_at": "2026-11-02T08:13:56"
+}

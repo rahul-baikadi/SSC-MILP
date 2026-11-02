@@ -1,0 +1,246 @@
+{
+ "pid": "mamo_complex_0078",
+ "question": "Consider a delivery driver who must deliver parcels to six different locations named A through F. The driver can begin the delivery route from any location, but they must visit each location exactly once before returning to the starting point. The objective for the driver is to find the route that minimizes the total delivery cost, which could be based on distance, time, or fuel consumption.\n\nHere are the specific delivery costs between the locations:\nIt costs 77 units to deliver from Location A to B, 89 units to C, 19 units to D, 31 units to E, and 62 units to F.\nFrom Location B, the delivery cost to A is 77 units, to C is 36 units, to D is 81 units, to E is 71 units, and to F is 93 units.\nFor Location C, it costs 89 units to deliver to A, 36 units to B, 32 units to D, 48 units to E, and 36 units to F.\nFrom Location D, the delivery costs are 19 units to A, 81 units to B, 32 units to C, 98 units to E, and 82 units to F.\nFor deliveries from Location E, the costs are 31 units to A, 71 units to B, 48 units to C, 98 units to D, and 66 units to F.\nFinally, from Location F, it costs 62 units to deliver to A, 93 units to B, 36 units to C, 82 units to D, and 66 units to E.\n\nGiven this information, what is the minimum total delivery cost for the driver to deliver parcels to each location exactly once and return to the starting location?",
+ "templates": [
+  "Vehicle Routing / TSP",
+  "Facility Location"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 0,
+    "assignment": [
+     {
+      "decision": "subtour_elimination_formulation",
+      "option": "MTZ anchored at node A (u_A = 1) with constraints skipped for arcs touching A",
+      "evidence": "the driver can begin the delivery route from any location, but they must visit each location exactly once before returning to the starting point",
+      "plausibility": 0.45
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary",
+      "evidence": "they must visit each location exactly once before returning to the starting point",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "order_variable_domain",
+      "option": "NonNegativeReals bounded in [1,n]",
+      "evidence": "none",
+      "plausibility": 0.6000000000000001
+     },
+     {
+      "decision": "cost_matrix_orientation",
+      "option": "cost[(i,j)] = cost of arc from i to j (row = origin)",
+      "evidence": "It costs 77 units to deliver from Location A to B ... From Location B, the delivery cost to A is 77 units",
+      "plausibility": 0.97
+     },
+     {
+      "decision": "degree_constraint_direction",
+      "option": "equality: sum_j x_ij = 1 and sum_i x_ij = 1 for every node",
+      "evidence": "they must visit each location exactly once before returning to the starting point",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize total delivery cost",
+      "evidence": "The objective for the driver is to find the route that minimizes the total delivery cost",
+      "plausibility": 0.99
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"nodes\": [\"A\", \"B\", \"C\", \"D\", \"E\", \"F\"],\n    \"n\": 6,\n    \"cost\": {\n        (\"A\", \"B\"): 77, (\"A\", \"C\"): 89, (\"A\", \"D\"): 19, (\"A\", \"E\"): 31, (\"A\", \"F\"): 62,\n        (\"B\", \"A\"): 77, (\"B\", \"C\"): 36, (\"B\", \"D\"): 81, (\"B\", \"E\"): 71, (\"B\", \"F\"): 93,\n        (\"C\", \"A\"): 89, (\"C\", \"B\"): 36, (\"C\", \"D\"): 32, (\"C\", \"E\"): 48, (\"C\", \"F\"): 36,\n        (\"D\", \"A\"): 19, (\"D\", \"B\"): 81, (\"D\", \"C\"): 32, (\"D\", \"E\"): 98, (\"D\", \"F\"): 82,\n        (\"E\", \"A\"): 31, (\"E\", \"B\"): 71, (\"E\", \"C\"): 48, (\"E\", \"D\"): 98, (\"E\", \"F\"): 66,\n        (\"F\", \"A\"): 62, (\"F\", \"B\"): 93, (\"F\", \"C\"): 36, (\"F\", \"D\"): 82, (\"F\", \"E\"): 66,\n    },\n    \"anchor\": \"A\",\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    nodes = d[\"nodes\"]\n    n = d[\"n\"]\n    cost = d[\"cost\"]\n    anchor = d[\"anchor\"]\n\n    model = pyo.ConcreteModel()\n\n    # assumption: arc set excludes self-loops (visit each location exactly once)\n    model.arcs = pyo.Set(\n        initialize=[(i, j) for i in nodes for j in nodes if i != j],\n        dimen=2,\n    )\n\n    # assumption: arc_variable_domain Binary\n    model.x = pyo.Var(model.arcs, within=pyo.Binary)\n\n    # assumption: order_variable_domain NonNegativeReals bounded in [1, n]\n    model.u = pyo.Var(nodes, within=pyo.NonNegativeReals, bounds=(1, n))\n\n    # \"they must visit each location exactly once\" (out-degree)\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in nodes if j != i) == 1\n    model.out_degree = pyo.Constraint(nodes, rule=out_rule)\n\n    # \"they must visit each location exactly once\" (in-degree)\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in nodes if i != j) == 1\n    model.in_degree = pyo.Constraint(nodes, rule=in_rule)\n\n    # assumption: MTZ anchored at node A (u_A = 1), constraints skipped for arcs touching A\n    model.anchor_fix = pyo.Constraint(expr=model.u[anchor] == 1)\n\n    def mtz_rule(m, i, j):\n        return m.u[i] - m.u[j] + n * m.x[i, j] <= n - 1\n    mtz_arcs = [(i, j) for (i, j) in model.arcs if i != anchor and j != anchor]\n    model.mtz = pyo.Constraint(mtz_arcs, rule=mtz_rule)\n\n    # \"The objective for the driver is to find the route that minimizes the total delivery cost\"\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[i, j] for (i, j) in m.arcs)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1142,
+      "completion_tokens": 909
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.80917501449585,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 1,
+    "assignment": [
+     {
+      "decision": "subtour_elimination_formulation",
+      "option": "MTZ with order variables u in [1,n] and constraints u_j >= u_i + 1 - n(1-x_ij) for all arcs",
+      "evidence": "the driver can begin the delivery route from any location, but they must visit each location exactly once before returning to the starting point",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary",
+      "evidence": "they must visit each location exactly once before returning to the starting point",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "order_variable_domain",
+      "option": "NonNegativeIntegers bounded in [1,n]",
+      "evidence": "none",
+      "plausibility": 0.30000000000000004
+     },
+     {
+      "decision": "cost_matrix_orientation",
+      "option": "cost[(i,j)] = cost of arc from i to j (row = origin)",
+      "evidence": "It costs 77 units to deliver from Location A to B ... From Location B, the delivery cost to A is 77 units",
+      "plausibility": 0.97
+     },
+     {
+      "decision": "degree_constraint_direction",
+      "option": "equality: sum_j x_ij = 1 and sum_i x_ij = 1 for every node",
+      "evidence": "they must visit each location exactly once before returning to the starting point",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize total delivery cost",
+      "evidence": "The objective for the driver is to find the route that minimizes the total delivery cost",
+      "plausibility": 0.99
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\n# All numeric constants from the problem statement.\nDATA = {\n    \"nodes\": [\"A\", \"B\", \"C\", \"D\", \"E\", \"F\"],\n    \"n\": 6,\n    # cost[(i, j)] = cost of arc from i to j (row = origin)\n    \"cost\": {\n        (\"A\", \"B\"): 77, (\"A\", \"C\"): 89, (\"A\", \"D\"): 19, (\"A\", \"E\"): 31, (\"A\", \"F\"): 62,\n        (\"B\", \"A\"): 77, (\"B\", \"C\"): 36, (\"B\", \"D\"): 81, (\"B\", \"E\"): 71, (\"B\", \"F\"): 93,\n        (\"C\", \"A\"): 89, (\"C\", \"B\"): 36, (\"C\", \"D\"): 32, (\"C\", \"E\"): 48, (\"C\", \"F\"): 36,\n        (\"D\", \"A\"): 19, (\"D\", \"B\"): 81, (\"D\", \"C\"): 32, (\"D\", \"E\"): 98, (\"D\", \"F\"): 82,\n        (\"E\", \"A\"): 31, (\"E\", \"B\"): 71, (\"E\", \"C\"): 48, (\"E\", \"D\"): 98, (\"E\", \"F\"): 66,\n        (\"F\", \"A\"): 62, (\"F\", \"B\"): 93, (\"F\", \"C\"): 36, (\"F\", \"D\"): 82, (\"F\", \"E\"): 66,\n    },\n    \"order_lb\": 1,\n    \"order_ub\": 6,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    nodes = d[\"nodes\"]\n    n = d[\"n\"]\n    cost = d[\"cost\"]\n\n    model = pyo.ConcreteModel()\n\n    # Set of locations.\n    model.N = pyo.Set(initialize=nodes)\n\n    # Set of directed arcs (i, j) with i != j.\n    # assumption: no self-loops since each location is visited exactly once.\n    model.A = pyo.Set(\n        initialize=[(i, j) for i in nodes for j in nodes if i != j],\n        dimen=2,\n    )\n\n    # Arc decision variables: x[i,j] = 1 if the route goes from i to j.\n    # \"they must visit each location exactly once before returning to the starting point\"\n    # assumption: arc_variable_domain is Binary.\n    model.x = pyo.Var(model.A, within=pyo.Binary)\n\n    # MTZ order variables u[i] in [1, n].\n    # assumption: order_variable_domain is NonNegativeIntegers bounded in [1, n].\n    model.u = pyo.Var(\n        model.N,\n        within=pyo.NonNegativeIntegers,\n        bounds=(d[\"order_lb\"], d[\"order_ub\"]),\n    )\n\n    # Objective: minimize total delivery cost.\n    # \"The objective for the driver is to find the route that minimizes the total delivery cost\"\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[i, j] for (i, j) in m.A)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Out-degree constraint: each node is left exactly once.\n    # \"they must visit each location exactly once before returning to the starting point\"\n    def out_degree_rule(m, i):\n        return sum(m.x[i, j] for j in nodes if j != i) == 1\n\n    model.out_degree = pyo.Constraint(model.N, rule=out_degree_rule)\n\n    # In-degree constraint: each node is entered exactly once.\n    # \"they must visit each location exactly once before returning to the starting point\"\n    def in_degree_rule(m, j):\n        return sum(m.x[i, j] for i in nodes if i != j) == 1\n\n    model.in_degree = pyo.Constraint(model.N, rule=in_degree_rule)\n\n    # MTZ subtour elimination: u_j >= u_i + 1 - n(1 - x_ij) for all arcs.\n    # assumption: subtour_elimination_formulation is MTZ with order variables u in [1, n].\n    def mtz_rule(m, i, j):\n        return m.u[j] >= m.u[i] + 1 - n * (1 - m.x[i, j])\n\n    model.mtz = pyo.Constraint(model.A, rule=mtz_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1154,
+      "completion_tokens": 1059
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.282525539398193,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 2,
+    "assignment": [
+     {
+      "decision": "subtour_elimination_formulation",
+      "option": "MTZ anchored at node A (u_A = 1) with constraints skipped for arcs touching A",
+      "evidence": "the driver can begin the delivery route from any location, but they must visit each location exactly once before returning to the starting point",
+      "plausibility": 0.45
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary",
+      "evidence": "they must visit each location exactly once before returning to the starting point",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "order_variable_domain",
+      "option": "NonNegativeIntegers bounded in [1,n]",
+      "evidence": "none",
+      "plausibility": 0.30000000000000004
+     },
+     {
+      "decision": "cost_matrix_orientation",
+      "option": "cost[(i,j)] = cost of arc from i to j (row = origin)",
+      "evidence": "It costs 77 units to deliver from Location A to B ... From Location B, the delivery cost to A is 77 units",
+      "plausibility": 0.97
+     },
+     {
+      "decision": "degree_constraint_direction",
+      "option": "equality: sum_j x_ij = 1 and sum_i x_ij = 1 for every node",
+      "evidence": "they must visit each location exactly once before returning to the starting point",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize total delivery cost",
+      "evidence": "The objective for the driver is to find the route that minimizes the total delivery cost",
+      "plausibility": 0.99
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\n# All numeric constants from the problem statement.\nDATA = {\n    \"nodes\": [\"A\", \"B\", \"C\", \"D\", \"E\", \"F\"],\n    \"n\": 6,\n    # cost[(i, j)] = cost of arc from i to j (row = origin)\n    \"cost\": {\n        (\"A\", \"B\"): 77, (\"A\", \"C\"): 89, (\"A\", \"D\"): 19, (\"A\", \"E\"): 31, (\"A\", \"F\"): 62,\n        (\"B\", \"A\"): 77, (\"B\", \"C\"): 36, (\"B\", \"D\"): 81, (\"B\", \"E\"): 71, (\"B\", \"F\"): 93,\n        (\"C\", \"A\"): 89, (\"C\", \"B\"): 36, (\"C\", \"D\"): 32, (\"C\", \"E\"): 48, (\"C\", \"F\"): 36,\n        (\"D\", \"A\"): 19, (\"D\", \"B\"): 81, (\"D\", \"C\"): 32, (\"D\", \"E\"): 98, (\"D\", \"F\"): 82,\n        (\"E\", \"A\"): 31, (\"E\", \"B\"): 71, (\"E\", \"C\"): 48, (\"E\", \"D\"): 98, (\"E\", \"F\"): 66,\n        (\"F\", \"A\"): 62, (\"F\", \"B\"): 93, (\"F\", \"C\"): 36, (\"F\", \"D\"): 82, (\"F\", \"E\"): 66,\n    },\n    \"anchor\": \"A\",\n    \"anchor_order\": 1,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    nodes = d[\"nodes\"]\n    n = d[\"n\"]\n    cost = d[\"cost\"]\n    anchor = d[\"anchor\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets of nodes and directed arcs.\n    model.N = pyo.Set(initialize=nodes)\n    model.A = pyo.Set(initialize=[(i, j) for i in nodes for j in nodes if i != j])\n\n    # x[i,j] = 1 if the driver travels directly from i to j.\n    # \"they must visit each location exactly once before returning to the starting point\"\n    # assumption: arc_variable_domain = Binary\n    model.x = pyo.Var(model.A, within=pyo.Binary)\n\n    # u[i] = position of node i in the tour.\n    # assumption: order_variable_domain = NonNegativeIntegers bounded in [1, n]\n    model.u = pyo.Var(model.N, within=pyo.NonNegativeIntegers, bounds=(1, n))\n\n    # Objective: minimize total delivery cost.\n    # \"The objective for the driver is to find the route that minimizes the total delivery cost\"\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[(i, j)] for (i, j) in m.A)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Out-degree: each node is departed exactly once.\n    # \"they must visit each location exactly once before returning to the starting point\"\n    # assumption: degree_constraint_direction = equality\n    def out_rule(m, i):\n        return sum(m.x[(i, j)] for j in m.N if (i, j) in m.A) == 1\n\n    model.out_deg = pyo.Constraint(model.N, rule=out_rule)\n\n    # In-degree: each node is entered exactly once.\n    # \"they must visit each location exactly once before returning to the starting point\"\n    # assumption: degree_constraint_direction = equality\n    def in_rule(m, j):\n        return sum(m.x[(i, j)] for i in m.N if (i, j) in m.A) == 1\n\n    model.in_deg = pyo.Constraint(model.N, rule=in_rule)\n\n    # MTZ subtour elimination, anchored at A with u_A = 1, skipping arcs touching A.\n    # assumption: subtour_elimination_formulation = MTZ anchored at node A (u_A = 1),\n    # constraints skipped for arcs touching A\n    model.anchor_order = pyo.Constraint(\n        expr=model.u[anchor] == d[\"anchor_order\"]\n    )\n\n    # For arcs not touching the anchor: u_j >= u_i + 1 - n*(1 - x_ij).\n    def mtz_rule(m, i, j):\n        return m.u[j] >= m.u[i] + 1 - n * (1 - m.x[(i, j)])\n\n    model.mtz = pyo.Constraint(\n        [(i, j) for (i, j) in model.A if i != anchor and j != anchor],\n        rule=mtz_rule,\n    )\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1142,
+      "completion_tokens": 1119
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.387430906295776,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 3,
+    "assignment": [
+     {
+      "decision": "subtour_elimination_formulation",
+      "option": "MTZ with order variables u in [1,n] and constraints u_j >= u_i + 1 - n(1-x_ij) for all arcs",
+      "evidence": "the driver can begin the delivery route from any location, but they must visit each location exactly once before returning to the starting point",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary",
+      "evidence": "they must visit each location exactly once before returning to the starting point",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "order_variable_domain",
+      "option": "Reals bounded in [1,n]",
+      "evidence": "none",
+      "plausibility": 0.10000000000000002
+     },
+     {
+      "decision": "cost_matrix_orientation",
+      "option": "cost[(i,j)] = cost of arc from i to j (row = origin)",
+      "evidence": "It costs 77 units to deliver from Location A to B ... From Location B, the delivery cost to A is 77 units",
+      "plausibility": 0.97
+     },
+     {
+      "decision": "degree_constraint_direction",
+      "option": "equality: sum_j x_ij = 1 and sum_i x_ij = 1 for every node",
+      "evidence": "they must visit each location exactly once before returning to the starting point",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize total delivery cost",
+      "evidence": "The objective for the driver is to find the route that minimizes the total delivery cost",
+      "plausibility": 0.99
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"nodes\": [\"A\", \"B\", \"C\", \"D\", \"E\", \"F\"],\n    \"n\": 6,\n    \"cost\": {\n        (\"A\", \"B\"): 77, (\"A\", \"C\"): 89, (\"A\", \"D\"): 19, (\"A\", \"E\"): 31, (\"A\", \"F\"): 62,\n        (\"B\", \"A\"): 77, (\"B\", \"C\"): 36, (\"B\", \"D\"): 81, (\"B\", \"E\"): 71, (\"B\", \"F\"): 93,\n        (\"C\", \"A\"): 89, (\"C\", \"B\"): 36, (\"C\", \"D\"): 32, (\"C\", \"E\"): 48, (\"C\", \"F\"): 36,\n        (\"D\", \"A\"): 19, (\"D\", \"B\"): 81, (\"D\", \"C\"): 32, (\"D\", \"E\"): 98, (\"D\", \"F\"): 82,\n        (\"E\", \"A\"): 31, (\"E\", \"B\"): 71, (\"E\", \"C\"): 48, (\"E\", \"D\"): 98, (\"E\", \"F\"): 66,\n        (\"F\", \"A\"): 62, (\"F\", \"B\"): 93, (\"F\", \"C\"): 36, (\"F\", \"D\"): 82, (\"F\", \"E\"): 66,\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    nodes = d[\"nodes\"]\n    n = d[\"n\"]\n    cost = d[\"cost\"]\n\n    model = pyo.ConcreteModel()\n\n    # assumption: arc set excludes self-loops (i != j)\n    model.arcs = pyo.Set(initialize=[(i, j) for i in nodes for j in nodes if i != j])\n    model.nodes = pyo.Set(initialize=nodes)\n\n    # \"The driver can begin the delivery route from any location, but they must\n    #  visit each location exactly once before returning to the starting point.\"\n    # assumption: arc_variable_domain = Binary\n    model.x = pyo.Var(model.arcs, within=pyo.Binary)\n\n    # assumption: order_variable_domain = Reals bounded in [1, n]\n    model.u = pyo.Var(model.nodes, within=pyo.Reals, bounds=(1, n))\n\n    # \"The objective for the driver is to find the route that minimizes the total delivery cost\"\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[(i, j)] for (i, j) in m.arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # \"they must visit each location exactly once before returning to the starting point\"\n    # assumption: degree_constraint_direction = equality sum_j x_ij = 1\n    def out_rule(m, i):\n        return sum(m.x[(i, j)] for j in nodes if j != i) == 1\n\n    model.out_degree = pyo.Constraint(model.nodes, rule=out_rule)\n\n    # \"they must visit each location exactly once before returning to the starting point\"\n    # assumption: degree_constraint_direction = equality sum_i x_ij = 1\n    def in_rule(m, j):\n        return sum(m.x[(i, j)] for i in nodes if i != j) == 1\n\n    model.in_degree = pyo.Constraint(model.nodes, rule=in_rule)\n\n    # assumption: subtour_elimination_formulation = MTZ with order variables u in [1,n]\n    # u_j >= u_i + 1 - n(1 - x_ij) for all arcs\n    def mtz_rule(m, i, j):\n        return m.u[j] >= m.u[i] + 1 - n * (1 - m.x[(i, j)])\n\n    model.mtz = pyo.Constraint(model.arcs, rule=mtz_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1152,
+      "completion_tokens": 941
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.865076065063477,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "branch",
+ "generated_at": "2026-11-02T07:21:05"
+}

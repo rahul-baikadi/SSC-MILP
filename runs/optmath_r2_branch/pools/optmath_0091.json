@@ -1,0 +1,246 @@
+{
+ "pid": "optmath_0091",
+ "question": "Select a set of facilities from five potential locations (Node 0, Node 1, Node 2, Node 3, and Node 4) to maximize the minimum distance between any two selected facilities. The decision variables include binary choices for selecting each location and binary variables for selecting pairs of locations. The objective is to maximize the minimum distance (MinDistance) between any two selected facilities. Exactly two facilities must be selected. For each pair of locations, if both are selected, the distance between them must be at least MinDistance. If either or both locations in a pair are not selected, the distance constraint is relaxed using a large constant (1,000,000). The pairwise selection variables are symmetric, meaning selecting Node i and Node j is the same as selecting Node j and Node i. Additionally, the pairwise selection variables for the same node (e.g., Node 0 and Node 0) are set to 0. The distances between locations are as follows: Node 0 and Node 1 (41 units), Node 0 and Node 2 (31 units), Node 0 and Node 3 (43 units), Node 0 and Node 4 (10 units), Node 1 and Node 2 (34 units), Node 1 and Node 3 (46 units), Node 1 and Node 4 (12 units), Node 2 and Node 3 (41 units), Node 2 and Node 4 (24 units), and Node 3 and Node 4 (23 units). All decision variables are binary, and the constraints ensure that pairwise selections are consistent with individual selections.",
+ "templates": [
+  "Facility Location",
+  "Knapsack / Project Selection"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 0,
+    "assignment": [
+     {
+      "decision": "min_distance_variable_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"The objective is to maximize the minimum distance (MinDistance) between any two selected facilities.\"",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "min_distance_upper_bound",
+      "option": "no explicit upper bound on MinDistance",
+      "evidence": "none",
+      "plausibility": 0.6000000000000001
+     },
+     {
+      "decision": "pairwise_variable_indexing",
+      "option": "define z only for i<j (diagonal and symmetric duplicates omitted)",
+      "evidence": "\"The pairwise selection variables are symmetric, meaning selecting Node i and Node j is the same as selecting Node j and Node i. Additionally, the pairwise selection variables for the same node (e.g., Node 0 and Node 0) are set to 0.\"",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "bigM_distance_constraint_form",
+      "option": "MinDistance <= dist[i,j]*z[i,j] + M*(1 - z[i,j])",
+      "evidence": "\"if both are selected, the distance between them must be at least MinDistance. If either or both locations in a pair are not selected, the distance constraint is relaxed using a large constant (1,000,000).\"",
+      "plausibility": 0.35
+     },
+     {
+      "decision": "pairwise_linking_constraint_set",
+      "option": "full linearisation: z<=y[i], z<=y[j], z>=y[i]+y[j]-1",
+      "evidence": "\"the constraints ensure that pairwise selections are consistent with individual selections\"",
+      "plausibility": 0.7000000000000001
+     },
+     {
+      "decision": "exactly_two_selection_constraint",
+      "option": "sum_i y[i] == 2",
+      "evidence": "\"Exactly two facilities must be selected.\"",
+      "plausibility": 0.95
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"nodes\": [0, 1, 2, 3, 4],\n    \"pairs\": [(0, 1), (0, 2), (0, 3), (0, 4),\n              (1, 2), (1, 3), (1, 4),\n              (2, 3), (2, 4),\n              (3, 4)],\n    \"dist\": {\n        (0, 1): 41, (0, 2): 31, (0, 3): 43, (0, 4): 10,\n        (1, 2): 34, (1, 3): 46, (1, 4): 12,\n        (2, 3): 41, (2, 4): 24,\n        (3, 4): 23,\n    },\n    \"bigM\": 1000000,\n    \"num_selected\": 2,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=d[\"nodes\"])\n    model.P = pyo.Set(initialize=d[\"pairs\"], dimen=2)\n\n    # \"The decision variables include binary choices for selecting each location\"\n    model.y = pyo.Var(model.I, within=pyo.Binary)\n\n    # \"binary variables for selecting pairs of locations\" / \"define z only for i<j\"\n    # assumption: pairwise_variable_indexing -> z only for i<j\n    model.z = pyo.Var(model.P, within=pyo.Binary)\n\n    # \"The objective is to maximize the minimum distance (MinDistance) between any two selected facilities.\"\n    # assumption: min_distance_variable_domain -> NonNegativeReals\n    # assumption: min_distance_upper_bound -> no explicit upper bound\n    model.MinDistance = pyo.Var(within=pyo.NonNegativeReals)\n\n    # \"Exactly two facilities must be selected.\"\n    def rule_exactly_two(m):\n        return sum(m.y[i] for i in m.I) == d[\"num_selected\"]\n    model.exactly_two = pyo.Constraint(rule=rule_exactly_two)\n\n    # \"the constraints ensure that pairwise selections are consistent with individual selections\"\n    # assumption: pairwise_linking_constraint_set -> full linearisation z<=y[i], z<=y[j], z>=y[i]+y[j]-1\n    def rule_z_le_i(m, i, j):\n        return m.z[i, j] <= m.y[i]\n    model.z_le_i = pyo.Constraint(model.P, rule=rule_z_le_i)\n\n    def rule_z_le_j(m, i, j):\n        return m.z[i, j] <= m.y[j]\n    model.z_le_j = pyo.Constraint(model.P, rule=rule_z_le_j)\n\n    def rule_z_ge(m, i, j):\n        return m.z[i, j] >= m.y[i] + m.y[j] - 1\n    model.z_ge = pyo.Constraint(model.P, rule=rule_z_ge)\n\n    # \"if both are selected, the distance between them must be at least MinDistance.\n    #  If either or both locations in a pair are not selected, the distance constraint is\n    #  relaxed using a large constant (1,000,000).\"\n    # assumption: bigM_distance_constraint_form -> MinDistance <= dist[i,j]*z[i,j] + M*(1 - z[i,j])\n    def rule_min_dist(m, i, j):\n        return m.MinDistance <= d[\"dist\"][(i, j)] * m.z[i, j] + d[\"bigM\"] * (1 - m.z[i, j])\n    model.min_dist = pyo.Constraint(model.P, rule=rule_min_dist)\n\n    # \"The objective is to maximize the minimum distance (MinDistance) between any two selected facilities.\"\n    model.obj = pyo.Objective(expr=model.MinDistance, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1165,
+      "completion_tokens": 895
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.191291093826294,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 1,
+    "assignment": [
+     {
+      "decision": "min_distance_variable_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"The objective is to maximize the minimum distance (MinDistance) between any two selected facilities.\"",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "min_distance_upper_bound",
+      "option": "upper bound = max pairwise distance (46)",
+      "evidence": "none",
+      "plausibility": 0.30000000000000004
+     },
+     {
+      "decision": "pairwise_variable_indexing",
+      "option": "define z only for i<j (diagonal and symmetric duplicates omitted)",
+      "evidence": "\"The pairwise selection variables are symmetric, meaning selecting Node i and Node j is the same as selecting Node j and Node i. Additionally, the pairwise selection variables for the same node (e.g., Node 0 and Node 0) are set to 0.\"",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "bigM_distance_constraint_form",
+      "option": "MinDistance <= dist[i,j] + M*(1 - z[i,j])",
+      "evidence": "\"if both are selected, the distance between them must be at least MinDistance. If either or both locations in a pair are not selected, the distance constraint is relaxed using a large constant (1,000,000).\"",
+      "plausibility": 0.55
+     },
+     {
+      "decision": "pairwise_linking_constraint_set",
+      "option": "full linearisation: z<=y[i], z<=y[j], z>=y[i]+y[j]-1",
+      "evidence": "\"the constraints ensure that pairwise selections are consistent with individual selections\"",
+      "plausibility": 0.7000000000000001
+     },
+     {
+      "decision": "exactly_two_selection_constraint",
+      "option": "sum_i y[i] == 2",
+      "evidence": "\"Exactly two facilities must be selected.\"",
+      "plausibility": 0.95
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"nodes\": [0, 1, 2, 3, 4],\n    \"distances\": {\n        (0, 1): 41,\n        (0, 2): 31,\n        (0, 3): 43,\n        (0, 4): 10,\n        (1, 2): 34,\n        (1, 3): 46,\n        (1, 4): 12,\n        (2, 3): 41,\n        (2, 4): 24,\n        (3, 4): 23,\n    },\n    \"bigM\": 1000000,\n    \"max_distance\": 46,\n    \"num_selected\": 2,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    nodes = d[\"nodes\"]\n    distances = d[\"distances\"]\n    bigM = d[\"bigM\"]\n    max_distance = d[\"max_distance\"]\n    num_selected = d[\"num_selected\"]\n\n    model = pyo.ConcreteModel()\n\n    # Pairs i<j\n    pairs = [(i, j) for i in nodes for j in nodes if i < j]\n\n    model.I = pyo.Set(initialize=nodes)\n    model.P = pyo.Set(initialize=pairs, dimen=2)\n\n    # \"binary choices for selecting each location\"\n    model.y = pyo.Var(model.I, within=pyo.Binary)\n\n    # \"binary variables for selecting pairs of locations\" (i<j only)\n    # assumption: pairwise_variable_indexing -> define z only for i<j\n    model.z = pyo.Var(model.P, within=pyo.Binary)\n\n    # \"The objective is to maximize the minimum distance (MinDistance) between any two selected facilities.\"\n    # assumption: min_distance_variable_domain = NonNegativeReals\n    # assumption: min_distance_upper_bound = max pairwise distance (46)\n    model.MinDistance = pyo.Var(within=pyo.NonNegativeReals, bounds=(0, max_distance))\n\n    # \"Exactly two facilities must be selected.\"\n    def rule_exactly_two(m):\n        return sum(m.y[i] for i in m.I) == num_selected\n    model.c_exactly_two = pyo.Constraint(rule=rule_exactly_two)\n\n    # \"if both are selected, the distance between them must be at least MinDistance.\n    #  If either or both locations in a pair are not selected, the distance constraint is\n    #  relaxed using a large constant (1,000,000).\"\n    # assumption: bigM_distance_constraint_form: MinDistance <= dist[i,j] + M*(1 - z[i,j])\n    def rule_min_distance(m, i, j):\n        return m.MinDistance <= distances[(i, j)] + bigM * (1 - m.z[(i, j)])\n    model.c_min_distance = pyo.Constraint(model.P, rule=rule_min_distance)\n\n    # \"the constraints ensure that pairwise selections are consistent with individual selections\"\n    # assumption: pairwise_linking_constraint_set: z<=y[i], z<=y[j], z>=y[i]+y[j]-1\n    def rule_z_le_yi(m, i, j):\n        return m.z[(i, j)] <= m.y[i]\n    model.c_z_le_yi = pyo.Constraint(model.P, rule=rule_z_le_yi)\n\n    def rule_z_le_yj(m, i, j):\n        return m.z[(i, j)] <= m.y[j]\n    model.c_z_le_yj = pyo.Constraint(model.P, rule=rule_z_le_yj)\n\n    def rule_z_ge(m, i, j):\n        return m.z[(i, j)] >= m.y[i] + m.y[j] - 1\n    model.c_z_ge = pyo.Constraint(model.P, rule=rule_z_ge)\n\n    # \"The objective is to maximize the minimum distance (MinDistance) between any two selected facilities.\"\n    model.obj = pyo.Objective(expr=model.MinDistance, sense=pyo.maximize)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1163,
+      "completion_tokens": 903
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.46880030632019,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 2,
+    "assignment": [
+     {
+      "decision": "min_distance_variable_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"The objective is to maximize the minimum distance (MinDistance) between any two selected facilities.\"",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "min_distance_upper_bound",
+      "option": "no explicit upper bound on MinDistance",
+      "evidence": "none",
+      "plausibility": 0.6000000000000001
+     },
+     {
+      "decision": "pairwise_variable_indexing",
+      "option": "define z for all ordered pairs (i,j) with z[i,i]=0 and z[i,j]=z[j,i]",
+      "evidence": "\"The pairwise selection variables are symmetric, meaning selecting Node i and Node j is the same as selecting Node j and Node i. Additionally, the pairwise selection variables for the same node (e.g., Node 0 and Node 0) are set to 0.\"",
+      "plausibility": 0.25
+     },
+     {
+      "decision": "bigM_distance_constraint_form",
+      "option": "MinDistance <= dist[i,j] + M*(1 - z[i,j])",
+      "evidence": "\"if both are selected, the distance between them must be at least MinDistance. If either or both locations in a pair are not selected, the distance constraint is relaxed using a large constant (1,000,000).\"",
+      "plausibility": 0.55
+     },
+     {
+      "decision": "pairwise_linking_constraint_set",
+      "option": "full linearisation: z<=y[i], z<=y[j], z>=y[i]+y[j]-1",
+      "evidence": "\"the constraints ensure that pairwise selections are consistent with individual selections\"",
+      "plausibility": 0.7000000000000001
+     },
+     {
+      "decision": "exactly_two_selection_constraint",
+      "option": "sum_i y[i] == 2",
+      "evidence": "\"Exactly two facilities must be selected.\"",
+      "plausibility": 0.95
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"nodes\": [0, 1, 2, 3, 4],\n    \"distances\": {\n        (0, 1): 41, (0, 2): 31, (0, 3): 43, (0, 4): 10,\n        (1, 2): 34, (1, 3): 46, (1, 4): 12,\n        (2, 3): 41, (2, 4): 24,\n        (3, 4): 23,\n    },\n    \"bigM\": 1000000,\n    \"num_selected\": 2,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    nodes = d[\"nodes\"]\n    bigM = d[\"bigM\"]\n\n    # symmetric distance lookup\n    dist = {}\n    for (i, j), v in d[\"distances\"].items():\n        dist[(i, j)] = v\n        dist[(j, i)] = v\n    for i in nodes:\n        dist[(i, i)] = 0\n\n    model = pyo.ConcreteModel()\n\n    # binary selection of each facility\n    # \"binary choices for selecting each location\"\n    model.y = pyo.Var(nodes, within=pyo.Binary)\n\n    # pairwise selection variables for all ordered pairs\n    # \"define z for all ordered pairs (i,j) with z[i,i]=0 and z[i,j]=z[j,i]\"\n    # assumption: ordered-pair indexing with symmetry enforced below\n    model.z = pyo.Var(nodes, nodes, within=pyo.Binary)\n\n    # MinDistance variable\n    # \"The objective is to maximize the minimum distance (MinDistance)\"\n    # assumption: NonNegativeReals domain, no explicit upper bound\n    model.min_dist = pyo.Var(within=pyo.NonNegativeReals)\n\n    # exactly two facilities selected\n    # \"Exactly two facilities must be selected.\"\n    def rule_exact_two(m):\n        return sum(m.y[i] for i in nodes) == d[\"num_selected\"]\n    model.exact_two = pyo.Constraint(rule=rule_exact_two)\n\n    # diagonal pairwise variables are zero\n    # \"the pairwise selection variables for the same node (e.g., Node 0 and Node 0) are set to 0\"\n    def rule_diag(m, i):\n        return m.z[i, i] == 0\n    model.diag = pyo.Constraint(nodes, rule=rule_diag)\n\n    # symmetry z[i,j] == z[j,i]\n    # \"selecting Node i and Node j is the same as selecting Node j and Node i\"\n    def rule_sym(m, i, j):\n        return m.z[i, j] == m.z[j, i]\n    model.sym = pyo.Constraint(nodes, nodes, rule=rule_sym)\n\n    # pairwise linking: z<=y[i], z<=y[j], z>=y[i]+y[j]-1\n    # \"the constraints ensure that pairwise selections are consistent with individual selections\"\n    def rule_z_le_yi(m, i, j):\n        return m.z[i, j] <= m.y[i]\n    model.z_le_yi = pyo.Constraint(nodes, nodes, rule=rule_z_le_yi)\n\n    def rule_z_le_yj(m, i, j):\n        return m.z[i, j] <= m.y[j]\n    model.z_le_yj = pyo.Constraint(nodes, nodes, rule=rule_z_le_yj)\n\n    def rule_z_ge(m, i, j):\n        return m.z[i, j] >= m.y[i] + m.y[j] - 1\n    model.z_ge = pyo.Constraint(nodes, nodes, rule=rule_z_ge)\n\n    # distance constraint: MinDistance <= dist[i,j] + M*(1 - z[i,j])\n    # \"if both are selected, the distance between them must be at least MinDistance.\n    #  If either or both locations in a pair are not selected, the distance constraint\n    #  is relaxed using a large constant (1,000,000).\"\n    def rule_dist(m, i, j):\n        return m.min_dist <= dist[(i, j)] + bigM * (1 - m.z[i, j])\n    model.dist_con = pyo.Constraint(nodes, nodes, rule=rule_dist)\n\n    # objective: maximize MinDistance\n    # \"The objective is to maximize the minimum distance (MinDistance) between any two selected facilities.\"\n    model.obj = pyo.Objective(expr=model.min_dist, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1172,
+      "completion_tokens": 1032
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.181627988815308,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 3,
+    "assignment": [
+     {
+      "decision": "min_distance_variable_domain",
+      "option": "Reals",
+      "evidence": "\"The objective is to maximize the minimum distance (MinDistance) between any two selected facilities.\"",
+      "plausibility": 0.25
+     },
+     {
+      "decision": "min_distance_upper_bound",
+      "option": "no explicit upper bound on MinDistance",
+      "evidence": "none",
+      "plausibility": 0.6000000000000001
+     },
+     {
+      "decision": "pairwise_variable_indexing",
+      "option": "define z only for i<j (diagonal and symmetric duplicates omitted)",
+      "evidence": "\"The pairwise selection variables are symmetric, meaning selecting Node i and Node j is the same as selecting Node j and Node i. Additionally, the pairwise selection variables for the same node (e.g., Node 0 and Node 0) are set to 0.\"",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "bigM_distance_constraint_form",
+      "option": "MinDistance <= dist[i,j] + M*(1 - z[i,j])",
+      "evidence": "\"if both are selected, the distance between them must be at least MinDistance. If either or both locations in a pair are not selected, the distance constraint is relaxed using a large constant (1,000,000).\"",
+      "plausibility": 0.55
+     },
+     {
+      "decision": "pairwise_linking_constraint_set",
+      "option": "full linearisation: z<=y[i], z<=y[j], z>=y[i]+y[j]-1",
+      "evidence": "\"the constraints ensure that pairwise selections are consistent with individual selections\"",
+      "plausibility": 0.7000000000000001
+     },
+     {
+      "decision": "exactly_two_selection_constraint",
+      "option": "sum_i y[i] == 2",
+      "evidence": "\"Exactly two facilities must be selected.\"",
+      "plausibility": 0.95
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"nodes\": [0, 1, 2, 3, 4],\n    \"distances\": {\n        (0, 1): 41,\n        (0, 2): 31,\n        (0, 3): 43,\n        (0, 4): 10,\n        (1, 2): 34,\n        (1, 3): 46,\n        (1, 4): 12,\n        (2, 3): 41,\n        (2, 4): 24,\n        (3, 4): 23,\n    },\n    \"bigM\": 1000000,\n    \"num_selected\": 2,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    nodes = d[\"nodes\"]\n    dist = d[\"distances\"]\n    M = d[\"bigM\"]\n\n    # pairs i<j\n    pairs = [(i, j) for i in nodes for j in nodes if i < j]\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=nodes)\n    model.P = pyo.Set(initialize=pairs, dimen=2)\n\n    # \"binary choices for selecting each location\"\n    model.y = pyo.Var(model.I, within=pyo.Binary)\n\n    # \"binary variables for selecting pairs of locations\" (only i<j)\n    # assumption: pairwise_variable_indexing -> z only for i<j\n    model.z = pyo.Var(model.P, within=pyo.Binary)\n\n    # \"maximize the minimum distance (MinDistance) between any two selected facilities\"\n    # assumption: min_distance_variable_domain = Reals, no explicit upper bound\n    model.MinDistance = pyo.Var(within=pyo.Reals)\n\n    # \"Exactly two facilities must be selected.\"\n    def rule_exactly_two(m):\n        return sum(m.y[i] for i in m.I) == d[\"num_selected\"]\n    model.exactly_two = pyo.Constraint(rule=rule_exactly_two)\n\n    # \"the constraints ensure that pairwise selections are consistent with individual selections\"\n    # full linearisation: z <= y[i], z <= y[j], z >= y[i]+y[j]-1\n    def rule_z_le_i(m, i, j):\n        return m.z[i, j] <= m.y[i]\n    model.z_le_i = pyo.Constraint(model.P, rule=rule_z_le_i)\n\n    def rule_z_le_j(m, i, j):\n        return m.z[i, j] <= m.y[j]\n    model.z_le_j = pyo.Constraint(model.P, rule=rule_z_le_j)\n\n    def rule_z_ge(m, i, j):\n        return m.z[i, j] >= m.y[i] + m.y[j] - 1\n    model.z_ge = pyo.Constraint(model.P, rule=rule_z_ge)\n\n    # \"if both are selected, the distance between them must be at least MinDistance.\n    #  If either or both locations in a pair are not selected, the distance constraint\n    #  is relaxed using a large constant (1,000,000).\"\n    # form: MinDistance <= dist[i,j] + M*(1 - z[i,j])\n    def rule_min_dist(m, i, j):\n        return m.MinDistance <= dist[(i, j)] + M * (1 - m.z[i, j])\n    model.min_dist = pyo.Constraint(model.P, rule=rule_min_dist)\n\n    # \"The objective is to maximize the minimum distance (MinDistance)\"\n    def rule_obj(m):\n        return m.MinDistance\n    model.obj = pyo.Objective(rule=rule_obj, sense=pyo.maximize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1159,
+      "completion_tokens": 825
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.442617416381836,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "branch",
+ "generated_at": "2026-11-02T08:16:07"
+}

@@ -1,0 +1,245 @@
+{
+ "pid": "mamo_complex_0064",
+ "question": "Consider a scenario where a delivery company needs to deliver packages to five different cities. These cities are labeled as E, F, G, H and I. The delivery van can start its route from any of these cities but must follow one rule: it must visit each city exactly once and then return to the starting city. The aim is to find the route that minimizes the total travel cost, which could be a function of fuel costs, labor costs, or road tolls.\n\nHere's a rundown of the travel costs between these cities:\n\nFrom City E (1), the cost to reach City F (2) is 35 units, to G (3) is 90 units, to H (4) is 23 units, and to I (5) is 62 units.\n\nFrom City F (2), the cost to City E (1) is 35 units, to G (3) is 53 units, to H (4) is 58 units, and to I (5) is 46 units.\n\nIf we start from City G (3), the cost to reach City E (1) is 90 units, to F (2) is 53 units, to H (4) is 28 units, and to I (5) is 91 units.\n\nFrom City H (4), the cost to City E (1) is 23 units, to F (2) is 58 units, to G (3) is 28 units, and to I (5) is 77 units.\n\nLastly, from City I (5), it costs 62 units to reach City E (1), 46 units to get to F (2), 91 units to reach G (3), and 77 units to reach H (4).\n\nWhat is the minimum total travel cost for the delivery van to visit each city exactly once and return to the starting city?",
+ "templates": [
+  "Vehicle Routing / TSP"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 0,
+    "assignment": [
+     {
+      "decision": "subtour_elimination_big_m_value",
+      "option": "Big-M = N (5), tight MTZ bound",
+      "evidence": "none (the text only says 'visit each city exactly once and then return to the starting city')",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "mtz_constraint_coverage",
+      "option": "MTZ on all arcs except those entering the depot, with depot anchored at u=1",
+      "evidence": "none (the text does not specify how subtours are eliminated)",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "order_variable_domain",
+      "option": "NonNegativeReals bounded in [1, N]",
+      "evidence": "none (the text never mentions visit-order variables)",
+      "plausibility": 0.7
+     },
+     {
+      "decision": "start_city_anchoring",
+      "option": "Fix u[start] = 1 for a single chosen start city",
+      "evidence": "\"The delivery van can start its route from any of these cities\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary x[i,j]",
+      "evidence": "\"it must visit each city exactly once and then return to the starting city\"",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize total travel cost",
+      "evidence": "\"find the route that minimizes the total travel cost\"",
+      "plausibility": 0.99
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\n# All numeric constants from the problem statement\nDATA = {\n    \"N\": 5,\n    \"cities\": [1, 2, 3, 4, 5],\n    \"start_city\": 1,\n    \"big_m\": 5,  # assumption: subtour_elimination_big_m_value = N (5), tight MTZ bound\n    \"cost\": {\n        (1, 2): 35, (1, 3): 90, (1, 4): 23, (1, 5): 62,\n        (2, 1): 35, (2, 3): 53, (2, 4): 58, (2, 5): 46,\n        (3, 1): 90, (3, 2): 53, (3, 4): 28, (3, 5): 91,\n        (4, 1): 23, (4, 2): 58, (4, 3): 28, (4, 5): 77,\n        (5, 1): 62, (5, 2): 46, (5, 3): 91, (5, 4): 77,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    cities = d[\"cities\"]\n    N = d[\"N\"]\n    start = d[\"start_city\"]\n\n    model.I = pyo.Set(initialize=cities)\n    model.J = pyo.Set(initialize=cities)\n    # arcs: all ordered pairs i != j\n    model.A = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n\n    # Binary arc variables: \"it must visit each city exactly once and then return to the starting city\"\n    model.x = pyo.Var(model.A, within=pyo.Binary)\n\n    # Order variables for MTZ: assumption: order_variable_domain NonNegativeReals bounded in [1, N]\n    model.u = pyo.Var(model.I, within=pyo.NonNegativeReals, bounds=(1, N))\n\n    # Objective: \"find the route that minimizes the total travel cost\"\n    def obj_rule(m):\n        return sum(d[\"cost\"][(i, j)] * m.x[i, j] for (i, j) in m.A)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each city has exactly one outgoing arc: \"visit each city exactly once\"\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n\n    model.out_arc = pyo.Constraint(model.I, rule=out_rule)\n\n    # Each city has exactly one incoming arc: \"visit each city exactly once\"\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n\n    model.in_arc = pyo.Constraint(model.J, rule=in_rule)\n\n    # Anchor the start city: assumption: start_city_anchoring Fix u[start] = 1\n    def anchor_rule(m):\n        return m.u[start] == 1\n\n    model.anchor = pyo.Constraint(rule=anchor_rule)\n\n    # MTZ subtour elimination on all arcs except those entering the depot:\n    # assumption: mtz_constraint_coverage MTZ on all arcs except those entering the depot\n    # u_i - u_j + N * x_ij <= N - 1  for i != j, j != start\n    def mtz_rule(m, i, j):\n        return m.u[i] - m.u[j] + d[\"big_m\"] * m.x[i, j] <= d[\"big_m\"] - 1\n\n    model.mtz = pyo.Constraint(\n        [(i, j) for (i, j) in model.A if j != start],\n        rule=mtz_rule,\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1123,
+      "completion_tokens": 923
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.9252424240112305,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 1,
+    "assignment": [
+     {
+      "decision": "subtour_elimination_big_m_value",
+      "option": "Big-M = 1000, loose MTZ bound",
+      "evidence": "none (the text only says 'visit each city exactly once and then return to the starting city')",
+      "plausibility": 0.4
+     },
+     {
+      "decision": "mtz_constraint_coverage",
+      "option": "MTZ on all arcs except those entering the start city",
+      "evidence": "none (the text does not specify how subtours are eliminated)",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "order_variable_domain",
+      "option": "NonNegativeReals bounded in [1, N]",
+      "evidence": "none (the text never mentions visit-order variables)",
+      "plausibility": 0.7
+     },
+     {
+      "decision": "start_city_anchoring",
+      "option": "Fix u[start] = 1 for a single chosen start city",
+      "evidence": "\"The delivery van can start its route from any of these cities\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary x[i,j]",
+      "evidence": "\"it must visit each city exactly once and then return to the starting city\"",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize total travel cost",
+      "evidence": "\"find the route that minimizes the total travel cost\"",
+      "plausibility": 0.99
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\n# All numeric constants from the problem statement and modelling decisions.\nDATA = {\n    \"cities\": [\"E\", \"F\", \"G\", \"H\", \"I\"],\n    \"N\": 5,\n    # Travel cost matrix, indexed by city name pairs (symmetric as given).\n    \"cost\": {\n        (\"E\", \"F\"): 35, (\"E\", \"G\"): 90, (\"E\", \"H\"): 23, (\"E\", \"I\"): 62,\n        (\"F\", \"E\"): 35, (\"F\", \"G\"): 53, (\"F\", \"H\"): 58, (\"F\", \"I\"): 46,\n        (\"G\", \"E\"): 90, (\"G\", \"F\"): 53, (\"G\", \"H\"): 28, (\"G\", \"I\"): 91,\n        (\"H\", \"E\"): 23, (\"H\", \"F\"): 58, (\"H\", \"G\"): 28, (\"H\", \"I\"): 77,\n        (\"I\", \"E\"): 62, (\"I\", \"F\"): 46, (\"I\", \"G\"): 91, (\"I\", \"H\"): 77,\n    },\n    # assumption: subtour_elimination_big_m_value = 1000 (loose MTZ bound)\n    \"big_m\": 1000,\n    # assumption: start_city_anchoring - fix u[start] = 1 for a single chosen start city\n    \"start_city\": \"E\",\n    # assumption: order_variable_domain - NonNegativeReals bounded in [1, N]\n    \"order_lb\": 1,\n    \"order_ub\": 5,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    n = d[\"N\"]\n    start = d[\"start_city\"]\n\n    model = pyo.ConcreteModel()\n\n    # Set of cities.\n    model.C = pyo.Set(initialize=cities)\n\n    # Arcs: all ordered pairs of distinct cities.\n    # assumption: arc_variable_domain - Binary x[i,j] for i != j\n    model.A = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n\n    # Binary arc variable x[i,j] = 1 if the van travels from city i to city j.\n    # \"it must visit each city exactly once and then return to the starting city\"\n    model.x = pyo.Var(model.A, within=pyo.Binary)\n\n    # Order variable u[i] giving the visit position of city i.\n    # assumption: order_variable_domain - NonNegativeReals bounded in [1, N]\n    model.u = pyo.Var(\n        model.C,\n        within=pyo.NonNegativeReals,\n        bounds=(d[\"order_lb\"], d[\"order_ub\"]),\n    )\n\n    # Objective: minimize total travel cost.\n    # \"find the route that minimizes the total travel cost\"\n    def obj_rule(m):\n        return sum(d[\"cost\"][(i, j)] * m.x[i, j] for (i, j) in m.A)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each city is departed exactly once.\n    # \"it must visit each city exactly once and then return to the starting city\"\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n\n    model.out_degree = pyo.Constraint(model.C, rule=out_rule)\n\n    # Each city is entered exactly once.\n    # \"it must visit each city exactly once and then return to the starting city\"\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n\n    model.in_degree = pyo.Constraint(model.C, rule=in_rule)\n\n    # MTZ subtour elimination on all arcs except those entering the start city.\n    # assumption: mtz_constraint_coverage - MTZ on all arcs except those entering the start city\n    # assumption: subtour_elimination_big_m_value - Big-M = 1000\n    def mtz_rule(m, i, j):\n        return m.u[i] - m.u[j] + n * m.x[i, j] <= n - 1\n\n    model.mtz = pyo.Constraint(\n        [(i, j) for (i, j) in model.A if j != start],\n        rule=mtz_rule,\n    )\n\n    # Anchor the start city's order to 1.\n    # \"The delivery van can start its route from any of these cities\"\n    # assumption: start_city_anchoring - Fix u[start] = 1 for a single chosen start city\n    def anchor_rule(m):\n        return m.u[start] == 1\n\n    model.anchor = pyo.Constraint(rule=anchor_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1116,
+      "completion_tokens": 1133
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.382779598236084,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 2,
+    "assignment": [
+     {
+      "decision": "subtour_elimination_big_m_value",
+      "option": "Big-M = 1000, loose MTZ bound",
+      "evidence": "none (the text only says 'visit each city exactly once and then return to the starting city')",
+      "plausibility": 0.4
+     },
+     {
+      "decision": "mtz_constraint_coverage",
+      "option": "MTZ on all arcs except those entering the depot, with depot anchored at u=1",
+      "evidence": "none (the text does not specify how subtours are eliminated)",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "order_variable_domain",
+      "option": "NonNegativeReals bounded in [1, N]",
+      "evidence": "none (the text never mentions visit-order variables)",
+      "plausibility": 0.7
+     },
+     {
+      "decision": "start_city_anchoring",
+      "option": "Fix u[start] = 1 for a single chosen start city",
+      "evidence": "\"The delivery van can start its route from any of these cities\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary x[i,j]",
+      "evidence": "\"it must visit each city exactly once and then return to the starting city\"",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize total travel cost",
+      "evidence": "\"find the route that minimizes the total travel cost\"",
+      "plausibility": 0.99
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"cities\": [\"E\", \"F\", \"G\", \"H\", \"I\"],\n    \"start_city\": \"E\",\n    \"big_m\": 1000,\n    \"order_lb\": 1,\n    \"order_ub\": 5,\n    \"cost\": {\n        (\"E\", \"F\"): 35, (\"E\", \"G\"): 90, (\"E\", \"H\"): 23, (\"E\", \"I\"): 62,\n        (\"F\", \"E\"): 35, (\"F\", \"G\"): 53, (\"F\", \"H\"): 58, (\"F\", \"I\"): 46,\n        (\"G\", \"E\"): 90, (\"G\", \"F\"): 53, (\"G\", \"H\"): 28, (\"G\", \"I\"): 91,\n        (\"H\", \"E\"): 23, (\"H\", \"F\"): 58, (\"H\", \"G\"): 28, (\"H\", \"I\"): 77,\n        (\"I\", \"E\"): 62, (\"I\", \"F\"): 46, (\"I\", \"G\"): 91, (\"I\", \"H\"): 77,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    start = d[\"start_city\"]\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=cities)\n    model.J = pyo.Set(initialize=cities)\n    model.A = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n\n    # Binary arc variable: \"it must visit each city exactly once and then return to the starting city\"\n    model.x = pyo.Var(model.A, within=pyo.Binary)\n\n    # Order variable for MTZ subtour elimination\n    # assumption: order_variable_domain NonNegativeReals bounded in [1, N]\n    model.u = pyo.Var(\n        model.I,\n        within=pyo.NonNegativeReals,\n        bounds=(d[\"order_lb\"], d[\"order_ub\"]),\n    )\n\n    # Objective: \"find the route that minimizes the total travel cost\"\n    def obj_rule(m):\n        return sum(d[\"cost\"][(i, j)] * m.x[i, j] for (i, j) in m.A)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each city has exactly one outgoing arc: \"visit each city exactly once\"\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in m.J if j != i) == 1\n\n    model.out_arc = pyo.Constraint(model.I, rule=out_rule)\n\n    # Each city has exactly one incoming arc: \"visit each city exactly once\"\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in m.I if i != j) == 1\n\n    model.in_arc = pyo.Constraint(model.J, rule=in_rule)\n\n    # MTZ subtour elimination on all arcs except those entering the depot\n    # assumption: mtz_constraint_coverage MTZ on all arcs except those entering the depot\n    # assumption: subtour_elimination_big_m_value Big-M = 1000, loose MTZ bound\n    def mtz_rule(m, i, j):\n        if j == start:\n            return pyo.Constraint.Skip\n        return m.u[i] - m.u[j] + d[\"big_m\"] * m.x[i, j] <= d[\"big_m\"] - 1\n\n    model.mtz = pyo.Constraint(model.A, rule=mtz_rule)\n\n    # Anchor the depot order variable\n    # assumption: start_city_anchoring Fix u[start] = 1 for a single chosen start city\n    def anchor_rule(m):\n        return m.u[start] == 1\n\n    model.anchor = pyo.Constraint(rule=anchor_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1123,
+      "completion_tokens": 926
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.95966100692749,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 3,
+    "assignment": [
+     {
+      "decision": "subtour_elimination_big_m_value",
+      "option": "Big-M = N (5), tight MTZ bound",
+      "evidence": "none (the text only says 'visit each city exactly once and then return to the starting city')",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "mtz_constraint_coverage",
+      "option": "MTZ on all arcs except those entering the start city",
+      "evidence": "none (the text does not specify how subtours are eliminated)",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "order_variable_domain",
+      "option": "NonNegativeIntegers bounded in [1, N]",
+      "evidence": "none (the text never mentions visit-order variables)",
+      "plausibility": 0.3
+     },
+     {
+      "decision": "start_city_anchoring",
+      "option": "Fix u[start] = 1 for a single chosen start city",
+      "evidence": "\"The delivery van can start its route from any of these cities\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary x[i,j]",
+      "evidence": "\"it must visit each city exactly once and then return to the starting city\"",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize total travel cost",
+      "evidence": "\"find the route that minimizes the total travel cost\"",
+      "plausibility": 0.99
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\n# All numeric constants from the problem\nDATA = {\n    \"N\": 5,\n    \"cities\": [1, 2, 3, 4, 5],  # E=1, F=2, G=3, H=4, I=5\n    \"start_city\": 1,            # assumption: start_city_anchoring (fix u[start]=1)\n    \"big_m\": 5,                 # assumption: subtour_elimination_big_m_value = N (5)\n    # Travel costs c[i][j]; symmetric per problem text\n    \"cost\": {\n        (1, 2): 35, (1, 3): 90, (1, 4): 23, (1, 5): 62,\n        (2, 1): 35, (2, 3): 53, (2, 4): 58, (2, 5): 46,\n        (3, 1): 90, (3, 2): 53, (3, 4): 28, (3, 5): 91,\n        (4, 1): 23, (4, 2): 58, (4, 3): 28, (4, 5): 77,\n        (5, 1): 62, (5, 2): 46, (5, 3): 91, (5, 4): 77,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    N = d[\"N\"]\n    cities = d[\"cities\"]\n    start = d[\"start_city\"]\n    M = d[\"big_m\"]\n    cost = d[\"cost\"]\n\n    model = pyo.ConcreteModel()\n\n    # Set of cities\n    model.I = pyo.Set(initialize=cities)\n\n    # Arcs: all ordered pairs i != j\n    model.A = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n\n    # Binary arc variable x[i,j]\n    # \"it must visit each city exactly once and then return to the starting city\"\n    # assumption: arc_variable_domain Binary x[i,j]\n    model.x = pyo.Var(model.A, within=pyo.Binary)\n\n    # Order variable u[i] in [1, N]\n    # assumption: order_variable_domain NonNegativeIntegers bounded in [1, N]\n    model.u = pyo.Var(\n        model.I, within=pyo.NonNegativeIntegers, bounds=(1, N)\n    )\n\n    # Objective: minimize total travel cost\n    # \"find the route that minimizes the total travel cost\"\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[i, j] for (i, j) in m.A)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each city has exactly one outgoing arc\n    # \"it must visit each city exactly once and then return to the starting city\"\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n\n    model.out_arc = pyo.Constraint(model.I, rule=out_rule)\n\n    # Each city has exactly one incoming arc\n    # \"it must visit each city exactly once and then return to the starting city\"\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n\n    model.in_arc = pyo.Constraint(model.I, rule=in_rule)\n\n    # Anchor the start city order variable\n    # \"The delivery van can start its route from any of these cities\"\n    # assumption: start_city_anchoring Fix u[start] = 1\n    def anchor_rule(m):\n        return m.u[start] == 1\n\n    model.anchor = pyo.Constraint(rule=anchor_rule)\n\n    # MTZ subtour elimination on all arcs except those entering the start city\n    # assumption: mtz_constraint_coverage MTZ on all arcs except those entering start\n    # assumption: subtour_elimination_big_m_value Big-M = N (5), tight MTZ bound\n    def mtz_rule(m, i, j):\n        return m.u[i] - m.u[j] + M * m.x[i, j] <= M - 1\n\n    model.mtz = pyo.Constraint(\n        [(i, j) for (i, j) in model.A if j != start], rule=mtz_rule\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1116,
+      "completion_tokens": 1044
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.011071443557739,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "branch",
+ "generated_at": "2026-11-02T07:20:14"
+}

@@ -1,0 +1,329 @@
+{
+ "pid": "optmath_0015",
+ "question": "The manufacturing facility produces custom parts for two jobs, Job 0 and Job 1, each with a sequence of operations that must follow specific precedence constraints. Job 0 has two operations: Operation 0 must start at least 2 hours before Operation 1 begins. Job 1 has five operations: Operation 1 must start at least 4 hours after Operation 0 begins, Operation 2 must start at least 2 hours after Operation 1 completes, Operation 3 must start at least 1 hour after Operation 2 completes, and Operation 4 must start at least 3 hours after Operation 3 completes. \n\nOperations from different jobs share machines: Operation 0 of Job 0 and Operation 0 of Job 1 share a machine, Operation 0 of Job 0 and Operation 1 of Job 1 share a machine, Operation 0 of Job 1 and Operation 1 of Job 1 share a machine, and Operation 2 of Job 1 and Operation 4 of Job 1 share a machine. To prevent overlapping, binary variables determine the order of operations on shared machines. If Operation A is scheduled before Operation B on a shared machine, the binary variable is 1; otherwise, it is 0. \n\nThe objective is to minimize the makespan, the total completion time for all operations. The makespan must be at least as large as the completion time of the last operation in either job. Constraints ensure that operations within the same job follow their precedence requirements and that operations sharing a machine do not overlap. For example, if Operation 0 of Job 0 is scheduled before Operation 0 of Job 1, Operation 0 of Job 1 must start at least 4 hours after Operation 0 of Job 0 begins. Similarly, if Operation 2 of Job 1 is scheduled before Operation 4 of Job 1, Operation 4 of Job 1 must start at least 7 hours after Operation 2 of Job 1 begins. \n\nThe makespan accounts for the completion times of all operations: Operation 0 of Job 0 contributes at least 2 hours, Operation 1 of Job 0 contributes at least 4 hours, Operation 0 of Job 1 contributes at least 4 hours, Operation 1 of Job 1 contributes at least 2 hours, Operation 2 of Job 1 contributes at least 1 hour, Operation 3 of Job 1 contributes at least 3 hours, and Operation 4 of Job 1 contributes at least 7 hours. All operation start times must be non-negative, and the binary variables determining the order of operations on shared machines must be either 0 or 1. The goal is to determine the optimal schedule for all operations across both jobs, ensuring all constraints are met while minimizing the makespan.",
+ "templates": [
+  "Scheduling"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 0,
+    "assignment": [
+     {
+      "decision": "machine_pair_lag_interpretation",
+      "option": "Use start-to-completion separation (first duration + lag) for all shared-machine pairs, treating the stated 4 and 7 as additional lags",
+      "evidence": "\"If Operation 0 of Job 0 is scheduled before Operation 0 of Job 1, Operation 0 of Job 1 must start at least 4 hours after Operation 0 of Job 0 begins.\" and \"if Operation 2 of Job 1 is scheduled before Operation 4 of Job 1, Operation 4 of Job 1 must start at least 7 hours after Operation 2 of Job 1 begins.\"",
+      "plausibility": 0.3
+     },
+     {
+      "decision": "precedence_lag_basis",
+      "option": "Use start-to-start lags for the two 'begins' sentences and start-to-completion (duration + lag) for the three 'completes' sentences",
+      "evidence": "\"Operation 0 must start at least 2 hours before Operation 1 begins\" vs \"Operation 2 must start at least 2 hours after Operation 1 completes\"",
+      "plausibility": 0.7000000000000001
+     },
+     {
+      "decision": "makespan_completion_basis",
+      "option": "makespan >= start[k] + duration[k] for every operation k",
+      "evidence": "\"The makespan must be at least as large as the completion time of the last operation in either job.\" and \"Operation 0 of Job 0 contributes at least 2 hours, ... Operation 4 of Job 1 contributes at least 7 hours.\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "start_time_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"All operation start times must be non-negative\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "makespan_variable_domain",
+      "option": "NonNegativeReals",
+      "evidence": "none (the text only says the makespan is a total completion time)",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize makespan",
+      "evidence": "\"The objective is to minimize the makespan\"",
+      "plausibility": 0.99
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\n# =============================================================================\n# DECISION VARIABLES\n#   start[(j,o)]  : NonNegativeReals, start time of operation o of job j\n#   makespan      : NonNegativeReals, overall completion time (C_max)\n#   order[p]      : Binary, 1 if first op of machine pair p precedes second,\n#                   0 otherwise\n#\n# OBJECTIVE (minimize)\n#   Minimize makespan.\n#\n# CONSTRAINTS\n#   (1) prec_ss  : start-to-start precedence lags within a job\n#                  \"Op0 Job0 starts >= 2 before Op1 Job0 begins\"\n#                  \"Op1 Job1 starts >= 4 after Op0 Job1 begins\"\n#   (2) prec_sc  : start-to-completion precedence lags within a job\n#                  \"Op2 Job1 starts >= 2 after Op1 Job1 completes\"\n#                  \"Op3 Job1 starts >= 1 after Op2 Job1 completes\"\n#                  \"Op4 Job1 starts >= 3 after Op3 Job1 completes\"\n#   (3) machine_ab / machine_ba : disjunctive non-overlap on shared machines\n#                  via big-M and binary order variables\n#   (4) makespan_def : makespan >= start + duration for every operation\n# =============================================================================\n\nDATA = {\n    # Operation durations (completion contributions)\n    \"dur\": {\n        (0, 0): 2,\n        (0, 1): 4,\n        (1, 0): 4,\n        (1, 1): 2,\n        (1, 2): 1,\n        (1, 3): 3,\n        (1, 4): 7,\n    },\n    # Precedence: start-to-start lags (\"begins\")\n    # (job, op_from, op_to, lag)\n    \"prec_ss\": [\n        (0, 0, 1, 2),   # Job 0: Op0 starts >= 2 before Op1 begins\n        (1, 0, 1, 4),   # Job 1: Op1 starts >= 4 after Op0 begins\n    ],\n    # Precedence: start-to-completion lags (\"completes\")\n    # start[to] >= start[from] + dur[from] + lag\n    \"prec_sc\": [\n        (1, 1, 2, 2),   # Op2 starts >= 2 after Op1 completes\n        (1, 2, 3, 1),   # Op3 starts >= 1 after Op2 completes\n        (1, 3, 4, 3),   # Op4 starts >= 3 after Op3 completes\n    ],\n    # Shared-machine pairs: (job_a, op_a, job_b, op_b, lag)\n    # start-to-completion separation: start[b] >= start[a] + dur[a] + lag\n    \"machine_pairs\": [\n        (0, 0, 1, 0, 4),  # Op0 Job0 vs Op0 Job1\n        (0, 0, 1, 1, 4),  # Op0 Job0 vs Op1 Job1\n        (1, 0, 1, 1, 4),  # Op0 Job1 vs Op1 Job1\n        (1, 2, 1, 4, 7),  # Op2 Job1 vs Op4 Job1\n    ],\n    # Big-M for machine disjunctions\n    \"bigM\": 1000,\n    # All operations\n    \"ops\": [(0, 0), (0, 1), (1, 0), (1, 1), (1, 2), (1, 3), (1, 4)],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    model = pyo.ConcreteModel()\n\n    # Set of all operations\n    model.OPS = pyo.Set(initialize=d[\"ops\"], dimen=2)\n\n    # Start time variables: non-negative reals\n    model.start = pyo.Var(model.OPS, within=pyo.NonNegativeReals)\n\n    # Makespan variable: non-negative reals\n    model.makespan = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Binary ordering variables for each shared-machine pair\n    pair_idx = list(range(len(d[\"machine_pairs\"])))\n    model.PAIRS = pyo.Set(initialize=pair_idx)\n    model.order = pyo.Var(model.PAIRS, within=pyo.Binary)\n\n    # (1) Precedence: start-to-start\n    ss_idx = list(range(len(d[\"prec_ss\"])))\n    model.SS = pyo.Set(initialize=ss_idx)\n\n    def rule_prec_ss(m, i):\n        j, o_from, o_to, lag = d[\"prec_ss\"][i]\n        return m.start[j, o_to] >= m.start[j, o_from] + lag\n\n    model.prec_ss = pyo.Constraint(model.SS, rule=rule_prec_ss)\n\n    # (2) Precedence: start-to-completion\n    sc_idx = list(range(len(d[\"prec_sc\"])))\n    model.SC = pyo.Set(initialize=sc_idx)\n\n    def rule_prec_sc(m, i):\n        j, o_from, o_to, lag = d[\"prec_sc\"][i]\n        return m.start[j, o_to] >= m.start[j, o_from] + d[\"dur\"][(j, o_from)] + lag\n\n    model.prec_sc = pyo.Constraint(model.SC, rule=rule_prec_sc)\n\n    # (3) Machine disjunction constraints (big-M)\n    def rule_machine_ab(m, i):\n        ja, oa, jb, ob, lag = d[\"machine_pairs\"][i]\n        M = d[\"bigM\"]\n        return m.start[jb, ob] >= m.start[ja, oa] + d[\"dur\"][(ja, oa)] + lag - M * (1 - m.order[i])\n\n    def rule_machine_ba(m, i):\n        ja, oa, jb, ob, lag = d[\"machine_pairs\"][i]\n        M = d[\"bigM\"]\n        return m.start[ja, oa] >= m.start[jb, ob] + d[\"dur\"][(jb, ob)] + lag - M * m.order[i]\n\n    model.machine_ab = pyo.Constraint(model.PAIRS, rule=rule_machine_ab)\n    model.machine_ba = pyo.Constraint(model.PAIRS, rule=rule_machine_ba)\n\n    # (4) Makespan >= start + duration for every operation\n    def rule_makespan(m, j, o):\n        return m.makespan >= m.start[j, o] + d[\"dur\"][(j, o)]\n\n    model.makespan_def = pyo.Constraint(model.OPS, rule=rule_makespan)\n\n    # Objective: minimize makespan\n    model.obj = pyo.Objective(expr=model.makespan, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1477,
+      "completion_tokens": 1665
+     }
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "disallowed_lambda_rule",
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3225,
+      "completion_tokens": 1600
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 14.14586353302002,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 1,
+    "assignment": [
+     {
+      "decision": "machine_pair_lag_interpretation",
+      "option": "Use start-to-start lags for the two explicitly stated pairs and start-to-completion separation for the other two pairs",
+      "evidence": "\"If Operation 0 of Job 0 is scheduled before Operation 0 of Job 1, Operation 0 of Job 1 must start at least 4 hours after Operation 0 of Job 0 begins.\" and \"if Operation 2 of Job 1 is scheduled before Operation 4 of Job 1, Operation 4 of Job 1 must start at least 7 hours after Operation 2 of Job 1 begins.\"",
+      "plausibility": 0.2
+     },
+     {
+      "decision": "precedence_lag_basis",
+      "option": "Use start-to-start lags for the two 'begins' sentences and start-to-completion (duration + lag) for the three 'completes' sentences",
+      "evidence": "\"Operation 0 must start at least 2 hours before Operation 1 begins\" vs \"Operation 2 must start at least 2 hours after Operation 1 completes\"",
+      "plausibility": 0.7000000000000001
+     },
+     {
+      "decision": "makespan_completion_basis",
+      "option": "makespan >= start[k] + duration[k] for every operation k",
+      "evidence": "\"The makespan must be at least as large as the completion time of the last operation in either job.\" and \"Operation 0 of Job 0 contributes at least 2 hours, ... Operation 4 of Job 1 contributes at least 7 hours.\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "start_time_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"All operation start times must be non-negative\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "makespan_variable_domain",
+      "option": "NonNegativeReals",
+      "evidence": "none (the text only says the makespan is a total completion time)",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize makespan",
+      "evidence": "\"The objective is to minimize the makespan\"",
+      "plausibility": 0.99
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\n# =============================================================================\n# PROBLEM: Two-job, multi-operation scheduling with shared machines.\n#\n# DECISION VARIABLES\n#   start[(j,o)]  in NonNegativeReals  -- start time of operation o of job j\n#   makespan      in NonNegativeReals  -- overall completion time (C_max)\n#   order[p]      in {0,1}             -- ordering binary for shared-machine pair p\n#                                         order[p]=1 => opA before opB, else opB before opA\n#\n# OBJECTIVE (minimize)\n#   Minimize makespan.\n#\n# CONSTRAINTS\n#   (1) Job 0 precedence: start[0,1] >= start[0,0] + 2\n#   (2) Job 1 precedence: start[1,1] >= start[1,0] + 4\n#   (3) Job 1 precedence: start[1,2] >= start[1,1] + dur[1,1] + 2\n#   (4) Job 1 precedence: start[1,3] >= start[1,2] + dur[1,2] + 1\n#   (5) Job 1 precedence: start[1,4] >= start[1,3] + dur[1,3] + 3\n#   (6) Machine disjunctive (forward) for each shared pair, big-M\n#   (7) Machine disjunctive (backward) for each shared pair, big-M\n#   (8) Makespan >= start[k] + dur[k] for every operation k\n# =============================================================================\n\nDATA = {\n    # Operation durations (contribution to completion time)\n    \"duration\": {\n        (0, 0): 2,   # Job 0, Operation 0\n        (0, 1): 4,   # Job 0, Operation 1\n        (1, 0): 4,   # Job 1, Operation 0\n        (1, 1): 2,   # Job 1, Operation 1\n        (1, 2): 1,   # Job 1, Operation 2\n        (1, 3): 3,   # Job 1, Operation 3\n        (1, 4): 7,   # Job 1, Operation 4\n    },\n    # Precedence lags\n    \"prec_job0_0_1\": 2,   # Op 0 must start >= 2h before Op 1 begins\n    \"prec_job1_0_1\": 4,   # Op 1 must start >= 4h after Op 0 begins\n    \"prec_job1_1_2\": 2,   # Op 2 must start >= 2h after Op 1 completes\n    \"prec_job1_2_3\": 1,   # Op 3 must start >= 1h after Op 2 completes\n    \"prec_job1_3_4\": 3,   # Op 4 must start >= 3h after Op 3 completes\n    # Machine-pair separation lags\n    \"mach_j00_j10\": 4,    # Job0 Op0 before Job1 Op0: start >= 4h after begins\n    \"mach_j00_j11\": 2,    # start-to-completion separation (dur of Job0 Op0 = 2)\n    \"mach_j10_j11\": 4,    # start-to-completion separation (dur of Job1 Op0 = 4)\n    \"mach_j12_j14\": 7,    # Job1 Op2 before Job1 Op4: start >= 7h after begins\n    # Big-M\n    \"bigM\": 1000,\n}\n\n# All operations as (job, op) tuples\nOPS = [(0, 0), (0, 1), (1, 0), (1, 1), (1, 2), (1, 3), (1, 4)]\n\n# Shared machine pairs: (opA, opB, lag_key, lag_type)\n# lag_type \"ss\" = start-to-start, \"sc\" = start-to-completion\nMACHINE_PAIRS = [\n    ((0, 0), (1, 0), \"mach_j00_j10\", \"ss\"),\n    ((0, 0), (1, 1), \"mach_j00_j11\", \"sc\"),\n    ((1, 0), (1, 1), \"mach_j10_j11\", \"sc\"),\n    ((1, 2), (1, 4), \"mach_j12_j14\", \"ss\"),\n]\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    # Set of operations\n    model.OPS = pyo.Set(initialize=OPS, dimen=2)\n\n    # Start time variables: non-negative reals\n    model.start = pyo.Var(model.OPS, within=pyo.NonNegativeReals)\n\n    # Makespan variable: non-negative reals\n    model.makespan = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Binary ordering variables for each shared machine pair\n    pair_index = list(range(len(MACHINE_PAIRS)))\n    model.PAIRS = pyo.Set(initialize=pair_index)\n    model.order = pyo.Var(model.PAIRS, within=pyo.Binary)\n\n    # (1) Job 0 precedence\n    def rule_prec_job0_0_1(m):\n        return m.start[0, 1] >= m.start[0, 0] + d[\"prec_job0_0_1\"]\n    model.prec_job0_0_1 = pyo.Constraint(rule=rule_prec_job0_0_1)\n\n    # (2) Job 1 precedence\n    def rule_prec_job1_0_1(m):\n        return m.start[1, 1] >= m.start[1, 0] + d[\"prec_job1_0_1\"]\n    model.prec_job1_0_1 = pyo.Constraint(rule=rule_prec_job1_0_1)\n\n    # (3)\n    def rule_prec_job1_1_2(m):\n        return m.start[1, 2] >= m.start[1, 1] + d[\"duration\"][1, 1] + d[\"prec_job1_1_2\"]\n    model.prec_job1_1_2 = pyo.Constraint(rule=rule_prec_job1_1_2)\n\n    # (4)\n    def rule_prec_job1_2_3(m):\n        return m.start[1, 3] >= m.start[1, 2] + d[\"duration\"][1, 2] + d[\"prec_job1_2_3\"]\n    model.prec_job1_2_3 = pyo.Constraint(rule=rule_prec_job1_2_3)\n\n    # (5)\n    def rule_prec_job1_3_4(m):\n        return m.start[1, 4] >= m.start[1, 3] + d[\"duration\"][1, 3] + d[\"prec_job1_3_4\"]\n    model.prec_job1_3_4 = pyo.Constraint(rule=rule_prec_job1_3_4)\n\n    # (6) Machine disjunctive forward\n    def rule_machine_forward(m, p):\n        opA, opB, lag_key, lag_type = MACHINE_PAIRS[p]\n        lag = d[lag_key]\n        if lag_type == \"ss\":\n            return m.start[opB] >= m.start[opA] + lag - d[\"bigM\"] * (1 - m.order[p])\n        else:\n            return m.start[opB] >= m.start[opA] + d[\"duration\"][opA] + lag - d[\"bigM\"] * (1 - m.order[p])\n    model.machine_forward = pyo.Constraint(model.PAIRS, rule=rule_machine_forward)\n\n    # (7) Machine disjunctive backward\n    def rule_machine_backward(m, p):\n        opA, opB, lag_key, lag_type = MACHINE_PAIRS[p]\n        lag = d[lag_key]\n        if lag_type == \"ss\":\n            return m.start[opA] >= m.start[opB] + lag - d[\"bigM\"] * m.order[p]\n        else:\n            return m.start[opA] >= m.start[opB] + d[\"duration\"][opB] + lag - d[\"bigM\"] * m.order[p]\n    model.machine_backward = pyo.Constraint(model.PAIRS, rule=rule_machine_backward)\n\n    # (8) Makespan constraints\n    def rule_makespan(m, k):\n        return m.makespan >= m.start[k] + d[\"duration\"][k]\n    model.makespan_con = pyo.Constraint(model.OPS, rule=rule_makespan)\n\n    # Objective: minimize makespan\n    model.obj = pyo.Objective(expr=model.makespan, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1470,
+      "completion_tokens": 2062
+     }
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3794,
+      "completion_tokens": 2072
+     }
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3804,
+      "completion_tokens": 2072
+     }
+    }
+   ],
+   "defects_at_generation": [
+    "sandbox_construct_error"
+   ],
+   "seconds": 24.00247097015381,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 2,
+    "assignment": [
+     {
+      "decision": "machine_pair_lag_interpretation",
+      "option": "Use the stated start-to-start lags (4 and 7) as the disjunctive separation, and for the other two shared pairs use start-to-start lags equal to the first operation's duration (non-overlap)",
+      "evidence": "\"If Operation 0 of Job 0 is scheduled before Operation 0 of Job 1, Operation 0 of Job 1 must start at least 4 hours after Operation 0 of Job 0 begins.\" and \"if Operation 2 of Job 1 is scheduled before Operation 4 of Job 1, Operation 4 of Job 1 must start at least 7 hours after Operation 2 of Job 1 begins.\"",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "precedence_lag_basis",
+      "option": "Use start-to-start lags for all five within-job precedence constraints",
+      "evidence": "\"Operation 0 must start at least 2 hours before Operation 1 begins\" vs \"Operation 2 must start at least 2 hours after Operation 1 completes\"",
+      "plausibility": 0.20000000000000004
+     },
+     {
+      "decision": "makespan_completion_basis",
+      "option": "makespan >= start[k] + duration[k] for every operation k",
+      "evidence": "\"The makespan must be at least as large as the completion time of the last operation in either job.\" and \"Operation 0 of Job 0 contributes at least 2 hours, ... Operation 4 of Job 1 contributes at least 7 hours.\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "start_time_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"All operation start times must be non-negative\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "makespan_variable_domain",
+      "option": "NonNegativeReals",
+      "evidence": "none (the text only says the makespan is a total completion time)",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize makespan",
+      "evidence": "\"The objective is to minimize the makespan\"",
+      "plausibility": 0.99
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\n# =============================================================================\n# MODEL OVERVIEW\n# -----------------------------------------------------------------------------\n# Decision variables:\n#   start[k]      : start time of operation k = (job, op_index), NonNegativeReals\n#   makespan      : makespan (total completion time), NonNegativeReals\n#   order[i]      : binary ordering variable for shared-machine pair i, Binary\n#                   order[i] = 1  -> A before B ; 0 -> B before A\n#\n# Objective (minimize):\n#   Minimize makespan.\n#\n# Constraints:\n#   (1) Within-job precedence (start-to-start lags):\n#       \"Operation 0 must start at least 2 hours before Operation 1 begins\" (Job0)\n#       \"Operation 1 must start at least 4 hours after Operation 0 begins\" (Job1)\n#       \"Operation 2 must start at least 2 hours after Operation 1 completes\" (Job1)\n#       \"Operation 3 must start at least 1 hour after Operation 2 completes\" (Job1)\n#       \"Operation 4 must start at least 3 hours after Operation 3 completes\" (Job1)\n#   (2) Shared-machine disjunctive (non-overlap) constraints via big-M:\n#       \"If Operation A is scheduled before Operation B on a shared machine, ...\"\n#       e.g. Job0-Op0 before Job1-Op0 -> Job1-Op0 starts >= Job0-Op0 start + 4\n#            Job1-Op2 before Job1-Op4 -> Job1-Op4 starts >= Job1-Op2 start + 7\n#   (3) Makespan >= completion time of every operation:\n#       \"The makespan must be at least as large as the completion time of the\n#        last operation in either job\" (per-operation durations given).\n# =============================================================================\n\nDATA = {\n    # operation durations (hours)\n    \"duration\": {\n        (\"Job0\", 0): 2,\n        (\"Job0\", 1): 4,\n        (\"Job1\", 0): 4,\n        (\"Job1\", 1): 2,\n        (\"Job1\", 2): 1,\n        (\"Job1\", 3): 3,\n        (\"Job1\", 4): 7,\n    },\n    # within-job precedence start-to-start lags (hours)\n    \"precedence\": [\n        ((\"Job0\", 0), (\"Job0\", 1), 2),\n        ((\"Job1\", 0), (\"Job1\", 1), 4),\n        ((\"Job1\", 1), (\"Job1\", 2), 2),\n        ((\"Job1\", 2), (\"Job1\", 3), 1),\n        ((\"Job1\", 3), (\"Job1\", 4), 3),\n    ],\n    # shared-machine disjunctive pairs: (A, B, lag_A_before_B, lag_B_before_A)\n    \"machine_pairs\": [\n        ((\"Job0\", 0), (\"Job1\", 0), 2, 4),\n        ((\"Job0\", 0), (\"Job1\", 1), 2, 2),\n        ((\"Job1\", 0), (\"Job1\", 1), 4, 4),\n        ((\"Job1\", 2), (\"Job1\", 4), 7, 1),\n    ],\n    # big-M\n    \"bigM\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    ops = list(d[\"duration\"].keys())\n\n    model = pyo.ConcreteModel()\n\n    # start time for each operation, non-negative reals\n    model.start = pyo.Var(ops, within=pyo.NonNegativeReals)\n\n    # makespan variable, non-negative reals\n    model.makespan = pyo.Var(within=pyo.NonNegativeReals)\n\n    # binary ordering variables for each shared-machine pair\n    pair_idx = list(range(len(d[\"machine_pairs\"])))\n    model.order = pyo.Var(pair_idx, within=pyo.Binary)\n\n    # (1) within-job precedence constraints (start-to-start lags)\n    prec_idx = list(range(len(d[\"precedence\"])))\n\n    def prec_rule(m, i):\n        a, b, lag = d[\"precedence\"][i]\n        return m.start[b] >= m.start[a] + lag\n\n    model.precedence = pyo.Constraint(prec_idx, rule=prec_rule)\n\n    # (2) shared-machine disjunctive constraints (two separate constraints)\n    def machine_ab_rule(m, i):\n        a, b, lag_ab, lag_ba = d[\"machine_pairs\"][i]\n        M = d[\"bigM\"]\n        # if order=1: A before B -> start[b] >= start[a] + lag_ab\n        return m.start[b] >= m.start[a] + lag_ab - M * (1 - m.order[i])\n\n    def machine_ba_rule(m, i):\n        a, b, lag_ab, lag_ba = d[\"machine_pairs\"][i]\n        M = d[\"bigM\"]\n        # if order=0: B before A -> start[a] >= start[b] + lag_ba\n        return m.start[a] >= m.start[b] + lag_ba - M * m.order[i]\n\n    model.machine_ab = pyo.Constraint(pair_idx, rule=machine_ab_rule)\n    model.machine_ba = pyo.Constraint(pair_idx, rule=machine_ba_rule)\n\n    # (3) makespan >= start + duration for every operation\n    def makespan_rule(m, k):\n        return m.makespan >= m.start[k] + d[\"duration\"][k]\n\n    model.makespan_con = pyo.Constraint(ops, rule=makespan_rule)\n\n    # objective: minimize makespan\n    model.obj = pyo.Objective(expr=model.makespan, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1472,
+      "completion_tokens": 969
+     }
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2827,
+      "completion_tokens": 1338
+     }
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3070,
+      "completion_tokens": 1338
+     }
+    }
+   ],
+   "defects_at_generation": [
+    "sandbox_construct_error"
+   ],
+   "seconds": 16.431408166885376,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 3,
+    "assignment": [
+     {
+      "decision": "machine_pair_lag_interpretation",
+      "option": "Use start-to-completion separation (first duration + lag) for all shared-machine pairs, treating the stated 4 and 7 as additional lags",
+      "evidence": "\"If Operation 0 of Job 0 is scheduled before Operation 0 of Job 1, Operation 0 of Job 1 must start at least 4 hours after Operation 0 of Job 0 begins.\" and \"if Operation 2 of Job 1 is scheduled before Operation 4 of Job 1, Operation 4 of Job 1 must start at least 7 hours after Operation 2 of Job 1 begins.\"",
+      "plausibility": 0.3
+     },
+     {
+      "decision": "precedence_lag_basis",
+      "option": "Use start-to-start lags for all five within-job precedence constraints",
+      "evidence": "\"Operation 0 must start at least 2 hours before Operation 1 begins\" vs \"Operation 2 must start at least 2 hours after Operation 1 completes\"",
+      "plausibility": 0.20000000000000004
+     },
+     {
+      "decision": "makespan_completion_basis",
+      "option": "makespan >= start[k] + duration[k] for every operation k",
+      "evidence": "\"The makespan must be at least as large as the completion time of the last operation in either job.\" and \"Operation 0 of Job 0 contributes at least 2 hours, ... Operation 4 of Job 1 contributes at least 7 hours.\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "start_time_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"All operation start times must be non-negative\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "makespan_variable_domain",
+      "option": "NonNegativeReals",
+      "evidence": "none (the text only says the makespan is a total completion time)",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize makespan",
+      "evidence": "\"The objective is to minimize the makespan\"",
+      "plausibility": 0.99
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\n# =============================================================================\n# DECISION VARIABLES\n#   start[k]      for each operation k=(job,op)   : NonNegativeReals  (start time)\n#   makespan                                       : NonNegativeReals  (C_max)\n#   order[i]      for each shared-machine pair i   : Binary            (1 = A before B)\n#\n# OBJECTIVE (minimize)\n#   Minimize makespan (total completion time of all operations).\n#\n# CONSTRAINTS\n#   (1) Within-job precedence (start-to-start lags):\n#       Job0: start[0,1] >= start[0,0] + 2\n#       Job1: start[1,1] >= start[1,0] + 4\n#             start[1,2] >= start[1,1] + 2\n#             start[1,3] >= start[1,2] + 1\n#             start[1,4] >= start[1,3] + 3\n#   (2) Shared-machine disjunctive (non-overlap) constraints via big-M:\n#       For pair (A,B): order=1 -> B starts after A completes;\n#                       order=0 -> A starts after B completes.\n#   (3) Makespan >= start[k] + duration[k] for every operation.\n# =============================================================================\n\nDATA = {\n    # Operation durations (\"Operation X contributes at least Y hours\")\n    \"duration\": {\n        (\"Job0\", 0): 2,\n        (\"Job0\", 1): 4,\n        (\"Job1\", 0): 4,\n        (\"Job1\", 1): 2,\n        (\"Job1\", 2): 1,\n        (\"Job1\", 3): 3,\n        (\"Job1\", 4): 7,\n    },\n    # Within-job precedence: (predecessor, successor, start-to-start lag)\n    \"precedence\": [\n        ((\"Job0\", 0), (\"Job0\", 1), 2),\n        ((\"Job1\", 0), (\"Job1\", 1), 4),\n        ((\"Job1\", 1), (\"Job1\", 2), 2),\n        ((\"Job1\", 2), (\"Job1\", 3), 1),\n        ((\"Job1\", 3), (\"Job1\", 4), 3),\n    ],\n    # Shared-machine pairs (A, B): non-overlap enforced via binary order var\n    \"machine_pairs\": [\n        ((\"Job0\", 0), (\"Job1\", 0)),\n        ((\"Job0\", 0), (\"Job1\", 1)),\n        ((\"Job1\", 0), (\"Job1\", 1)),\n        ((\"Job1\", 2), (\"Job1\", 4)),\n    ],\n    \"bigM\": 1000,\n}\n\nOPS = [\n    (\"Job0\", 0),\n    (\"Job0\", 1),\n    (\"Job1\", 0),\n    (\"Job1\", 1),\n    (\"Job1\", 2),\n    (\"Job1\", 3),\n    (\"Job1\", 4),\n]\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.OPS = pyo.Set(initialize=OPS, dimen=2)\n\n    # Start times (non-negative)\n    model.start = pyo.Var(model.OPS, within=pyo.NonNegativeReals)\n\n    # Makespan\n    model.makespan = pyo.Var(within=pyo.NonNegativeReals)\n\n    # Binary ordering variables for shared-machine pairs\n    model.PAIRS = pyo.Set(initialize=list(range(len(d[\"machine_pairs\"]))))\n    model.order = pyo.Var(model.PAIRS, within=pyo.Binary)\n\n    # Precedence constraints\n    model.PREC = pyo.Set(initialize=list(range(len(d[\"precedence\"]))))\n\n    def prec_rule(m, i):\n        a, b, lag = d[\"precedence\"][i]\n        return m.start[b] >= m.start[a] + lag\n\n    model.precedence_con = pyo.Constraint(model.PREC, rule=prec_rule)\n\n    # Machine disjunctive constraints (two separate constraints per pair)\n    def machine_ab_rule(m, i):\n        a, b = d[\"machine_pairs\"][i]\n        dur_a = d[\"duration\"][a]\n        M = d[\"bigM\"]\n        # order[i] == 1 -> a before b\n        return m.start[b] >= m.start[a] + dur_a - M * (1 - m.order[i])\n\n    def machine_ba_rule(m, i):\n        a, b = d[\"machine_pairs\"][i]\n        dur_b = d[\"duration\"][b]\n        M = d[\"bigM\"]\n        # order[i] == 0 -> b before a\n        return m.start[a] >= m.start[b] + dur_b - M * m.order[i]\n\n    model.machine_ab_con = pyo.Constraint(model.PAIRS, rule=machine_ab_rule)\n    model.machine_ba_con = pyo.Constraint(model.PAIRS, rule=machine_ba_rule)\n\n    # Makespan >= start[k] + duration[k]\n    def makespan_rule(m, k):\n        return m.makespan >= m.start[k] + d[\"duration\"][k]\n\n    model.makespan_con = pyo.Constraint(model.OPS, rule=makespan_rule)\n\n    # Objective\n    model.obj = pyo.Objective(expr=model.makespan, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1457,
+      "completion_tokens": 1293
+     }
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 3163,
+      "completion_tokens": 1252
+     }
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2984,
+      "completion_tokens": 1252
+     }
+    }
+   ],
+   "defects_at_generation": [
+    "sandbox_construct_error"
+   ],
+   "seconds": 17.109939336776733,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "branch",
+ "generated_at": "2026-11-02T08:10:54"
+}

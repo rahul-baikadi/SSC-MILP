@@ -1,0 +1,246 @@
+{
+ "pid": "optmath_0073",
+ "question": "Minimize the total completion time of six jobs processed on three machines, where each job must be assigned to exactly one of six schedule positions and each position must have exactly one job. The processing times for each job on each machine are as follows: Job 0 takes 5, 5, and 7 hours on Machines 0, 1, and 2 respectively; Job 1 takes 5, 9, and 10 hours; Job 2 takes 6, 7, and 10 hours; Job 3 takes 8, 7, and 9 hours; Job 4 takes 9, 5, and 9 hours; and Job 5 takes 8, 8, and 7 hours. Each job must start on Machine 1 only after completing on Machine 0, and on Machine 2 only after completing on Machine 1. Additionally, the start time of a job in a later position must be at least the start time of the job in the previous position plus its processing time on the same machine. The objective is to minimize the total completion time, which includes the start time of the last job on the last machine plus its processing time. All start times must be non-negative, and job assignments to positions are binary (either assigned or not). The specific coefficients for the objective function are 5, 6, 10, 7, 8, and 8 for JobSchedule[0,5], JobSchedule[1,5], JobSchedule[2,5], JobSchedule[3,5], JobSchedule[4,5], and JobSchedule[5,5] respectively, with an additional term StartTime[5,3]. The constraints include ensuring one job per schedule position, one schedule position per job, machine precedence, and job precedence, with exact coefficients as detailed in the LP data.",
+ "templates": [
+  "Scheduling",
+  "Assignment"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 0,
+    "assignment": [
+     {
+      "decision": "objective_coefficients_for_last_position",
+      "option": "use the stated coefficients 5,6,10,7,8,8 on x[j,last_position] plus s[last_position,last_machine]",
+      "evidence": "\"The specific coefficients for the objective function are 5, 6, 10, 7, 8, and 8 for JobSchedule[0,5], JobSchedule[1,5], JobSchedule[2,5], JobSchedule[3,5], JobSchedule[4,5], and JobSchedule[5,5] respectively, with an additional term StartTime[5,3].\"",
+      "plausibility": 0.6000000000000001
+     },
+     {
+      "decision": "start_time_variable_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"All start times must be non-negative\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "machine_precedence_direction",
+      "option": "s[k,m+1] >= s[k,m] + processing on machine m (strictly after completion)",
+      "evidence": "\"Each job must start on Machine 1 only after completing on Machine 0, and on Machine 2 only after completing on Machine 1.\"",
+      "plausibility": 0.7
+     },
+     {
+      "decision": "position_precedence_direction",
+      "option": "s[k,m] >= s[k-1,m] + processing of job in position k-1 on machine m",
+      "evidence": "\"the start time of a job in a later position must be at least the start time of the job in the previous position plus its processing time on the same machine\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "objective_interpretation_total_completion_time",
+      "option": "minimize makespan (completion time of last job on last machine)",
+      "evidence": "\"The objective is to minimize the total completion time, which includes the start time of the last job on the last machine plus its processing time.\"",
+      "plausibility": 0.75
+     },
+     {
+      "decision": "processing_time_index_orientation",
+      "option": "processing[job][machine] with rows = jobs, columns = machines",
+      "evidence": "\"Job 0 takes 5, 5, and 7 hours on Machines 0, 1, and 2 respectively\"",
+      "plausibility": 0.95
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\n# All numeric constants from the problem statement.\nDATA = {\n    \"num_jobs\": 6,\n    \"num_machines\": 3,\n    \"num_positions\": 6,\n    # processing[job][machine] with rows = jobs, columns = machines\n    \"processing\": [\n        [5, 5, 7],   # Job 0 takes 5, 5, and 7 hours on Machines 0, 1, and 2 respectively\n        [5, 9, 10],  # Job 1 takes 5, 9, and 10 hours\n        [6, 7, 10],  # Job 2 takes 6, 7, and 10 hours\n        [8, 7, 9],   # Job 3 takes 8, 7, and 9 hours\n        [9, 5, 9],   # Job 4 takes 9, 5, and 9 hours\n        [8, 8, 7],   # Job 5 takes 8, 8, and 7 hours\n    ],\n    # objective coefficients on x[j, last_position]\n    \"obj_coeff\": [5, 6, 10, 7, 8, 8],\n    # big-M for linearising the position-precedence product\n    \"big_m\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n_jobs = d[\"num_jobs\"]\n    n_mach = d[\"num_machines\"]\n    n_pos = d[\"num_positions\"]\n    proc = d[\"processing\"]\n    coeff = d[\"obj_coeff\"]\n    big_m = d[\"big_m\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.J = pyo.RangeSet(0, n_jobs - 1)      # jobs\n    model.M = pyo.RangeSet(0, n_mach - 1)      # machines\n    model.K = pyo.RangeSet(0, n_pos - 1)       # schedule positions\n\n    # Binary assignment: x[j,k] = 1 if job j assigned to position k\n    # \"each job must be assigned to exactly one of six schedule positions\"\n    model.x = pyo.Var(model.J, model.K, within=pyo.Binary)\n\n    # Start times s[k,m]: start time of the job in position k on machine m\n    # \"All start times must be non-negative\"\n    model.s = pyo.Var(model.K, model.M, within=pyo.NonNegativeReals)\n\n    # One job per schedule position\n    # \"each position must have exactly one job\"\n    def one_job_per_position_rule(m, k):\n        return sum(m.x[j, k] for j in m.J) == 1\n    model.one_job_per_position = pyo.Constraint(model.K, rule=one_job_per_position_rule)\n\n    # One schedule position per job\n    # \"each job must be assigned to exactly one of six schedule positions\"\n    def one_position_per_job_rule(m, j):\n        return sum(m.x[j, k] for k in m.K) == 1\n    model.one_position_per_job = pyo.Constraint(model.J, rule=one_position_per_job_rule)\n\n    # Machine precedence: s[k,m+1] >= s[k,m] + processing on machine m\n    # \"Each job must start on Machine 1 only after completing on Machine 0,\n    #  and on Machine 2 only after completing on Machine 1.\"\n    # The processing time depends on which job is in position k, so we\n    # linearise: s[k,m+1] >= s[k,m] + sum_j proc[j][m] * x[j,k]\n    def machine_precedence_rule(m, k, mach):\n        if mach == n_mach - 1:\n            return pyo.Constraint.Skip\n        return m.s[k, mach + 1] >= m.s[k, mach] + sum(\n            proc[j][mach] * m.x[j, k] for j in m.J\n        )\n    model.machine_precedence = pyo.Constraint(model.K, model.M, rule=machine_precedence_rule)\n\n    # Position precedence: s[k,m] >= s[k-1,m] + processing of job in position k-1 on machine m\n    # \"the start time of a job in a later position must be at least the start time\n    #  of the job in the previous position plus its processing time on the same machine\"\n    # The processing time of the job in position k-1 is sum_j proc[j][m]*x[j,k-1].\n    def position_precedence_rule(m, k, mach):\n        if k == 0:\n            return pyo.Constraint.Skip\n        return m.s[k, mach] >= m.s[k - 1, mach] + sum(\n            proc[j][mach] * m.x[j, k - 1] for j in m.J\n        )\n    model.position_precedence = pyo.Constraint(model.K, model.M, rule=position_precedence_rule)\n\n    # Objective: minimize makespan = completion time of last job on last machine\n    # \"minimize the total completion time, which includes the start time of the\n    #  last job on the last machine plus its processing time.\"\n    # Coefficients 5,6,10,7,8,8 on x[j,last_position] plus s[last_position,last_machine]\n    last_pos = n_pos - 1\n    last_mach = n_mach - 1\n    model.obj = pyo.Objective(\n        expr=sum(coeff[j] * model.x[j, last_pos] for j in model.J)\n        + model.s[last_pos, last_mach],\n        sense=pyo.minimize,\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1326,
+      "completion_tokens": 1307
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.969349384307861,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 1,
+    "assignment": [
+     {
+      "decision": "objective_coefficients_for_last_position",
+      "option": "use processing time p[j,last_machine] on x[j,last_position] plus s[last_position,last_machine]",
+      "evidence": "\"The specific coefficients for the objective function are 5, 6, 10, 7, 8, and 8 for JobSchedule[0,5], JobSchedule[1,5], JobSchedule[2,5], JobSchedule[3,5], JobSchedule[4,5], and JobSchedule[5,5] respectively, with an additional term StartTime[5,3].\"",
+      "plausibility": 0.30000000000000004
+     },
+     {
+      "decision": "start_time_variable_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"All start times must be non-negative\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "machine_precedence_direction",
+      "option": "s[k,m+1] >= s[k,m] + processing on machine m (strictly after completion)",
+      "evidence": "\"Each job must start on Machine 1 only after completing on Machine 0, and on Machine 2 only after completing on Machine 1.\"",
+      "plausibility": 0.7
+     },
+     {
+      "decision": "position_precedence_direction",
+      "option": "s[k,m] >= s[k-1,m] + processing of job in position k-1 on machine m",
+      "evidence": "\"the start time of a job in a later position must be at least the start time of the job in the previous position plus its processing time on the same machine\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "objective_interpretation_total_completion_time",
+      "option": "minimize makespan (completion time of last job on last machine)",
+      "evidence": "\"The objective is to minimize the total completion time, which includes the start time of the last job on the last machine plus its processing time.\"",
+      "plausibility": 0.75
+     },
+     {
+      "decision": "processing_time_index_orientation",
+      "option": "processing[job][machine] with rows = jobs, columns = machines",
+      "evidence": "\"Job 0 takes 5, 5, and 7 hours on Machines 0, 1, and 2 respectively\"",
+      "plausibility": 0.95
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_jobs\": 6,\n    \"num_machines\": 3,\n    \"num_positions\": 6,\n    # processing[job][machine]\n    \"processing\": [\n        [5, 5, 7],\n        [5, 9, 10],\n        [6, 7, 10],\n        [8, 7, 9],\n        [9, 5, 9],\n        [8, 8, 7],\n    ],\n    # objective coefficients for x[j, last_position] = p[j, last_machine]\n    \"obj_coeff_last_position\": [5, 6, 10, 7, 8, 8],\n    \"last_position\": 5,\n    \"last_machine\": 2,\n    \"big_m\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    J = range(d[\"num_jobs\"])\n    M = range(d[\"num_machines\"])\n    K = range(d[\"num_positions\"])\n\n    model.J = pyo.Set(initialize=list(J))\n    model.M = pyo.Set(initialize=list(M))\n    model.K = pyo.Set(initialize=list(K))\n\n    # Binary assignment of job j to schedule position k\n    # \"job assignments to positions are binary (either assigned or not)\"\n    model.x = pyo.Var(model.J, model.K, within=pyo.Binary)\n\n    # Start time of the job in position k on machine m\n    # \"All start times must be non-negative\"\n    model.s = pyo.Var(model.K, model.M, within=pyo.NonNegativeReals)\n\n    # Objective: minimize makespan = start of last job on last machine + its processing time\n    # \"The objective is to minimize the total completion time, which includes the start\n    #  time of the last job on the last machine plus its processing time.\"\n    # assumption: objective_coefficients_for_last_position = p[j,last_machine] on x[j,last_position]\n    def obj_rule(m):\n        return (\n            sum(d[\"obj_coeff_last_position\"][j] * m.x[j, d[\"last_position\"]] for j in J)\n            + m.s[d[\"last_position\"], d[\"last_machine\"]]\n        )\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each position has exactly one job\n    # \"each position must have exactly one job\"\n    def one_job_per_position_rule(m, k):\n        return sum(m.x[j, k] for j in J) == 1\n    model.one_job_per_position = pyo.Constraint(model.K, rule=one_job_per_position_rule)\n\n    # Each job assigned to exactly one position\n    # \"each job must be assigned to exactly one of six schedule positions\"\n    def one_position_per_job_rule(m, j):\n        return sum(m.x[j, k] for k in K) == 1\n    model.one_position_per_job = pyo.Constraint(model.J, rule=one_position_per_job_rule)\n\n    # Machine precedence: s[k,m+1] >= s[k,m] + processing on machine m\n    # \"Each job must start on Machine 1 only after completing on Machine 0,\n    #  and on Machine 2 only after completing on Machine 1.\"\n    # assumption: machine_precedence_direction = s[k,m+1] >= s[k,m] + processing on machine m\n    def machine_precedence_rule(m, k, mm):\n        if mm == d[\"num_machines\"] - 1:\n            return pyo.Constraint.Skip\n        proc = sum(d[\"processing\"][j][mm] * m.x[j, k] for j in J)\n        return m.s[k, mm + 1] >= m.s[k, mm] + proc\n    model.machine_precedence = pyo.Constraint(model.K, model.M, rule=machine_precedence_rule)\n\n    # Position precedence: s[k,m] >= s[k-1,m] + processing of job in position k-1 on machine m\n    # \"the start time of a job in a later position must be at least the start time of the\n    #  job in the previous position plus its processing time on the same machine\"\n    # assumption: position_precedence_direction = s[k,m] >= s[k-1,m] + processing of job in position k-1\n    def position_precedence_rule(m, k, mm):\n        if k == 0:\n            return pyo.Constraint.Skip\n        proc = sum(d[\"processing\"][j][mm] * m.x[j, k - 1] for j in J)\n        return m.s[k, mm] >= m.s[k - 1, mm] + proc\n    model.position_precedence = pyo.Constraint(model.K, model.M, rule=position_precedence_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1320,
+      "completion_tokens": 1110
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.428405284881592,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 2,
+    "assignment": [
+     {
+      "decision": "objective_coefficients_for_last_position",
+      "option": "use the stated coefficients 5,6,10,7,8,8 on x[j,last_position] plus s[last_position,last_machine]",
+      "evidence": "\"The specific coefficients for the objective function are 5, 6, 10, 7, 8, and 8 for JobSchedule[0,5], JobSchedule[1,5], JobSchedule[2,5], JobSchedule[3,5], JobSchedule[4,5], and JobSchedule[5,5] respectively, with an additional term StartTime[5,3].\"",
+      "plausibility": 0.6000000000000001
+     },
+     {
+      "decision": "start_time_variable_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"All start times must be non-negative\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "machine_precedence_direction",
+      "option": "s[k,m+1] >= s[k,m] + processing on machine m (strictly after completion)",
+      "evidence": "\"Each job must start on Machine 1 only after completing on Machine 0, and on Machine 2 only after completing on Machine 1.\"",
+      "plausibility": 0.7
+     },
+     {
+      "decision": "position_precedence_direction",
+      "option": "s[k,m] >= s[k-1,m] + processing of job in position k-1 on machine m",
+      "evidence": "\"the start time of a job in a later position must be at least the start time of the job in the previous position plus its processing time on the same machine\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "objective_interpretation_total_completion_time",
+      "option": "minimize sum of completion times of all jobs",
+      "evidence": "\"The objective is to minimize the total completion time, which includes the start time of the last job on the last machine plus its processing time.\"",
+      "plausibility": 0.2
+     },
+     {
+      "decision": "processing_time_index_orientation",
+      "option": "processing[job][machine] with rows = jobs, columns = machines",
+      "evidence": "\"Job 0 takes 5, 5, and 7 hours on Machines 0, 1, and 2 respectively\"",
+      "plausibility": 0.95
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"num_jobs\": 6,\n    \"num_machines\": 3,\n    \"num_positions\": 6,\n    # processing[job][machine]\n    \"processing\": [\n        [5, 5, 7],\n        [5, 9, 10],\n        [6, 7, 10],\n        [8, 7, 9],\n        [9, 5, 9],\n        [8, 8, 7],\n    ],\n    # objective coefficients on x[j, last_position]\n    \"obj_coeff_last_position\": [5, 6, 10, 7, 8, 8],\n    # big-M for precedence linearisation\n    \"big_m\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    J = range(d[\"num_jobs\"])\n    M = range(d[\"num_machines\"])\n    K = range(d[\"num_positions\"])\n    last_k = d[\"num_positions\"] - 1\n    last_m = d[\"num_machines\"] - 1\n\n    model.J = pyo.Set(initialize=list(J))\n    model.M = pyo.Set(initialize=list(M))\n    model.K = pyo.Set(initialize=list(K))\n\n    # x[j,k] = 1 if job j assigned to position k\n    # \"each job must be assigned to exactly one of six schedule positions and each position must have exactly one job\"\n    model.x = pyo.Var(model.J, model.K, within=pyo.Binary)\n\n    # s[k,m] = start time of job in position k on machine m\n    # \"All start times must be non-negative\"\n    model.s = pyo.Var(model.K, model.M, within=pyo.NonNegativeReals)\n\n    # Objective: minimize sum of completion times of all jobs\n    # \"The specific coefficients for the objective function are 5,6,10,7,8,8 for JobSchedule[0,5]... plus StartTime[5,3]\"\n    def obj_rule(m):\n        expr = sum(d[\"obj_coeff_last_position\"][j] * m.x[j, last_k] for j in m.J)\n        expr += m.s[last_k, last_m]\n        return expr\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # One job per schedule position\n    # \"each position must have exactly one job\"\n    def one_job_per_position_rule(m, k):\n        return sum(m.x[j, k] for j in m.J) == 1\n    model.one_job_per_position = pyo.Constraint(model.K, rule=one_job_per_position_rule)\n\n    # One schedule position per job\n    # \"each job must be assigned to exactly one of six schedule positions\"\n    def one_position_per_job_rule(m, j):\n        return sum(m.x[j, k] for k in m.K) == 1\n    model.one_position_per_job = pyo.Constraint(model.J, rule=one_position_per_job_rule)\n\n    # Machine precedence: s[k,m+1] >= s[k,m] + processing on machine m\n    # \"Each job must start on Machine 1 only after completing on Machine 0, and on Machine 2 only after completing on Machine 1.\"\n    # processing time depends on which job is in position k -> linearise with x\n    def machine_precedence_rule(m, k, mm):\n        # mm in 0..num_machines-2\n        proc = sum(d[\"processing\"][j][mm] * m.x[j, k] for j in m.J)\n        return m.s[k, mm + 1] >= m.s[k, mm] + proc\n    model.machine_precedence = pyo.Constraint(\n        model.K, range(d[\"num_machines\"] - 1), rule=machine_precedence_rule\n    )\n\n    # Position precedence: s[k,m] >= s[k-1,m] + processing of job in position k-1 on machine m\n    # \"the start time of a job in a later position must be at least the start time of the job in the previous position plus its processing time on the same machine\"\n    def position_precedence_rule(m, k, mm):\n        # k in 1..num_positions-1\n        proc = sum(d[\"processing\"][j][mm] * m.x[j, k - 1] for j in m.J)\n        return m.s[k, mm] >= m.s[k - 1, mm] + proc\n    model.position_precedence = pyo.Constraint(\n        range(1, d[\"num_positions\"]), model.M, rule=position_precedence_rule\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1320,
+      "completion_tokens": 1074
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.337329864501953,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 3,
+    "assignment": [
+     {
+      "decision": "objective_coefficients_for_last_position",
+      "option": "use processing time p[j,last_machine] on x[j,last_position] plus s[last_position,last_machine]",
+      "evidence": "\"The specific coefficients for the objective function are 5, 6, 10, 7, 8, and 8 for JobSchedule[0,5], JobSchedule[1,5], JobSchedule[2,5], JobSchedule[3,5], JobSchedule[4,5], and JobSchedule[5,5] respectively, with an additional term StartTime[5,3].\"",
+      "plausibility": 0.30000000000000004
+     },
+     {
+      "decision": "start_time_variable_domain",
+      "option": "NonNegativeReals",
+      "evidence": "\"All start times must be non-negative\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "machine_precedence_direction",
+      "option": "s[k,m+1] >= s[k,m] + processing on machine m (allow equality, i.e. start at completion)",
+      "evidence": "\"Each job must start on Machine 1 only after completing on Machine 0, and on Machine 2 only after completing on Machine 1.\"",
+      "plausibility": 0.25
+     },
+     {
+      "decision": "position_precedence_direction",
+      "option": "s[k,m] >= s[k-1,m] + processing of job in position k-1 on machine m",
+      "evidence": "\"the start time of a job in a later position must be at least the start time of the job in the previous position plus its processing time on the same machine\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "objective_interpretation_total_completion_time",
+      "option": "minimize makespan (completion time of last job on last machine)",
+      "evidence": "\"The objective is to minimize the total completion time, which includes the start time of the last job on the last machine plus its processing time.\"",
+      "plausibility": 0.75
+     },
+     {
+      "decision": "processing_time_index_orientation",
+      "option": "processing[job][machine] with rows = jobs, columns = machines",
+      "evidence": "\"Job 0 takes 5, 5, and 7 hours on Machines 0, 1, and 2 respectively\"",
+      "plausibility": 0.95
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # processing[job][machine]\n    \"processing\": [\n        [5, 5, 7],\n        [5, 9, 10],\n        [6, 7, 10],\n        [8, 7, 9],\n        [9, 5, 9],\n        [8, 8, 7],\n    ],\n    \"num_jobs\": 6,\n    \"num_machines\": 3,\n    \"num_positions\": 6,\n    # objective coefficients for last position (processing on last machine)\n    \"obj_coeffs_last_position\": [5, 6, 10, 7, 8, 8],\n    \"big_m\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    jobs = range(d[\"num_jobs\"])\n    machines = range(d[\"num_machines\"])\n    positions = range(d[\"num_positions\"])\n    p = d[\"processing\"]\n    last_machine = d[\"num_machines\"] - 1\n    last_position = d[\"num_positions\"] - 1\n    M = d[\"big_m\"]\n\n    model = pyo.ConcreteModel()\n\n    model.Jobs = pyo.Set(initialize=jobs)\n    model.Machines = pyo.Set(initialize=machines)\n    model.Positions = pyo.Set(initialize=positions)\n\n    # x[j,k] = 1 if job j assigned to position k\n    # \"each job must be assigned to exactly one of six schedule positions\"\n    model.x = pyo.Var(model.Jobs, model.Positions, within=pyo.Binary)\n\n    # s[k,m] = start time of job in position k on machine m\n    # \"All start times must be non-negative\"\n    # assumption: start_time_variable_domain = NonNegativeReals\n    model.s = pyo.Var(model.Positions, model.Machines, within=pyo.NonNegativeReals)\n\n    # Objective: minimize makespan = completion of last job on last machine\n    # \"The objective is to minimize the total completion time, which includes the\n    #  start time of the last job on the last machine plus its processing time.\"\n    # assumption: objective_interpretation_total_completion_time = minimize makespan\n    def obj_rule(m):\n        expr = m.s[last_position, last_machine]\n        for j in m.Jobs:\n            expr += d[\"obj_coeffs_last_position\"][j] * m.x[j, last_position]\n        return expr\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each position has exactly one job\n    # \"each position must have exactly one job\"\n    def one_job_per_position_rule(m, k):\n        return sum(m.x[j, k] for j in m.Jobs) == 1\n    model.one_job_per_position = pyo.Constraint(\n        model.Positions, rule=one_job_per_position_rule\n    )\n\n    # Each job assigned to exactly one position\n    # \"each job must be assigned to exactly one of six schedule positions\"\n    def one_position_per_job_rule(m, j):\n        return sum(m.x[j, k] for k in m.Positions) == 1\n    model.one_position_per_job = pyo.Constraint(\n        model.Jobs, rule=one_position_per_job_rule\n    )\n\n    # Machine precedence: s[k,m+1] >= s[k,m] + processing on machine m\n    # \"Each job must start on Machine 1 only after completing on Machine 0,\n    #  and on Machine 2 only after completing on Machine 1.\"\n    # assumption: machine_precedence_direction allows equality\n    def machine_precedence_rule(m, k, mm):\n        if mm == last_machine:\n            return pyo.Constraint.Skip\n        proc = sum(p[j][mm] * m.x[j, k] for j in m.Jobs)\n        return m.s[k, mm + 1] >= m.s[k, mm] + proc\n    model.machine_precedence = pyo.Constraint(\n        model.Positions, model.Machines, rule=machine_precedence_rule\n    )\n\n    # Position precedence: s[k,m] >= s[k-1,m] + processing of job in position k-1 on machine m\n    # \"the start time of a job in a later position must be at least the start time\n    #  of the job in the previous position plus its processing time on the same machine\"\n    def position_precedence_rule(m, k, mm):\n        if k == 0:\n            return pyo.Constraint.Skip\n        proc = sum(p[j][mm] * m.x[j, k - 1] for j in m.Jobs)\n        return m.s[k, mm] >= m.s[k - 1, mm] + proc\n    model.position_precedence = pyo.Constraint(\n        model.Positions, model.Machines, rule=position_precedence_rule\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1325,
+      "completion_tokens": 1130
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.308926582336426,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "branch",
+ "generated_at": "2026-11-02T08:14:48"
+}

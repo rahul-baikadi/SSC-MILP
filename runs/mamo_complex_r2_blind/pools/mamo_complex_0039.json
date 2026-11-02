@@ -1,0 +1,121 @@
+{
+ "pid": "mamo_complex_0039",
+ "question": "In a region divided into four districts, each district has a certain amount of food supplies available but requires a specific amount to adequately prepare for an upcoming season. Here's the breakdown of the current food supplies and the needed quantities:\n\n- District 1 currently has 412 units of food but only needs 74 units.\n- District 2 has 92 units but needs a substantial increase to 334 units.\n- District 3 has 265 units, yet it requires only 61 units.\n- District 4 holds 342 units of food and needs 352 units.\n\nTo redistribute these food supplies, there are costs associated with transporting food from one district to another. The transportation costs between the districts are as follows:\n\n- From District 1: To District 2 costs 20 units, to District 3 costs 43 units, to District 4 costs 1 unit.\n- From District 2: To District 1 costs 42 units, to District 3 costs 32 units, to District 4 costs 13 units.\n- From District 3: To District 1 costs 27 units, to District 2 costs 5 units, to District 4 costs 10 units.\n- From District 4: To District 1 costs 30 units, to District 2 costs 22 units, to District 3 costs 9 units.\n\nThe goal is to ensure each district has exactly the amount of food it needs, and to achieve this at the lowest possible transportation cost. What is the minimum cost required to achieve the optimal distribution of food supplies across all districts?",
+ "templates": [
+  "Transportation"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "blind",
+    "variant": 0,
+    "b": 0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"districts\": [1, 2, 3, 4],\n    \"initial\": {1: 412, 2: 92, 3: 265, 4: 342},\n    \"need\": {1: 74, 2: 334, 3: 61, 4: 352},\n    # cost[i][j] = transport cost from district i to district j\n    \"cost\": {\n        1: {2: 20, 3: 43, 4: 1},\n        2: {1: 42, 3: 32, 4: 13},\n        3: {1: 27, 2: 5, 4: 10},\n        4: {1: 30, 2: 22, 3: 9},\n    },\n    # big-M upper bound on any single shipment (total supply is a safe bound)\n    \"big_m\": 1111,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    districts = d[\"districts\"]\n    initial = d[\"initial\"]\n    need = d[\"need\"]\n    cost = d[\"cost\"]\n    big_m = d[\"big_m\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.I = pyo.Set(initialize=districts)  # sources\n    model.J = pyo.Set(initialize=districts)  # destinations\n    model.K = pyo.Set(initialize=districts)  # districts for balance\n\n    # Variables: shipment from i to j (self-shipment fixed to 0)\n    def ship_bounds(m, i, j):\n        if i == j:\n            return (0, 0)\n        return (0, big_m)\n\n    model.ship = pyo.Var(\n        model.I, model.J,\n        within=pyo.NonNegativeReals,\n        bounds=ship_bounds,\n    )\n\n    # Objective: minimize total transportation cost\n    def obj_rule(m):\n        return sum(\n            cost[i][j] * m.ship[i, j]\n            for i in m.I for j in m.J\n            if i != j\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint: each district ends with exactly its required amount\n    def balance_rule(m, k):\n        outflow = sum(m.ship[k, j] for j in m.J if j != k)\n        inflow = sum(m.ship[i, k] for i in m.I if i != k)\n        return initial[k] - outflow + inflow == need[k]\n\n    model.balance = pyo.Constraint(model.K, rule=balance_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1168,
+      "completion_tokens": 883
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.1496422290802,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "blind",
+    "variant": 1,
+    "b": 1
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    # Current supplies (units of food currently held)\n    \"supply\": {\n        1: 412,   # \"District 1 currently has 412 units of food\"\n        2: 92,    # \"District 2 has 92 units\"\n        3: 265,   # \"District 3 has 265 units\"\n        4: 342,   # \"District 4 holds 342 units\"\n    },\n    # Required amounts (needed quantities)\n    \"need\": {\n        1: 74,    # \"but only needs 74 units\"\n        2: 334,   # \"needs a substantial increase to 334 units\"\n        3: 61,    # \"it requires only 61 units\"\n        4: 352,   # \"needs 352 units\"\n    },\n    # Transportation costs c[i][j]\n    \"cost\": {\n        1: {2: 20, 3: 43, 4: 1},    # \"From District 1: To 2 costs 20, to 3 costs 43, to 4 costs 1\"\n        2: {1: 42, 3: 32, 4: 13},   # \"From District 2: To 1 costs 42, to 3 costs 32, to 4 costs 13\"\n        3: {1: 27, 2: 5, 4: 10},    # \"From District 3: To 1 costs 27, to 2 costs 5, to 4 costs 10\"\n        4: {1: 30, 2: 22, 3: 9},    # \"From District 4: To 1 costs 30, to 2 costs 22, to 3 costs 9\"\n    },\n    \"districts\": [1, 2, 3, 4],\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    districts = d[\"districts\"]\n\n    model = pyo.ConcreteModel()\n\n    # Ordered (i, j) pairs with i != j\n    pairs = [(i, j) for i in districts for j in districts if i != j]\n\n    model.I = pyo.Set(initialize=districts)\n    model.J = pyo.Set(initialize=districts)\n    model.P = pyo.Set(dimen=2, initialize=pairs)\n\n    # x[i,j]: units shipped from district i to district j\n    model.x = pyo.Var(model.P, domain=pyo.NonNegativeReals)\n\n    # Objective: minimize total transportation cost\n    def obj_rule(m):\n        return sum(d[\"cost\"][i][j] * m.x[i, j] for (i, j) in pairs)\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Meet requirement: final holdings = supply - outflow + inflow >= need\n    def meet_rule(m, k):\n        outflow = sum(m.x[k, j] for j in districts if j != k)\n        inflow = sum(m.x[i, k] for i in districts if i != k)\n        return d[\"supply\"][k] - outflow + inflow >= d[\"need\"][k]\n    model.meet = pyo.Constraint(model.I, rule=meet_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1172,
+      "completion_tokens": 1520
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 9.025124311447144,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "blind",
+    "variant": 2,
+    "b": 2
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"districts\": [1, 2, 3, 4],\n    \"supply\":   {1: 412, 2: 92, 3: 265, 4: 342},\n    \"demand\":   {1: 74,  2: 334, 3: 61, 4: 352},\n    # cost[i][j] = cost from i to j; self-entries disabled via bounds\n    \"cost\": {\n        1: {2: 20, 3: 43, 4: 1},\n        2: {1: 42, 3: 32, 4: 13},\n        3: {1: 27, 2: 5, 4: 10},\n        4: {1: 30, 2: 22, 3: 9},\n    },\n    \"big_m\": 1_000_000,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    # --- net surplus / deficit per district ---\n    surplus = {i: d[\"supply\"][i] - d[\"demand\"][i] for i in d[\"districts\"]}\n\n    m = pyo.ConcreteModel()\n    m.I = pyo.Set(initialize=d[\"districts\"])\n\n    # x[i,j] for i != j; block i==j by making it a fixed-zero variable via bounds\n    m.x = pyo.Var(m.I, m.I, within=pyo.NonNegativeIntegers)\n\n    def _cost(i, j):\n        return d[\"cost\"][i].get(j, 0)\n\n    # Objective: minimize total transport cost\n    def obj_rule(mm):\n        return sum(_cost(i, j) * mm.x[i, j]\n                   for i in mm.I for j in mm.I if i != j)\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Diagonals must be zero\n    def diag_rule(mm, i):\n        return mm.x[i, i] == 0\n    m.diag = pyo.Constraint(m.I, rule=diag_rule)\n\n    # Supply: total outflow <= surplus (sources: net-surplus districts)\n    def outflow_rule(mm, i):\n        return sum(mm.x[i, j] for j in mm.I if j != i) <= surplus[i]\n    m.outflow = pyo.Constraint(m.I, rule=outflow_rule)\n\n    # Demand: total inflow >= deficit (destinations need net imports)\n    def inflow_rule(mm, j):\n        return sum(mm.x[i, j] for i in mm.I if i != j) >= -surplus[j]\n    m.inflow = pyo.Constraint(m.I, rule=inflow_rule)\n\n    return m\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1184,
+      "completion_tokens": 979
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.245741605758667,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "blind",
+    "variant": 3,
+    "b": 3
+   },
+   "code": "import pyomo.environ as pyo\n\n# =============================================================================\n# DECISION VARIABLES\n#   x[i, j] : units of food shipped from district i to district j\n#             index sets: i, j in Nodes = {1,2,3,4}; domain: NonNegativeReals\n#\n# OBJECTIVE (minimise, in words)\n#   Minimise total transportation cost = sum over all arcs (i,j) of\n#   cost[i,j] * x[i,j].  Self-shipment (i==i) has zero cost.\n#\n# CONSTRAINTS\n#   (1) Supply limit  [source: \"District i currently has <supply> units\"]\n#       For each i: sum_j x[i,j] <= supply[i]\n#   (2) Demand exact  [source: \"ensure each district has exactly the amount\n#       of food it needs\"]\n#       For each j: sum_i x[i,j] == demand[j]\n# =============================================================================\n\nDATA = {\n    \"districts\": [1, 2, 3, 4],\n    \"supply\": {1: 412, 2: 92, 3: 265, 4: 342},\n    \"demand\": {1: 74, 2: 334, 3: 61, 4: 352},\n    # cost[(i, j)] = cost to ship from i to j (self-shipment not listed)\n    \"cost\": {\n        (1, 2): 20, (1, 3): 43, (1, 4): 1,\n        (2, 1): 42, (2, 3): 32, (2, 4): 13,\n        (3, 1): 27, (3, 2): 5,  (3, 4): 10,\n        (4, 1): 30, (4, 2): 22, (4, 3): 9,\n    },\n    # cost of leaving supply in place (self-shipment) is zero\n    \"self_cost\": 0,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    nodes = d[\"districts\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.Nodes = pyo.Set(initialize=nodes, ordered=True)\n\n    def flow_init(m):\n        for i in m.Nodes:\n            for j in m.Nodes:\n                yield (i, j)\n\n    model.Arcs = pyo.Set(dimen=2, initialize=flow_init)\n\n    # Parameters\n    model.supply_p = pyo.Param(\n        model.Nodes, initialize={i: d[\"supply\"][i] for i in nodes}\n    )\n    model.demand_p = pyo.Param(\n        model.Nodes, initialize={i: d[\"demand\"][i] for i in nodes}\n    )\n\n    cost_dict = {}\n    for i in nodes:\n        for j in nodes:\n            cost_dict[(i, j)] = d[\"self_cost\"] if i == j else d[\"cost\"][(i, j)]\n    model.cost_p = pyo.Param(model.Arcs, initialize=cost_dict)\n\n    # Variable\n    model.x = pyo.Var(model.Arcs, within=pyo.NonNegativeReals)\n\n    # Objective: minimise total transport cost\n    def obj_rule(m):\n        return sum(m.cost_p[i, j] * m.x[i, j] for (i, j) in m.Arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # (1) Supply constraint: total outflow of district i cannot exceed its supply\n    def supply_rule(m, i):\n        return sum(m.x[i, j] for j in m.Nodes) <= m.supply_p[i]\n\n    model.supply_limit = pyo.Constraint(model.Nodes, rule=supply_rule)\n\n    # (2) Demand constraint: district j must receive exactly its needed amount\n    def demand_rule(m, j):\n        return sum(m.x[i, j] for i in m.Nodes) == m.demand_p[j]\n\n    model.demand_exact = pyo.Constraint(model.Nodes, rule=demand_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1174,
+      "completion_tokens": 1428
+     }
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2012,
+      "completion_tokens": 956
+     }
+    },
+    {
+     "stage": "repair1",
+     "triggers": [
+      "possible_nonlinearity"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2085,
+      "completion_tokens": 956
+     }
+    }
+   ],
+   "defects_at_generation": [
+    "possible_nonlinearity"
+   ],
+   "seconds": 18.10815119743347,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "blind",
+ "generated_at": "2026-11-02T06:52:22"
+}

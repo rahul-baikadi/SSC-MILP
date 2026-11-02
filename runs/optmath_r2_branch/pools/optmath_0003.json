@@ -1,0 +1,245 @@
+{
+ "pid": "optmath_0003",
+ "question": "A logistics company must deliver packages to four cities: City 0, City 1, City 2, and City 3, minimizing the total delivery cost while ensuring each city is visited exactly once and the route forms a continuous loop without subtours. The delivery costs between cities are as follows: City 0 to City 1 costs 616 units, City 0 to City 2 costs 567 units, City 0 to City 3 costs 143 units, City 1 to City 0 costs 388 units, City 1 to City 2 costs 947 units, City 1 to City 3 costs 628 units, City 2 to City 0 costs 495 units, City 2 to City 1 costs 650 units, City 2 to City 3 costs 604 units, City 3 to City 0 costs 77 units, City 3 to City 1 costs 630 units, and City 3 to City 2 costs 23 units. The company uses binary decision variables to indicate whether a route is used and assigns position variables to each city to prevent subtours. The position variable for City 0 is fixed at 0, while the position variables for City 1, City 2, and City 3 must be integers between 0 and 3. The objective is to minimize the total delivery cost, which is the sum of the costs of all selected routes, including the term 0 times the position variable for City 0. Constraints ensure each city is visited and departed exactly once. Subtour elimination is enforced by ensuring that if a route from City i to City j is used, the position of City j must be greater than the position of City i, except for City 0, which is fixed as the starting point. These constraints are implemented through specific relationships between the route variables and the position variables, guaranteeing the delivery route forms a single loop without smaller loops. The constraints also explicitly bound the position variables for City 1, City 2, and City 3 to be between 0 and 3, and ensure that the position variables are correctly related to the route variables to eliminate subtours.",
+ "templates": [
+  "Vehicle Routing / TSP"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 0,
+    "assignment": [
+     {
+      "decision": "mtz_arc_set",
+      "option": "Apply MTZ only to arcs with i != 0 (exclude arcs leaving City 0)",
+      "evidence": "\"Subtour elimination is enforced by ensuring that if a route from City i to City j is used, the position of City j must be greater than the position of City i, except for City 0, which is fixed as the starting point.\"",
+      "plausibility": 0.45
+     },
+     {
+      "decision": "big_m_value",
+      "option": "M = n = 4",
+      "evidence": "\"the position of City j must be greater than the position of City i\" (no explicit M given)",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "position_variable_domain",
+      "option": "Integers with bounds [0,3]",
+      "evidence": "\"the position variables for City 1, City 2, and City 3 must be integers between 0 and 3\"",
+      "plausibility": 0.7000000000000001
+     },
+     {
+      "decision": "position_bounds_inclusiveness",
+      "option": "Inclusive bounds 0 <= u <= 3",
+      "evidence": "\"must be integers between 0 and 3\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize total cost",
+      "evidence": "\"minimizing the total delivery cost\"",
+      "plausibility": 0.98
+     },
+     {
+      "decision": "route_variable_domain",
+      "option": "Binary x[i,j]",
+      "evidence": "\"The company uses binary decision variables to indicate whether a route is used\"",
+      "plausibility": 0.95
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"cities\": [0, 1, 2, 3],\n    \"costs\": {\n        (0, 1): 616,\n        (0, 2): 567,\n        (0, 3): 143,\n        (1, 0): 388,\n        (1, 2): 947,\n        (1, 3): 628,\n        (2, 0): 495,\n        (2, 1): 650,\n        (2, 3): 604,\n        (3, 0): 77,\n        (3, 1): 630,\n        (3, 2): 23,\n    },\n    \"n\": 4,\n    \"big_m\": 4,\n    \"pos_lb\": 0,\n    \"pos_ub\": 3,\n    \"start_city\": 0,\n    \"start_position\": 0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    n = d[\"n\"]\n    M = d[\"big_m\"]\n\n    model = pyo.ConcreteModel()\n\n    # Arcs: all ordered pairs i != j\n    model.arcs = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n\n    # Binary route variables x[i,j]\n    # \"The company uses binary decision variables to indicate whether a route is used\"\n    model.x = pyo.Var(model.arcs, within=pyo.Binary)\n\n    # Position variables u[i]\n    # \"assigns position variables to each city to prevent subtours\"\n    model.u = pyo.Var(cities, within=pyo.Integers, bounds=(d[\"pos_lb\"], d[\"pos_ub\"]))\n\n    # Fix position of City 0\n    # \"The position variable for City 0 is fixed at 0\"\n    model.u_fix = pyo.Constraint(\n        expr=model.u[d[\"start_city\"]] == d[\"start_position\"]\n    )\n\n    # Each city visited exactly once (in-degree)\n    # \"Constraints ensure each city is visited and departed exactly once.\"\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n\n    model.in_degree = pyo.Constraint(cities, rule=in_rule)\n\n    # Each city departed exactly once (out-degree)\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n\n    model.out_degree = pyo.Constraint(cities, rule=out_rule)\n\n    # MTZ subtour elimination on arcs with i != 0\n    # \"if a route from City i to City j is used, the position of City j must be\n    #  greater than the position of City i, except for City 0\"\n    # assumption: MTZ applied only to arcs with i != 0 (exclude arcs leaving City 0)\n    # assumption: M = n = 4\n    mtz_arcs = [(i, j) for (i, j) in model.arcs if i != d[\"start_city\"]]\n\n    def mtz_rule(m, i, j):\n        return m.u[j] >= m.u[i] + 1 - M * (1 - m.x[i, j])\n\n    model.mtz = pyo.Constraint(mtz_arcs, rule=mtz_rule)\n\n    # Objective: minimize total delivery cost\n    # \"The objective is to minimize the total delivery cost, which is the sum of\n    #  the costs of all selected routes, including the term 0 times the position\n    #  variable for City 0.\"\n    model.obj = pyo.Objective(\n        expr=sum(d[\"costs\"][(i, j)] * model.x[i, j] for (i, j) in model.arcs)\n        + 0 * model.u[d[\"start_city\"]],\n        sense=pyo.minimize,\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1236,
+      "completion_tokens": 920
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.443258047103882,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 1,
+    "assignment": [
+     {
+      "decision": "mtz_arc_set",
+      "option": "Apply MTZ only to arcs with j != 0 (exclude arcs entering City 0)",
+      "evidence": "\"Subtour elimination is enforced by ensuring that if a route from City i to City j is used, the position of City j must be greater than the position of City i, except for City 0, which is fixed as the starting point.\"",
+      "plausibility": 0.45
+     },
+     {
+      "decision": "big_m_value",
+      "option": "M = n - 1 = 3",
+      "evidence": "\"the position of City j must be greater than the position of City i\" (no explicit M given)",
+      "plausibility": 0.3
+     },
+     {
+      "decision": "position_variable_domain",
+      "option": "Integers with bounds [0,3]",
+      "evidence": "\"the position variables for City 1, City 2, and City 3 must be integers between 0 and 3\"",
+      "plausibility": 0.7000000000000001
+     },
+     {
+      "decision": "position_bounds_inclusiveness",
+      "option": "Inclusive bounds 0 <= u <= 3",
+      "evidence": "\"must be integers between 0 and 3\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize total cost",
+      "evidence": "\"minimizing the total delivery cost\"",
+      "plausibility": 0.98
+     },
+     {
+      "decision": "route_variable_domain",
+      "option": "Binary x[i,j]",
+      "evidence": "\"The company uses binary decision variables to indicate whether a route is used\"",
+      "plausibility": 0.95
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"cities\": [0, 1, 2, 3],\n    \"costs\": {\n        (0, 1): 616,\n        (0, 2): 567,\n        (0, 3): 143,\n        (1, 0): 388,\n        (1, 2): 947,\n        (1, 3): 628,\n        (2, 0): 495,\n        (2, 1): 650,\n        (2, 3): 604,\n        (3, 0): 77,\n        (3, 1): 630,\n        (3, 2): 23,\n    },\n    \"n\": 4,\n    \"big_m\": 3,\n    \"u_lb\": 0,\n    \"u_ub\": 3,\n    \"u0_fixed\": 0,\n    \"u0_coeff\": 0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    costs = d[\"costs\"]\n    n = d[\"n\"]\n    M = d[\"big_m\"]\n\n    model = pyo.ConcreteModel()\n\n    # Arcs: all ordered pairs of distinct cities\n    model.arcs = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n\n    # Binary route variables x[i,j]\n    # \"The company uses binary decision variables to indicate whether a route is used\"\n    model.x = pyo.Var(model.arcs, within=pyo.Binary)\n\n    # Position variables u[i]\n    # \"assigns position variables to each city to prevent subtours\"\n    # \"The position variable for City 0 is fixed at 0\"\n    # \"the position variables for City 1, City 2, and City 3 must be integers between 0 and 3\"\n    # assumption: position_variable_domain / position_bounds_inclusiveness -> Integers [0,3]\n    model.u = pyo.Var(\n        cities,\n        within=pyo.Integers,\n        bounds=(d[\"u_lb\"], d[\"u_ub\"]),\n    )\n\n    # Fix u[0] = 0\n    # \"The position variable for City 0 is fixed at 0\"\n    def rule_fix_u0(m):\n        return m.u[0] == d[\"u0_fixed\"]\n\n    model.fix_u0 = pyo.Constraint(rule=rule_fix_u0)\n\n    # Objective: minimize total delivery cost\n    # \"minimizing the total delivery cost, which is the sum of the costs of all selected routes,\n    #  including the term 0 times the position variable for City 0\"\n    def rule_obj(m):\n        return sum(costs[(i, j)] * m.x[i, j] for (i, j) in m.arcs) + d[\"u0_coeff\"] * m.u[0]\n\n    model.obj = pyo.Objective(rule=rule_obj, sense=pyo.minimize)\n\n    # Each city visited exactly once (in-degree = 1)\n    # \"ensuring each city is visited exactly once\"\n    def rule_in(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n\n    model.in_degree = pyo.Constraint(cities, rule=rule_in)\n\n    # Each city departed exactly once (out-degree = 1)\n    # \"Constraints ensure each city is visited and departed exactly once\"\n    def rule_out(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n\n    model.out_degree = pyo.Constraint(cities, rule=rule_out)\n\n    # MTZ subtour elimination on arcs with j != 0\n    # \"if a route from City i to City j is used, the position of City j must be greater than\n    #  the position of City i, except for City 0, which is fixed as the starting point\"\n    # assumption: mtz_arc_set -> apply only to arcs with j != 0\n    # assumption: big_m_value -> M = n - 1 = 3\n    mtz_arcs = [(i, j) for (i, j) in model.arcs if j != 0]\n\n    def rule_mtz(m, i, j):\n        return m.u[j] >= m.u[i] + 1 - M * (1 - m.x[i, j])\n\n    model.mtz = pyo.Constraint(mtz_arcs, rule=rule_mtz)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1239,
+      "completion_tokens": 1034
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.002660274505615,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 2,
+    "assignment": [
+     {
+      "decision": "mtz_arc_set",
+      "option": "Apply MTZ only to arcs with i != 0 (exclude arcs leaving City 0)",
+      "evidence": "\"Subtour elimination is enforced by ensuring that if a route from City i to City j is used, the position of City j must be greater than the position of City i, except for City 0, which is fixed as the starting point.\"",
+      "plausibility": 0.45
+     },
+     {
+      "decision": "big_m_value",
+      "option": "M = n - 1 = 3",
+      "evidence": "\"the position of City j must be greater than the position of City i\" (no explicit M given)",
+      "plausibility": 0.3
+     },
+     {
+      "decision": "position_variable_domain",
+      "option": "Integers with bounds [0,3]",
+      "evidence": "\"the position variables for City 1, City 2, and City 3 must be integers between 0 and 3\"",
+      "plausibility": 0.7000000000000001
+     },
+     {
+      "decision": "position_bounds_inclusiveness",
+      "option": "Inclusive bounds 0 <= u <= 3",
+      "evidence": "\"must be integers between 0 and 3\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize total cost",
+      "evidence": "\"minimizing the total delivery cost\"",
+      "plausibility": 0.98
+     },
+     {
+      "decision": "route_variable_domain",
+      "option": "Binary x[i,j]",
+      "evidence": "\"The company uses binary decision variables to indicate whether a route is used\"",
+      "plausibility": 0.95
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"cities\": [0, 1, 2, 3],\n    \"cost\": {\n        (0, 1): 616,\n        (0, 2): 567,\n        (0, 3): 143,\n        (1, 0): 388,\n        (1, 2): 947,\n        (1, 3): 628,\n        (2, 0): 495,\n        (2, 1): 650,\n        (2, 3): 604,\n        (3, 0): 77,\n        (3, 1): 630,\n        (3, 2): 23,\n    },\n    \"n\": 4,\n    \"big_m\": 3,\n    \"pos_lb\": 0,\n    \"pos_ub\": 3,\n    \"start_city\": 0,\n    \"start_pos\": 0,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    arcs = list(d[\"cost\"].keys())\n\n    model = pyo.ConcreteModel()\n\n    # Binary decision variables indicating whether a route is used.\n    # \"The company uses binary decision variables to indicate whether a route is used\"\n    model.x = pyo.Var(arcs, within=pyo.Binary)\n\n    # Position variables for each city.\n    # \"assigns position variables to each city to prevent subtours\"\n    model.u = pyo.Var(\n        cities,\n        within=pyo.Integers,\n        bounds=(d[\"pos_lb\"], d[\"pos_ub\"]),\n    )\n\n    # \"The position variable for City 0 is fixed at 0\"\n    model.u[d[\"start_city\"]].fix(d[\"start_pos\"])\n\n    # Objective: minimize total delivery cost.\n    # \"The objective is to minimize the total delivery cost, which is the sum of the costs of all selected routes\"\n    def obj_rule(m):\n        return sum(d[\"cost\"][(i, j)] * m.x[(i, j)] for (i, j) in arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each city is departed exactly once.\n    # \"Constraints ensure each city is visited and departed exactly once.\"\n    def out_rule(m, i):\n        return sum(m.x[(i, j)] for j in cities if j != i) == 1\n\n    model.out_degree = pyo.Constraint(cities, rule=out_rule)\n\n    # Each city is visited exactly once.\n    # \"Constraints ensure each city is visited and departed exactly once.\"\n    def in_rule(m, j):\n        return sum(m.x[(i, j)] for i in cities if i != j) == 1\n\n    model.in_degree = pyo.Constraint(cities, rule=in_rule)\n\n    # MTZ subtour elimination applied only to arcs with i != 0.\n    # \"if a route from City i to City j is used, the position of City j must be greater than the position of City i, except for City 0\"\n    # assumption: mtz_arc_set excludes arcs leaving City 0\n    mtz_arcs = [(i, j) for (i, j) in arcs if i != d[\"start_city\"]]\n\n    def mtz_rule(m, i, j):\n        return m.u[j] >= m.u[i] + 1 - d[\"big_m\"] * (1 - m.x[(i, j)])\n\n    model.mtz = pyo.Constraint(mtz_arcs, rule=mtz_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1239,
+      "completion_tokens": 805
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.6622841358184814,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 3,
+    "assignment": [
+     {
+      "decision": "mtz_arc_set",
+      "option": "Apply MTZ only to arcs with j != 0 (exclude arcs entering City 0)",
+      "evidence": "\"Subtour elimination is enforced by ensuring that if a route from City i to City j is used, the position of City j must be greater than the position of City i, except for City 0, which is fixed as the starting point.\"",
+      "plausibility": 0.45
+     },
+     {
+      "decision": "big_m_value",
+      "option": "M = position upper bound = 3",
+      "evidence": "\"the position of City j must be greater than the position of City i\" (no explicit M given)",
+      "plausibility": 0.2
+     },
+     {
+      "decision": "position_variable_domain",
+      "option": "Integers with bounds [0,3]",
+      "evidence": "\"the position variables for City 1, City 2, and City 3 must be integers between 0 and 3\"",
+      "plausibility": 0.7000000000000001
+     },
+     {
+      "decision": "position_bounds_inclusiveness",
+      "option": "Inclusive bounds 0 <= u <= 3",
+      "evidence": "\"must be integers between 0 and 3\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize total cost",
+      "evidence": "\"minimizing the total delivery cost\"",
+      "plausibility": 0.98
+     },
+     {
+      "decision": "route_variable_domain",
+      "option": "Binary x[i,j]",
+      "evidence": "\"The company uses binary decision variables to indicate whether a route is used\"",
+      "plausibility": 0.95
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"cities\": [0, 1, 2, 3],\n    \"costs\": {\n        (0, 1): 616,\n        (0, 2): 567,\n        (0, 3): 143,\n        (1, 0): 388,\n        (1, 2): 947,\n        (1, 3): 628,\n        (2, 0): 495,\n        (2, 1): 650,\n        (2, 3): 604,\n        (3, 0): 77,\n        (3, 1): 630,\n        (3, 2): 23,\n    },\n    \"start_city\": 0,\n    \"position_upper_bound\": 3,\n    \"big_m\": 3,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    costs = d[\"costs\"]\n    start = d[\"start_city\"]\n    pos_ub = d[\"position_upper_bound\"]\n    big_m = d[\"big_m\"]\n\n    model = pyo.ConcreteModel()\n\n    # Arcs: all ordered pairs of distinct cities\n    model.arcs = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n\n    # Binary route variables x[i,j]\n    # \"The company uses binary decision variables to indicate whether a route is used\"\n    model.x = pyo.Var(model.arcs, within=pyo.Binary)\n\n    # Position variables u[i]\n    # \"assigns position variables to each city to prevent subtours\"\n    # \"The position variable for City 0 is fixed at 0\"\n    # \"the position variables for City 1, City 2, and City 3 must be integers between 0 and 3\"\n    # assumption: position_variable_domain = Integers with bounds [0,3]; inclusive bounds\n    model.u = pyo.Var(\n        cities,\n        within=pyo.Integers,\n        bounds=(0, pos_ub),\n    )\n\n    # Fix position of start city to 0\n    # \"The position variable for City 0 is fixed at 0\"\n    def rule_fix_start(m):\n        return m.u[start] == 0\n\n    model.fix_start = pyo.Constraint(rule=rule_fix_start)\n\n    # Each city visited exactly once (in-degree)\n    # \"Constraints ensure each city is visited and departed exactly once.\"\n    def rule_in(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n\n    model.in_degree = pyo.Constraint(cities, rule=rule_in)\n\n    # Each city departed exactly once (out-degree)\n    # \"Constraints ensure each city is visited and departed exactly once.\"\n    def rule_out(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n\n    model.out_degree = pyo.Constraint(cities, rule=rule_out)\n\n    # MTZ subtour elimination, applied only to arcs with j != 0\n    # \"if a route from City i to City j is used, the position of City j must be greater than the position of City i\"\n    # assumption: mtz_arc_set = apply MTZ only to arcs with j != 0 (exclude arcs entering City 0)\n    # assumption: big_m_value = M = position upper bound = 3\n    mtz_arcs = [(i, j) for (i, j) in model.arcs if j != start]\n\n    def rule_mtz(m, i, j):\n        return m.u[j] >= m.u[i] + 1 - big_m * (1 - m.x[i, j])\n\n    model.mtz = pyo.Constraint(mtz_arcs, rule=rule_mtz)\n\n    # Objective: minimize total delivery cost\n    # \"The objective is to minimize the total delivery cost, which is the sum of the costs of all selected routes\"\n    # \"including the term 0 times the position variable for City 0\"\n    def rule_obj(m):\n        return sum(costs[i, j] * m.x[i, j] for (i, j) in m.arcs) + 0 * m.u[start]\n\n    model.obj = pyo.Objective(rule=rule_obj, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1238,
+      "completion_tokens": 991
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.876684188842773,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "branch",
+ "generated_at": "2026-11-02T08:09:29"
+}

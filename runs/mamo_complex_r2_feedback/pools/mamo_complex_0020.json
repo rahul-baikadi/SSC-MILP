@@ -1,0 +1,97 @@
+{
+ "pid": "mamo_complex_0020",
+ "question": "Imagine a salesperson planning a trip across four cities, labeled City 1, City 2, City 3, and City 4. This salesperson must devise a travel route that allows them to visit each of these cities exactly once and return to their starting point, all while aiming to keep their travel costs as low as possible.\n\nHere's a breakdown of the travel costs between each pair of cities:\n- The travel cost from City 1 to City 2 is 94 units, to City 3 is 34 units, and to City 4 is 87 units.\n- From City 2, it costs 94 units to get back to City 1, 62 units to go to City 3, and 87 units to reach City 4.\n- Traveling from City 3, the costs are 34 units back to City 1, 62 units to City 2, and 97 units to City 4.\n- Lastly, from City 4, it costs 87 units to travel back to City 1, 87 units to City 2, and 97 units to City 3.\n\nThe challenge for the salesperson is to find the route that minimizes the total travel cost. What is the minimum total travel cost for the salesperson to visit each city exactly once and return to the starting city?",
+ "templates": [
+  "Vehicle Routing / TSP"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "feedback",
+    "b": 0,
+    "temperature": 0.6
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"cities\": [1, 2, 3, 4],\n    \"depot\": 1,\n    \"n\": 4,\n    \"big_M\": 3,  # = n - 1, tight valid MTZ constant\n    \"cost\": {\n        (1, 2): 94, (1, 3): 34, (1, 4): 87,\n        (2, 1): 94, (2, 3): 62, (2, 4): 87,\n        (3, 1): 34, (3, 2): 62, (3, 4): 97,\n        (4, 1): 87, (4, 2): 87, (4, 3): 97,\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    depot = d[\"depot\"]\n    n = d[\"n\"]\n    M = d[\"big_M\"]\n    cost = d[\"cost\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.N = pyo.Set(initialize=cities, ordered=True)\n    model.A = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n    model.C = pyo.Set(\n        initialize=[c for c in cities if c != depot], ordered=True\n    )\n\n    # Variables\n    model.x = pyo.Var(model.A, domain=pyo.Binary)\n    model.u = pyo.Var(model.C, domain=pyo.NonNegativeReals, bounds=(1, n - 1))\n\n    # Objective: minimize total travel cost\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[i, j] for (i, j) in m.A)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Exactly one outgoing arc per city\n    def leave_rule(m, i):\n        return sum(m.x[i, j] for j in m.N if j != i) == 1\n\n    model.leave = pyo.Constraint(model.N, rule=leave_rule)\n\n    # Exactly one incoming arc per city\n    def arrive_rule(m, j):\n        return sum(m.x[i, j] for i in m.N if i != j) == 1\n\n    model.arrive = pyo.Constraint(model.N, rule=arrive_rule)\n\n    # MTZ subtour elimination over non-depot cities\n    def mtz_rule(m, i, j):\n        return m.u[j] >= m.u[i] + 1 - M * (1 - m.x[i, j])\n\n    model.mtz = pyo.Constraint(\n        [(i, j) for i in model.C for j in model.C if i != j],\n        rule=mtz_rule,\n    )\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2361,
+      "completion_tokens": 1040
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.656002759933472,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "feedback",
+    "b": 1,
+    "temperature": 0.8
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"cities\": [1, 2, 3, 4],\n    \"n\": 4,\n    \"depot\": 1,\n    \"big_M\": 100,  # big-M for MTZ; must be >= n\n    \"cost\": {\n        (1, 2): 94, (1, 3): 34, (1, 4): 87,\n        (2, 1): 94, (2, 3): 62, (2, 4): 87,\n        (3, 1): 34, (3, 2): 62, (3, 4): 97,\n        (4, 1): 87, (4, 2): 87, (4, 3): 97,\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    n = d[\"n\"]\n    depot = d[\"depot\"]\n    M = d[\"big_M\"]\n    cost = d[\"cost\"]\n\n    model = pyo.ConcreteModel()\n\n    model.cities = pyo.Set(initialize=cities, ordered=True)\n    model.arcs = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n    model.non_depot = pyo.Set(\n        initialize=[c for c in cities if c != depot], ordered=True\n    )\n\n    # Decision variables: x[i,j] = 1 if arc i->j is used\n    model.x = pyo.Var(model.arcs, domain=pyo.Binary)\n    # Ordering variables for MTZ subtour elimination (non-depot cities)\n    model.u = pyo.Var(\n        model.non_depot, domain=pyo.NonNegativeReals, bounds=(1, n - 1)\n    )\n\n    # Objective: minimize total travel cost of the tour\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[i, j] for (i, j) in m.arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each city has exactly one outgoing arc\n    def leave_rule(m, i):\n        return sum(m.x[i, j] for j in m.cities if (i, j) in m.arcs) == 1\n\n    model.leave = pyo.Constraint(model.cities, rule=leave_rule)\n\n    # Each city has exactly one incoming arc\n    def arrive_rule(m, j):\n        return sum(m.x[i, j] for i in m.cities if (i, j) in m.arcs) == 1\n\n    model.arrive = pyo.Constraint(model.cities, rule=arrive_rule)\n\n    # MTZ subtour elimination: u[j] >= u[i] + 1 - M(1 - x[i,j])\n    def mtz_rule(m, i, j):\n        return m.u[j] >= m.u[i] + 1 - M * (1 - m.x[i, j])\n\n    model.mtz = pyo.Constraint(\n        [(i, j) for i in model.non_depot for j in model.non_depot if i != j],\n        rule=mtz_rule,\n    )\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2361,
+      "completion_tokens": 765
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 3.8689427375793457,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "feedback",
+    "b": 2,
+    "temperature": 1.0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"cities\": [1, 2, 3, 4],\n    \"depot\": 1,\n    \"n\": 4,\n    \"big_M\": 3,  # = n - 1, tightest valid MTZ constant (text: M >= n-1)\n    \"cost\": {\n        (1, 2): 94, (1, 3): 34, (1, 4): 87,\n        (2, 1): 94, (2, 3): 62, (2, 4): 87,\n        (3, 1): 34, (3, 2): 62, (3, 4): 97,\n        (4, 1): 87, (4, 2): 87, (4, 3): 97,\n    },\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    depot = d[\"depot\"]\n    n = d[\"n\"]\n    M = d[\"big_M\"]\n    cost = d[\"cost\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets\n    model.N = pyo.Set(initialize=cities, ordered=True)\n    model.A = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n    model.C = pyo.Set(initialize=[c for c in cities if c != depot], ordered=True)\n\n    # Variables\n    model.x = pyo.Var(model.A, domain=pyo.Binary)\n    model.u = pyo.Var(model.C, domain=pyo.NonNegativeReals, bounds=(1, n - 1))\n\n    # Objective: minimize total travel cost\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[i, j] for (i, j) in m.A)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Exactly one outgoing arc per city\n    def leave_rule(m, i):\n        return sum(m.x[i, j] for j in m.N if j != i) == 1\n\n    model.leave = pyo.Constraint(model.N, rule=leave_rule)\n\n    # Exactly one incoming arc per city\n    def arrive_rule(m, j):\n        return sum(m.x[i, j] for i in m.N if i != j) == 1\n\n    model.arrive = pyo.Constraint(model.N, rule=arrive_rule)\n\n    # MTZ subtour elimination over non-depot cities\n    model.mtz_index = pyo.Set(\n        initialize=[(i, j) for i in model.C for j in model.C if i != j],\n        dimen=2,\n    )\n\n    def mtz_rule(m, i, j):\n        return m.u[j] >= m.u[i] + 1 - M * (1 - m.x[i, j])\n\n    model.mtz = pyo.Constraint(model.mtz_index, rule=mtz_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2361,
+      "completion_tokens": 1520
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.788281679153442,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "feedback",
+    "b": 3,
+    "temperature": 1.2
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"cities\": [1, 2, 3, 4],\n    \"depot\": 1,\n    \"n\": 4,\n    \"big_M\": 4,  # >= n - 1\n    \"cost\": {\n        (1, 2): 94, (1, 3): 34, (1, 4): 87,\n        (2, 1): 94, (2, 3): 62, (2, 4): 87,\n        (3, 1): 34, (3, 2): 62, (3, 4): 97,\n        (4, 1): 87, (4, 2): 87, (4, 3): 97,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    depot = d[\"depot\"]\n    n = d[\"n\"]\n    M = d[\"big_M\"]\n    cost = d[\"cost\"]\n\n    model = pyo.ConcreteModel()\n\n    # Sets: arcs between distinct cities\n    model.N = pyo.Set(initialize=cities, ordered=True)\n    model.A = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n    # Non-depot cities for MTZ ordering\n    model.C = pyo.Set(initialize=[c for c in cities if c != depot], ordered=True)\n\n    # Variables\n    model.x = pyo.Var(model.A, domain=pyo.Binary)\n    model.u = pyo.Var(model.C, domain=pyo.NonNegativeReals, bounds=(1, n - 1))\n\n    # Objective: minimize total travel cost\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[i, j] for (i, j) in m.A)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Constraint: exactly one outgoing arc per city\n    def leave_rule(m, i):\n        return sum(m.x[i, j] for j in m.N if j != i) == 1\n\n    model.leave = pyo.Constraint(model.N, rule=leave_rule)\n\n    # Constraint: exactly one incoming arc per city\n    def arrive_rule(m, j):\n        return sum(m.x[i, j] for i in m.N if i != j) == 1\n\n    model.arrive = pyo.Constraint(model.N, rule=arrive_rule)\n\n    # Constraint: MTZ subtour elimination over non-depot cities\n    def mtz_rule(m, i, j):\n        return m.u[j] >= m.u[i] + 1 - M * (1 - m.x[i, j])\n\n    model.mtz = pyo.Constraint(\n        [(i, j) for i in model.C for j in model.C if i != j],\n        rule=mtz_rule,\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2361,
+      "completion_tokens": 689
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 3.6951324939727783,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "feedback",
+ "generated_at": "2026-11-02T07:04:15"
+}

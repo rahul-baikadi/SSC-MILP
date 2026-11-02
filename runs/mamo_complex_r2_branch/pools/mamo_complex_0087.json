@@ -1,0 +1,257 @@
+{
+ "pid": "mamo_complex_0087",
+ "question": "Consider a scenario where a courier delivery person needs to deliver packages to five different locations, labeled as E, F, G, H, and I. The courier can start from any location, but they need to deliver the package at each location exactly once and then return to their starting point. The task is to find the optimal route that minimizes total delivery cost. In this case, the delivery cost could represent distance, time, or fuel consumption. Here's a summary of the delivery costs between different locations: \n\nFrom Location E, it costs 65 units to reach F, 10 units to reach G, 25 units to reach H, and 82 units to reach I.\nFrom Location F, it costs 65 units to deliver to E, 98 units to G, 42 units to H, and 26 units to I.\nMoving from Location G, the costs are 10 units to E, 98 units to F, 75 units to H, and 72 units to I.\nFrom Location H, it costs 25 units to go to E, 42 units to F, 75 units to G, and 46 units to I.\nFinally, from Location I, it costs 82 units to deliver to E, 26 units to F, 72 units to G, and 46 units to H.\n\nConsidering these costs, what is the minimum total delivery cost for the courier to deliver a package at each location exactly once and return to the starting location? The optimal value is asked for in this problem.",
+ "templates": [
+  "Vehicle Routing / TSP",
+  "Facility Location"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 0,
+    "assignment": [
+     {
+      "decision": "subtour_elimination_formulation",
+      "option": "MTZ with big-M = n on all arcs leaving non-start nodes, start fixed to 1",
+      "evidence": "the courier can start from any location, but they need to deliver the package at each location exactly once and then return to their starting point",
+      "plausibility": 0.45
+     },
+     {
+      "decision": "start_location_fixed_or_free",
+      "option": "start is free: no node is anchored, tour is a single cycle over all nodes",
+      "evidence": "the courier can start from any location, but they need to deliver the package at each location exactly once and then return to their starting point",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "order_variable_domain",
+      "option": "NonNegativeReals with bounds [1, n]",
+      "evidence": "none",
+      "plausibility": 0.7
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary x[i,j] for all ordered pairs i != j",
+      "evidence": "deliver the package at each location exactly once and then return to their starting point",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "objective_sense_and_quantity",
+      "option": "minimize sum of arc costs over selected arcs",
+      "evidence": "find the optimal route that minimizes total delivery cost",
+      "plausibility": 0.98
+     },
+     {
+      "decision": "cost_matrix_orientation",
+      "option": "cost[(i,j)] = cost of traveling from i (row) to j (column)",
+      "evidence": "From Location E, it costs 65 units to reach F, 10 units to reach G, 25 units to reach H, and 82 units to reach I.",
+      "plausibility": 0.97
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"nodes\": [\"E\", \"F\", \"G\", \"H\", \"I\"],\n    \"cost\": {\n        (\"E\", \"F\"): 65,\n        (\"E\", \"G\"): 10,\n        (\"E\", \"H\"): 25,\n        (\"E\", \"I\"): 82,\n        (\"F\", \"E\"): 65,\n        (\"F\", \"G\"): 98,\n        (\"F\", \"H\"): 42,\n        (\"F\", \"I\"): 26,\n        (\"G\", \"E\"): 10,\n        (\"G\", \"F\"): 98,\n        (\"G\", \"H\"): 75,\n        (\"G\", \"I\"): 72,\n        (\"H\", \"E\"): 25,\n        (\"H\", \"F\"): 42,\n        (\"H\", \"G\"): 75,\n        (\"H\", \"I\"): 46,\n        (\"I\", \"E\"): 82,\n        (\"I\", \"F\"): 26,\n        (\"I\", \"G\"): 72,\n        (\"I\", \"H\"): 46,\n    },\n    \"n\": 5,\n    \"big_m\": 5,\n    \"start_node\": \"E\",\n    \"order_lb\": 1,\n    \"order_ub\": 5,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    nodes = d[\"nodes\"]\n    n = d[\"n\"]\n\n    model = pyo.ConcreteModel()\n\n    # assumption: arc variable domain is Binary x[i,j] for all ordered pairs i != j\n    model.arcs = pyo.Set(\n        initialize=[(i, j) for i in nodes for j in nodes if i != j],\n        dimen=2,\n    )\n\n    # assumption: arc variable domain is Binary x[i,j] for all ordered pairs i != j\n    model.x = pyo.Var(model.arcs, within=pyo.Binary)\n\n    # assumption: order variable domain is NonNegativeReals with bounds [1, n]\n    model.u = pyo.Var(\n        nodes,\n        within=pyo.NonNegativeReals,\n        bounds=(d[\"order_lb\"], d[\"order_ub\"]),\n    )\n\n    # \"find the optimal route that minimizes total delivery cost\"\n    def obj_rule(m):\n        return sum(d[\"cost\"][(i, j)] * m.x[i, j] for (i, j) in m.arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # \"deliver the package at each location exactly once\" -> one outgoing arc per node\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in nodes if j != i) == 1\n\n    model.out_arc = pyo.Constraint(nodes, rule=out_rule)\n\n    # \"return to their starting point\" / each location visited exactly once -> one incoming arc per node\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in nodes if i != j) == 1\n\n    model.in_arc = pyo.Constraint(nodes, rule=in_rule)\n\n    # assumption: MTZ with big-M = n on all arcs leaving non-start nodes, start fixed to 1\n    # \"deliver the package at each location exactly once and then return to their starting point\"\n    def mtz_rule(m, i, j):\n        if i == d[\"start_node\"] or j == d[\"start_node\"]:\n            return pyo.Constraint.Skip\n        return m.u[j] - m.u[i] >= 1 - d[\"big_m\"] * (1 - m.x[i, j])\n\n    model.mtz = pyo.Constraint(model.arcs, rule=mtz_rule)\n\n    # assumption: start is free, but MTZ requires fixing the start order to 1\n    def start_order_rule(m):\n        return m.u[d[\"start_node\"]] == 1\n\n    model.start_order = pyo.Constraint(rule=start_order_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1141,
+      "completion_tokens": 922
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.615632772445679,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 1,
+    "assignment": [
+     {
+      "decision": "subtour_elimination_formulation",
+      "option": "MTZ order variables u with u[j] >= u[i] + 1 - n*(1 - x[i,j]) on non-depot arcs, depot fixed to 1",
+      "evidence": "the courier can start from any location, but they need to deliver the package at each location exactly once and then return to their starting point",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "start_location_fixed_or_free",
+      "option": "start is free: no node is anchored, tour is a single cycle over all nodes",
+      "evidence": "the courier can start from any location, but they need to deliver the package at each location exactly once and then return to their starting point",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "order_variable_domain",
+      "option": "NonNegativeIntegers with bounds [1, n]",
+      "evidence": "none",
+      "plausibility": 0.25
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary x[i,j] for all ordered pairs i != j",
+      "evidence": "deliver the package at each location exactly once and then return to their starting point",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "objective_sense_and_quantity",
+      "option": "minimize sum of arc costs over selected arcs",
+      "evidence": "find the optimal route that minimizes total delivery cost",
+      "plausibility": 0.98
+     },
+     {
+      "decision": "cost_matrix_orientation",
+      "option": "cost[(i,j)] = cost of traveling from i (row) to j (column)",
+      "evidence": "From Location E, it costs 65 units to reach F, 10 units to reach G, 25 units to reach H, and 82 units to reach I.",
+      "plausibility": 0.97
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"nodes\": [\"E\", \"F\", \"G\", \"H\", \"I\"],\n    \"cost\": {\n        (\"E\", \"F\"): 65,\n        (\"E\", \"G\"): 10,\n        (\"E\", \"H\"): 25,\n        (\"E\", \"I\"): 82,\n        (\"F\", \"E\"): 65,\n        (\"F\", \"G\"): 98,\n        (\"F\", \"H\"): 42,\n        (\"F\", \"I\"): 26,\n        (\"G\", \"E\"): 10,\n        (\"G\", \"F\"): 98,\n        (\"G\", \"H\"): 75,\n        (\"G\", \"I\"): 72,\n        (\"H\", \"E\"): 25,\n        (\"H\", \"F\"): 42,\n        (\"H\", \"G\"): 75,\n        (\"H\", \"I\"): 46,\n        (\"I\", \"E\"): 82,\n        (\"I\", \"F\"): 26,\n        (\"I\", \"G\"): 72,\n        (\"I\", \"H\"): 46,\n    },\n    \"n\": 5,\n    \"depot\": \"E\",\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    nodes = d[\"nodes\"]\n    n = d[\"n\"]\n    depot = d[\"depot\"]\n\n    model = pyo.ConcreteModel()\n\n    # Ordered pairs of distinct nodes (arcs).\n    model.arcs = pyo.Set(\n        initialize=[(i, j) for i in nodes for j in nodes if i != j],\n        dimen=2,\n    )\n\n    # Binary arc variables x[i,j] for all ordered pairs i != j.\n    # \"deliver the package at each location exactly once and then return to their starting point\"\n    model.x = pyo.Var(model.arcs, within=pyo.Binary)\n\n    # MTZ order variables u[i] in [1, n].\n    # assumption: order_variable_domain NonNegativeIntegers with bounds [1, n]\n    model.u = pyo.Var(nodes, within=pyo.NonNegativeIntegers, bounds=(1, n))\n\n    # Objective: minimize sum of arc costs over selected arcs.\n    # \"find the optimal route that minimizes total delivery cost\"\n    def obj_rule(m):\n        return sum(d[\"cost\"][(i, j)] * m.x[i, j] for (i, j) in m.arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each node has exactly one outgoing arc.\n    # \"deliver the package at each location exactly once and then return to their starting point\"\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in nodes if j != i) == 1\n\n    model.out_arc = pyo.Constraint(nodes, rule=out_rule)\n\n    # Each node has exactly one incoming arc.\n    # \"deliver the package at each location exactly once and then return to their starting point\"\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in nodes if i != j) == 1\n\n    model.in_arc = pyo.Constraint(nodes, rule=in_rule)\n\n    # Depot order fixed to 1.\n    # assumption: MTZ order variables u with depot fixed to 1\n    model.depot_order = pyo.Constraint(expr=model.u[depot] == 1)\n\n    # MTZ subtour elimination on non-depot arcs:\n    # u[j] >= u[i] + 1 - n*(1 - x[i,j]) for i,j != depot, i != j.\n    # assumption: MTZ order variables u with u[j] >= u[i] + 1 - n*(1 - x[i,j]) on non-depot arcs\n    non_depot_arcs = [(i, j) for (i, j) in model.arcs if i != depot and j != depot]\n\n    def mtz_rule(m, i, j):\n        return m.u[j] >= m.u[i] + 1 - n * (1 - m.x[i, j])\n\n    model.mtz = pyo.Constraint(non_depot_arcs, rule=mtz_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1157,
+      "completion_tokens": 975
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.969893932342529,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 2,
+    "assignment": [
+     {
+      "decision": "subtour_elimination_formulation",
+      "option": "MTZ with big-M = n on all arcs leaving non-start nodes, start fixed to 1",
+      "evidence": "the courier can start from any location, but they need to deliver the package at each location exactly once and then return to their starting point",
+      "plausibility": 0.45
+     },
+     {
+      "decision": "start_location_fixed_or_free",
+      "option": "start is free: no node is anchored, tour is a single cycle over all nodes",
+      "evidence": "the courier can start from any location, but they need to deliver the package at each location exactly once and then return to their starting point",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "order_variable_domain",
+      "option": "NonNegativeIntegers with bounds [1, n]",
+      "evidence": "none",
+      "plausibility": 0.25
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary x[i,j] for all ordered pairs i != j",
+      "evidence": "deliver the package at each location exactly once and then return to their starting point",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "objective_sense_and_quantity",
+      "option": "minimize sum of arc costs over selected arcs",
+      "evidence": "find the optimal route that minimizes total delivery cost",
+      "plausibility": 0.98
+     },
+     {
+      "decision": "cost_matrix_orientation",
+      "option": "cost[(i,j)] = cost of traveling from i (row) to j (column)",
+      "evidence": "From Location E, it costs 65 units to reach F, 10 units to reach G, 25 units to reach H, and 82 units to reach I.",
+      "plausibility": 0.97
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"nodes\": [\"E\", \"F\", \"G\", \"H\", \"I\"],\n    \"cost\": {\n        (\"E\", \"F\"): 65,\n        (\"E\", \"G\"): 10,\n        (\"E\", \"H\"): 25,\n        (\"E\", \"I\"): 82,\n        (\"F\", \"E\"): 65,\n        (\"F\", \"G\"): 98,\n        (\"F\", \"H\"): 42,\n        (\"F\", \"I\"): 26,\n        (\"G\", \"E\"): 10,\n        (\"G\", \"F\"): 98,\n        (\"G\", \"H\"): 75,\n        (\"G\", \"I\"): 72,\n        (\"H\", \"E\"): 25,\n        (\"H\", \"F\"): 42,\n        (\"H\", \"G\"): 75,\n        (\"H\", \"I\"): 46,\n        (\"I\", \"E\"): 82,\n        (\"I\", \"F\"): 26,\n        (\"I\", \"G\"): 72,\n        (\"I\", \"H\"): 46,\n    },\n    \"n\": 5,\n    \"big_m\": 5,\n    \"start_node\": \"E\",\n    \"order_lb\": 1,\n    \"order_ub\": 5,\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    nodes = d[\"nodes\"]\n    n = d[\"n\"]\n    cost = d[\"cost\"]\n    big_m = d[\"big_m\"]\n    start = d[\"start_node\"]\n\n    model = pyo.ConcreteModel()\n\n    # assumption: arc set is all ordered pairs i != j\n    model.arcs = pyo.Set(\n        initialize=[(i, j) for i in nodes for j in nodes if i != j],\n        dimen=2,\n    )\n\n    # assumption: x[i,j] binary for all ordered pairs i != j\n    model.x = pyo.Var(model.arcs, within=pyo.Binary)\n\n    # assumption: order variables are NonNegativeIntegers bounded [1, n]\n    model.u = pyo.Var(\n        nodes,\n        within=pyo.NonNegativeIntegers,\n        bounds=(d[\"order_lb\"], d[\"order_ub\"]),\n    )\n\n    # \"find the optimal route that minimizes total delivery cost\"\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[i, j] for (i, j) in m.arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # \"deliver the package at each location exactly once\" -> one outgoing arc per node\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in nodes if j != i) == 1\n\n    model.out_arc = pyo.Constraint(nodes, rule=out_rule)\n\n    # \"deliver the package at each location exactly once\" -> one incoming arc per node\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in nodes if i != j) == 1\n\n    model.in_arc = pyo.Constraint(nodes, rule=in_rule)\n\n    # assumption: MTZ subtour elimination with big-M = n on arcs leaving non-start nodes\n    def mtz_rule(m, i, j):\n        if i == start or j == start:\n            return pyo.Constraint.Skip\n        return m.u[i] - m.u[j] + big_m * m.x[i, j] <= big_m - 1\n\n    model.mtz = pyo.Constraint(model.arcs, rule=mtz_rule)\n\n    # assumption: start fixed to 1 (order variable of start node anchored)\n    def start_order_rule(m):\n        return m.u[start] == 1\n\n    model.start_order = pyo.Constraint(rule=start_order_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1141,
+      "completion_tokens": 887
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.740022659301758,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 3,
+    "assignment": [
+     {
+      "decision": "subtour_elimination_formulation",
+      "option": "MTZ order variables u with u[j] >= u[i] + 1 - n*(1 - x[i,j]) on non-depot arcs, depot fixed to 1",
+      "evidence": "the courier can start from any location, but they need to deliver the package at each location exactly once and then return to their starting point",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "start_location_fixed_or_free",
+      "option": "start fixed to E (depot_index 0) with u[E]=1",
+      "evidence": "the courier can start from any location, but they need to deliver the package at each location exactly once and then return to their starting point",
+      "plausibility": 0.15
+     },
+     {
+      "decision": "order_variable_domain",
+      "option": "NonNegativeReals with bounds [1, n]",
+      "evidence": "none",
+      "plausibility": 0.7
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary x[i,j] for all ordered pairs i != j",
+      "evidence": "deliver the package at each location exactly once and then return to their starting point",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "objective_sense_and_quantity",
+      "option": "minimize sum of arc costs over selected arcs",
+      "evidence": "find the optimal route that minimizes total delivery cost",
+      "plausibility": 0.98
+     },
+     {
+      "decision": "cost_matrix_orientation",
+      "option": "cost[(i,j)] = cost of traveling from i (row) to j (column)",
+      "evidence": "From Location E, it costs 65 units to reach F, 10 units to reach G, 25 units to reach H, and 82 units to reach I.",
+      "plausibility": 0.97
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"locations\": [\"E\", \"F\", \"G\", \"H\", \"I\"],\n    \"depot\": \"E\",\n    \"n\": 5,\n    # cost[(i, j)] = cost of traveling from i (row) to j (column)\n    \"cost\": {\n        (\"E\", \"F\"): 65, (\"E\", \"G\"): 10, (\"E\", \"H\"): 25, (\"E\", \"I\"): 82,\n        (\"F\", \"E\"): 65, (\"F\", \"G\"): 98, (\"F\", \"H\"): 42, (\"F\", \"I\"): 26,\n        (\"G\", \"E\"): 10, (\"G\", \"F\"): 98, (\"G\", \"H\"): 75, (\"G\", \"I\"): 72,\n        (\"H\", \"E\"): 25, (\"H\", \"F\"): 42, (\"H\", \"G\"): 75, (\"H\", \"I\"): 46,\n        (\"I\", \"E\"): 82, (\"I\", \"F\"): 26, (\"I\", \"G\"): 72, (\"I\", \"H\"): 46,\n    },\n    \"u_lb\": 1,\n    \"u_ub\": 5,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    locations = d[\"locations\"]\n    depot = d[\"depot\"]\n    n = d[\"n\"]\n    cost = d[\"cost\"]\n\n    model = pyo.ConcreteModel()\n\n    # Set of locations\n    model.L = pyo.Set(initialize=locations)\n\n    # Set of ordered pairs i != j\n    def arc_filter(m, i, j):\n        return i != j\n\n    model.A = pyo.Set(\n        initialize=[(i, j) for i in locations for j in locations if i != j],\n        dimen=2,\n    )\n\n    # x[i,j] Binary: 1 if arc i->j is used\n    model.x = pyo.Var(model.A, within=pyo.Binary)\n\n    # u[i] order variable, NonNegativeReals in [1, n]\n    model.u = pyo.Var(\n        model.L, within=pyo.NonNegativeReals, bounds=(d[\"u_lb\"], d[\"u_ub\"])\n    )\n\n    # Objective: minimize sum of arc costs over selected arcs\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[i, j] for (i, j) in m.A)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Each location has exactly one outgoing arc\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in m.L if (i, j) in m.A) == 1\n\n    model.out_arc = pyo.Constraint(model.L, rule=out_rule)\n\n    # Each location has exactly one incoming arc\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in m.L if (i, j) in m.A) == 1\n\n    model.in_arc = pyo.Constraint(model.L, rule=in_rule)\n\n    # Depot fixed to 1\n    model.depot_order = pyo.Constraint(expr=model.u[depot] == 1)\n\n    # MTZ subtour elimination on non-depot arcs:\n    # u[j] >= u[i] + 1 - n*(1 - x[i,j])\n    def mtz_rule(m, i, j):\n        return m.u[j] >= m.u[i] + 1 - n * (1 - m.x[i, j])\n\n    model.mtz = pyo.Constraint(\n        [(i, j) for (i, j) in model.A if i != depot and j != depot],\n        rule=mtz_rule,\n    )\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1157,
+      "completion_tokens": 1005
+     }
+    },
+    {
+     "stage": "repair0",
+     "triggers": [
+      "sandbox_construct_error"
+     ],
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2739,
+      "completion_tokens": 889
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 8.99043083190918,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "branch",
+ "generated_at": "2026-11-02T07:21:44"
+}

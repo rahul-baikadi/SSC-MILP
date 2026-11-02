@@ -1,0 +1,246 @@
+{
+ "pid": "mamo_complex_0057",
+ "question": "Imagine a salesperson tasked with visiting five distinct cities to expand their business network. These cities are uniquely identified as City 1, City 2, City 3, City 4, and City 5. The salesperson is free to choose any of these cities as the starting point. However, they must travel to each city exactly once, concluding their journey at the starting city. The primary objective is to minimize the total travel cost associated with the entire trip, which includes expenses such as transportation costs between the cities.\n\nHere is a detailed breakdown of the travel costs between the cities:\n- The cost to travel from City 1 to City 2 is 87 units, to City 3 is 41 units, to City 4 is 55 units, and to City 5 is 57 units.\n- From City 2, it costs 87 units to reach City 1, 80 units to travel to City 3, 33 units to City 4, and 40 units to City 5.\n- Traveling from City 3, the costs are 41 units to City 1, 80 units to City 2, 90 units to City 4, and 42 units to City 5.\n- From City 4, the journey costs 55 units to City 1, 33 units to City 2, 90 units to City 3, and 53 units to City 5.\n- Lastly, from City 5, it costs 57 units to travel to City 1, 40 units to City 2, 42 units to City 3, and 53 units to City 4.\n\nGiven this cost matrix, what is the minimum total travel cost for the salesperson to visit each city exactly once and return to the starting city?",
+ "templates": [
+  "Vehicle Routing / TSP",
+  "Transportation"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 0,
+    "assignment": [
+     {
+      "decision": "mtz_big_m_scale",
+      "option": "big-M = n (5), tight MTZ formulation",
+      "evidence": "none (the text never specifies a big-M value for subtour elimination)",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "mtz_order_variable_bounds",
+      "option": "u in [0, n-1] with u[start]=0",
+      "evidence": "none (the text never mentions order/position variables)",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "start_city_fixing",
+      "option": "Fix start city to 1 (u[1]=0) and solve TSP from city 1",
+      "evidence": "\"The salesperson is free to choose any of these cities as the starting point.\"",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary x[i,j] for i != j",
+      "evidence": "\"they must travel to each city exactly once, concluding their journey at the starting city\"",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "degree_constraint_direction",
+      "option": "Equality: out-degree = 1 and in-degree = 1 for every city",
+      "evidence": "\"they must travel to each city exactly once\"",
+      "plausibility": 0.97
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize total travel cost",
+      "evidence": "\"The primary objective is to minimize the total travel cost associated with the entire trip\"",
+      "plausibility": 0.99
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"n\": 5,\n    \"start\": 1,\n    \"big_m\": 5,\n    \"cost\": {\n        (1, 2): 87, (1, 3): 41, (1, 4): 55, (1, 5): 57,\n        (2, 1): 87, (2, 3): 80, (2, 4): 33, (2, 5): 40,\n        (3, 1): 41, (3, 2): 80, (3, 4): 90, (3, 5): 42,\n        (4, 1): 55, (4, 2): 33, (4, 3): 90, (4, 5): 53,\n        (5, 1): 57, (5, 2): 40, (5, 3): 42, (5, 4): 53,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"n\"]\n    start = d[\"start\"]\n    big_m = d[\"big_m\"]\n\n    model = pyo.ConcreteModel()\n\n    # Cities 1..n\n    model.C = pyo.RangeSet(1, n)\n\n    # Arcs (i, j) with i != j\n    model.A = pyo.Set(\n        initialize=[(i, j) for i in range(1, n + 1) for j in range(1, n + 1) if i != j],\n        dimen=2,\n    )\n\n    # x[i,j] binary: 1 if the salesperson travels directly from city i to city j\n    # \"they must travel to each city exactly once, concluding their journey at the starting city\"\n    model.x = pyo.Var(model.A, within=pyo.Binary)\n\n    # u[i] order variable for MTZ subtour elimination\n    # assumption: u in [0, n-1] with u[start]=0\n    model.u = pyo.Var(model.C, within=pyo.NonNegativeReals, bounds=(0, n - 1))\n\n    # Objective: minimize total travel cost\n    # \"The primary objective is to minimize the total travel cost associated with the entire trip\"\n    def obj_rule(m):\n        return sum(d[\"cost\"][(i, j)] * m.x[i, j] for (i, j) in m.A)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Out-degree: exactly one outgoing arc per city\n    # \"they must travel to each city exactly once\"\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in range(1, n + 1) if j != i) == 1\n\n    model.out_degree = pyo.Constraint(model.C, rule=out_rule)\n\n    # In-degree: exactly one incoming arc per city\n    # \"they must travel to each city exactly once\"\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in range(1, n + 1) if i != j) == 1\n\n    model.in_degree = pyo.Constraint(model.C, rule=in_rule)\n\n    # MTZ subtour elimination for arcs not entering the start city\n    # assumption: tight MTZ formulation with big-M = n\n    def mtz_rule(m, i, j):\n        if j == start or i == start:\n            return pyo.Constraint.Skip\n        return m.u[i] - m.u[j] + big_m * m.x[i, j] <= big_m - 1\n\n    model.mtz = pyo.Constraint(model.A, rule=mtz_rule)\n\n    # Fix start city order variable to 0\n    # assumption: Fix start city to 1 (u[1]=0) and solve TSP from city 1\n    def start_rule(m):\n        return m.u[start] == 0\n\n    model.start_order = pyo.Constraint(rule=start_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1131,
+      "completion_tokens": 928
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.818816423416138,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 1,
+    "assignment": [
+     {
+      "decision": "mtz_big_m_scale",
+      "option": "big-M = n (5), tight MTZ formulation",
+      "evidence": "none (the text never specifies a big-M value for subtour elimination)",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "mtz_order_variable_bounds",
+      "option": "u in [0, n-1] with u[start]=0",
+      "evidence": "none (the text never mentions order/position variables)",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "start_city_fixing",
+      "option": "Leave start free; any city may be the depot",
+      "evidence": "\"The salesperson is free to choose any of these cities as the starting point.\"",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary x[i,j] for i != j",
+      "evidence": "\"they must travel to each city exactly once, concluding their journey at the starting city\"",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "degree_constraint_direction",
+      "option": "Equality: out-degree = 1 and in-degree = 1 for every city",
+      "evidence": "\"they must travel to each city exactly once\"",
+      "plausibility": 0.97
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize total travel cost",
+      "evidence": "\"The primary objective is to minimize the total travel cost associated with the entire trip\"",
+      "plausibility": 0.99
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"n\": 5,\n    \"cities\": [1, 2, 3, 4, 5],\n    \"cost\": {\n        (1, 2): 87, (1, 3): 41, (1, 4): 55, (1, 5): 57,\n        (2, 1): 87, (2, 3): 80, (2, 4): 33, (2, 5): 40,\n        (3, 1): 41, (3, 2): 80, (3, 4): 90, (3, 5): 42,\n        (4, 1): 55, (4, 2): 33, (4, 3): 90, (4, 5): 53,\n        (5, 1): 57, (5, 2): 40, (5, 3): 42, (5, 4): 53,\n    },\n    \"big_m\": 5,  # assumption: mtz_big_m_scale = n (5), tight MTZ formulation\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"n\"]\n    cities = d[\"cities\"]\n    cost = d[\"cost\"]\n\n    model = pyo.ConcreteModel()\n\n    # assumption: start_city_fixing - leave start free; any city may be the depot\n    # assumption: arc_variable_domain - Binary x[i,j] for i != j\n    model.arcs = pyo.Set(initialize=[(i, j) for i in cities for j in cities if i != j])\n    model.x = pyo.Var(model.arcs, within=pyo.Binary)\n\n    # assumption: mtz_order_variable_bounds - u in [0, n-1]\n    model.cities = pyo.Set(initialize=cities)\n    model.u = pyo.Var(model.cities, within=pyo.NonNegativeReals, bounds=(0, n - 1))\n\n    # \"The primary objective is to minimize the total travel cost associated with the entire trip\"\n    def obj_rule(m):\n        return sum(cost[(i, j)] * m.x[i, j] for (i, j) in m.arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # \"they must travel to each city exactly once\" - out-degree = 1\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n\n    model.out_degree = pyo.Constraint(model.cities, rule=out_rule)\n\n    # \"they must travel to each city exactly once\" - in-degree = 1\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n\n    model.in_degree = pyo.Constraint(model.cities, rule=in_rule)\n\n    # assumption: tight MTZ subtour elimination with big-M = n\n    # u[i] - u[j] + n * x[i,j] <= n - 1 for all i != j, i,j != depot\n    # Since depot is free, we apply MTZ over all arcs with u bounded in [0, n-1].\n    def mtz_rule(m, i, j):\n        return m.u[i] - m.u[j] + d[\"big_m\"] * m.x[i, j] <= n - 1\n\n    model.mtz = pyo.Constraint(model.arcs, rule=mtz_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1120,
+      "completion_tokens": 830
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.691768646240234,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 2,
+    "assignment": [
+     {
+      "decision": "mtz_big_m_scale",
+      "option": "big-M = n (5), tight MTZ formulation",
+      "evidence": "none (the text never specifies a big-M value for subtour elimination)",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "mtz_order_variable_bounds",
+      "option": "u in [1, n-1] for non-home cities with u[home]=0",
+      "evidence": "none (the text never mentions order/position variables)",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "start_city_fixing",
+      "option": "Leave start free; any city may be the depot",
+      "evidence": "\"The salesperson is free to choose any of these cities as the starting point.\"",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary x[i,j] for i != j",
+      "evidence": "\"they must travel to each city exactly once, concluding their journey at the starting city\"",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "degree_constraint_direction",
+      "option": "Equality: out-degree = 1 and in-degree = 1 for every city",
+      "evidence": "\"they must travel to each city exactly once\"",
+      "plausibility": 0.97
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize total travel cost",
+      "evidence": "\"The primary objective is to minimize the total travel cost associated with the entire trip\"",
+      "plausibility": 0.99
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"n\": 5,\n    \"cities\": [1, 2, 3, 4, 5],\n    \"cost\": {\n        (1, 2): 87, (1, 3): 41, (1, 4): 55, (1, 5): 57,\n        (2, 1): 87, (2, 3): 80, (2, 4): 33, (2, 5): 40,\n        (3, 1): 41, (3, 2): 80, (3, 4): 90, (3, 5): 42,\n        (4, 1): 55, (4, 2): 33, (4, 3): 90, (4, 5): 53,\n        (5, 1): 57, (5, 2): 40, (5, 3): 42, (5, 4): 53,\n    },\n    \"big_m\": 5,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    n = d[\"n\"]\n    cities = d[\"cities\"]\n    cost = d[\"cost\"]\n    big_m = d[\"big_m\"]\n\n    model = pyo.ConcreteModel()\n\n    # assumption: start_city_fixing - leave start free; any city may be the depot\n    model.home = pyo.Param(initialize=cities[0], within=pyo.Any)\n\n    model.I = pyo.Set(initialize=cities)\n    model.J = pyo.Set(initialize=cities)\n\n    # assumption: arc_variable_domain - Binary x[i,j] for i != j\n    # \"they must travel to each city exactly once, concluding their journey at the starting city\"\n    model.arcs = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n    model.x = pyo.Var(model.arcs, within=pyo.Binary)\n\n    # assumption: mtz_order_variable_bounds - u in [1, n-1] for non-home cities, u[home]=0\n    model.u = pyo.Var(model.I, within=pyo.NonNegativeReals, bounds=(0, n - 1))\n\n    # \"they must travel to each city exactly once\" - out-degree = 1\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n\n    model.out_degree = pyo.Constraint(model.I, rule=out_rule)\n\n    # \"they must travel to each city exactly once\" - in-degree = 1\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n\n    model.in_degree = pyo.Constraint(model.J, rule=in_rule)\n\n    # assumption: mtz_big_m_scale - big-M = n (5), tight MTZ formulation\n    # \"concluding their journey at the starting city\" - subtour elimination\n    def mtz_rule(m, i, j):\n        if i == j:\n            return pyo.Constraint.Skip\n        if j == cities[0]:\n            return pyo.Constraint.Skip\n        return m.u[i] - m.u[j] + big_m * m.x[i, j] <= big_m - 1\n\n    model.mtz = pyo.Constraint(model.I, model.J, rule=mtz_rule)\n\n    # \"The primary objective is to minimize the total travel cost associated with the entire trip\"\n    def obj_rule(m):\n        return sum(cost[i, j] * m.x[i, j] for (i, j) in m.arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1125,
+      "completion_tokens": 883
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.653605699539185,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 3,
+    "assignment": [
+     {
+      "decision": "mtz_big_m_scale",
+      "option": "big-M = 1000, loose MTZ formulation",
+      "evidence": "none (the text never specifies a big-M value for subtour elimination)",
+      "plausibility": 0.4
+     },
+     {
+      "decision": "mtz_order_variable_bounds",
+      "option": "u in [0, n-1] with u[start]=0",
+      "evidence": "none (the text never mentions order/position variables)",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "start_city_fixing",
+      "option": "Fix start city to 1 (u[1]=0) and solve TSP from city 1",
+      "evidence": "\"The salesperson is free to choose any of these cities as the starting point.\"",
+      "plausibility": 0.5
+     },
+     {
+      "decision": "arc_variable_domain",
+      "option": "Binary x[i,j] for i != j",
+      "evidence": "\"they must travel to each city exactly once, concluding their journey at the starting city\"",
+      "plausibility": 0.95
+     },
+     {
+      "decision": "degree_constraint_direction",
+      "option": "Equality: out-degree = 1 and in-degree = 1 for every city",
+      "evidence": "\"they must travel to each city exactly once\"",
+      "plausibility": 0.97
+     },
+     {
+      "decision": "objective_sense",
+      "option": "minimize total travel cost",
+      "evidence": "\"The primary objective is to minimize the total travel cost associated with the entire trip\"",
+      "plausibility": 0.99
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"cities\": [1, 2, 3, 4, 5],\n    \"start_city\": 1,\n    \"big_m\": 1000,\n    \"cost\": {\n        (1, 2): 87, (1, 3): 41, (1, 4): 55, (1, 5): 57,\n        (2, 1): 87, (2, 3): 80, (2, 4): 33, (2, 5): 40,\n        (3, 1): 41, (3, 2): 80, (3, 4): 90, (3, 5): 42,\n        (4, 1): 55, (4, 2): 33, (4, 3): 90, (4, 5): 53,\n        (5, 1): 57, (5, 2): 40, (5, 3): 42, (5, 4): 53,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    start = d[\"start_city\"]\n    big_m = d[\"big_m\"]\n    cost = d[\"cost\"]\n\n    model = pyo.ConcreteModel()\n\n    # Set of cities\n    model.C = pyo.Set(initialize=cities)\n\n    # Set of directed arcs between distinct cities\n    model.A = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n\n    # Binary arc variables x[i,j] for i != j\n    # \"they must travel to each city exactly once, concluding their journey at the starting city\"\n    model.x = pyo.Var(model.A, within=pyo.Binary)\n\n    # MTZ order variables u[i] in [0, n-1]\n    # assumption: mtz_order_variable_bounds: u in [0, n-1] with u[start]=0\n    n = len(cities)\n    model.u = pyo.Var(model.C, within=pyo.NonNegativeReals, bounds=(0, n - 1))\n\n    # Fix start city order variable to 0\n    # assumption: start_city_fixing: Fix start city to 1 (u[1]=0) and solve TSP from city 1\n    def rule_fix_start(m):\n        return m.u[start] == 0\n    model.fix_start = pyo.Constraint(rule=rule_fix_start)\n\n    # Out-degree = 1 for every city\n    # \"they must travel to each city exactly once\"\n    def rule_out(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n    model.out_degree = pyo.Constraint(model.C, rule=rule_out)\n\n    # In-degree = 1 for every city\n    # \"they must travel to each city exactly once\"\n    def rule_in(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n    model.in_degree = pyo.Constraint(model.C, rule=rule_in)\n\n    # MTZ subtour elimination constraints for arcs not entering the start city\n    # assumption: mtz_big_m_scale: big-M = 1000, loose MTZ formulation\n    def rule_mtz(m, i, j):\n        if i == start or j == start:\n            return pyo.Constraint.Skip\n        return m.u[i] - m.u[j] + big_m * m.x[i, j] <= big_m - 1\n    model.mtz = pyo.Constraint(model.A, rule=rule_mtz)\n\n    # Objective: minimize total travel cost\n    # \"The primary objective is to minimize the total travel cost associated with the entire trip\"\n    def rule_obj(m):\n        return sum(cost[i, j] * m.x[i, j] for (i, j) in m.A)\n    model.obj = pyo.Objective(rule=rule_obj, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1131,
+      "completion_tokens": 929
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.930000066757202,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "branch",
+ "generated_at": "2026-11-02T07:19:53"
+}

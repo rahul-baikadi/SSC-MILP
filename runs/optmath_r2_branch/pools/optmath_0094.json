@@ -1,0 +1,245 @@
+{
+ "pid": "optmath_0094",
+ "question": "Minimize the total travel distance for a delivery route across six cities, labeled City 0 through City 5, starting and ending at City 0. Each city must be visited exactly once, and the route must form a single loop without subtours. The distances between cities are as follows:  \n- From City 0: To City 1: 301 km, To City 2: 313 km, To City 3: 298 km, To City 4: 280 km, To City 5: 300 km.  \n- From City 1: To City 0: 309 km, To City 2: 317 km, To City 3: 317 km, To City 4: 279 km, To City 5: 321 km.  \n- From City 2: To City 0: 297 km, To City 1: 290 km, To City 3: 302 km, To City 4: 278 km, To City 5: 323 km.  \n- From City 3: To City 0: 292 km, To City 1: 305 km, To City 2: 321 km, To City 4: 292 km, To City 5: 321 km.  \n- From City 4: To City 0: 299 km, To City 1: 295 km, To City 2: 282 km, To City 3: 284 km, To City 5: 300 km.  \n- From City 5: To City 0: 318 km, To City 1: 317 km, To City 2: 304 km, To City 3: 278 km, To City 4: 284 km.  \n\nEach city must be visited exactly once, and each city must be departed exactly once. To prevent subtours, auxiliary variables represent the position of each city in the tour, with positions ranging from 0 to 5. Subtour elimination constraints ensure that if a route segment from City i to City j is included, the position of City i must be less than the position of City j. Specifically, for each pair of cities i and j, the constraint 6 times the route segment from i to j plus the position of City i minus the position of City j must be less than or equal to 5. The decision variables are binary, indicating whether a route segment is included, and the auxiliary variables are general, representing the position of each city in the tour. The goal is to determine the sequence of cities that minimizes the total travel distance while satisfying all constraints.",
+ "templates": [
+  "Vehicle Routing / TSP"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 0,
+    "assignment": [
+     {
+      "decision": "domain_of_position_variables",
+      "option": "NonNegativeReals bounded [0,5]",
+      "evidence": "\"auxiliary variables represent the position of each city in the tour, with positions ranging from 0 to 5\"",
+      "plausibility": 0.30000000000000004
+     },
+     {
+      "decision": "mtz_big_m_value",
+      "option": "Big-M = 5 (n-1)",
+      "evidence": "\"6 times the route segment from i to j plus the position of City i minus the position of City j must be less than or equal to 5\"",
+      "plausibility": 0.7000000000000001
+     },
+     {
+      "decision": "position_bounds_for_depot",
+      "option": "All cities including City 0 bounded [0,5]",
+      "evidence": "\"positions ranging from 0 to 5\"",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "mtz_constraint_scope",
+      "option": "Apply MTZ to all arcs i != j",
+      "evidence": "\"for each pair of cities i and j, the constraint ... must be less than or equal to 5\"",
+      "plausibility": 0.75
+     },
+     {
+      "decision": "distance_matrix_orientation",
+      "option": "Use DIST[i][j] as given (row = origin, column = destination)",
+      "evidence": "\"From City 0: To City 1: 301 km ... From City 1: To City 0: 309 km\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "objective_units",
+      "option": "Sum of arc distances in km",
+      "evidence": "\"Minimize the total travel distance\"",
+      "plausibility": 0.95
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\n# All numeric constants from the problem statement.\nDATA = {\n    \"cities\": [0, 1, 2, 3, 4, 5],\n    # DIST[i][j] = distance from city i (origin) to city j (destination), in km.\n    \"DIST\": {\n        0: {1: 301, 2: 313, 3: 298, 4: 280, 5: 300},\n        1: {0: 309, 2: 317, 3: 317, 4: 279, 5: 321},\n        2: {0: 297, 1: 290, 3: 302, 4: 278, 5: 323},\n        3: {0: 292, 1: 305, 2: 321, 4: 292, 5: 321},\n        4: {0: 299, 1: 295, 2: 282, 3: 284, 5: 300},\n        5: {0: 318, 1: 317, 2: 304, 3: 278, 4: 284},\n    },\n    \"n_cities\": 6,\n    \"position_lb\": 0,\n    \"position_ub\": 5,\n    \"mtz_big_m\": 5,  # n - 1\n    \"mtz_rhs\": 5,    # n - 1\n}\n\nGOLD_ANSWER = None\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    dist = d[\"DIST\"]\n    n = d[\"n_cities\"]\n\n    model = pyo.ConcreteModel()\n\n    # Set of cities.\n    model.I = pyo.Set(initialize=cities)\n\n    # Set of directed arcs (i, j) with i != j.\n    model.A = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n\n    # \"The decision variables are binary, indicating whether a route segment is included\"\n    model.x = pyo.Var(model.A, within=pyo.Binary)\n\n    # \"auxiliary variables represent the position of each city in the tour, with positions ranging from 0 to 5\"\n    # assumption: domain_of_position_variables = NonNegativeReals bounded [0,5]\n    model.u = pyo.Var(\n        model.I,\n        within=pyo.NonNegativeReals,\n        bounds=(d[\"position_lb\"], d[\"position_ub\"]),\n    )\n\n    # \"Minimize the total travel distance\"\n    # assumption: objective_units = Sum of arc distances in km\n    def obj_rule(m):\n        return sum(dist[i][j] * m.x[i, j] for (i, j) in m.A)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # \"Each city must be visited exactly once\" (in-degree = 1)\n    def in_degree_rule(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n\n    model.in_degree = pyo.Constraint(model.I, rule=in_degree_rule)\n\n    # \"each city must be departed exactly once\" (out-degree = 1)\n    def out_degree_rule(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n\n    model.out_degree = pyo.Constraint(model.I, rule=out_degree_rule)\n\n    # \"Subtour elimination constraints ensure that if a route segment from City i to City j is included,\n    #  the position of City i must be less than the position of City j. Specifically, for each pair of\n    #  cities i and j, the constraint 6 times the route segment from i to j plus the position of City i\n    #  minus the position of City j must be less than or equal to 5.\"\n    # assumption: mtz_constraint_scope = Apply MTZ to all arcs i != j\n    # assumption: mtz_big_m_value = Big-M = 5 (n-1)\n    def mtz_rule(m, i, j):\n        return (n * m.x[i, j] + m.u[i] - m.u[j]) <= d[\"mtz_rhs\"]\n\n    model.mtz = pyo.Constraint(model.A, rule=mtz_rule)\n\n    return model\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1349,
+      "completion_tokens": 1014
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.9474780559539795,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 1,
+    "assignment": [
+     {
+      "decision": "domain_of_position_variables",
+      "option": "Integers bounded [0,5]",
+      "evidence": "\"auxiliary variables represent the position of each city in the tour, with positions ranging from 0 to 5\"",
+      "plausibility": 0.6000000000000001
+     },
+     {
+      "decision": "mtz_big_m_value",
+      "option": "Big-M = 5 (n-1)",
+      "evidence": "\"6 times the route segment from i to j plus the position of City i minus the position of City j must be less than or equal to 5\"",
+      "plausibility": 0.7000000000000001
+     },
+     {
+      "decision": "position_bounds_for_depot",
+      "option": "City 0 fixed to position 0, others [1,5]",
+      "evidence": "\"positions ranging from 0 to 5\"",
+      "plausibility": 0.25
+     },
+     {
+      "decision": "mtz_constraint_scope",
+      "option": "Apply MTZ to all arcs i != j",
+      "evidence": "\"for each pair of cities i and j, the constraint ... must be less than or equal to 5\"",
+      "plausibility": 0.75
+     },
+     {
+      "decision": "distance_matrix_orientation",
+      "option": "Use DIST[i][j] as given (row = origin, column = destination)",
+      "evidence": "\"From City 0: To City 1: 301 km ... From City 1: To City 0: 309 km\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "objective_units",
+      "option": "Sum of arc distances in km",
+      "evidence": "\"Minimize the total travel distance\"",
+      "plausibility": 0.95
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\n# All numeric constants from the problem statement.\nDATA = {\n    \"cities\": [0, 1, 2, 3, 4, 5],\n    \"n\": 6,\n    \"dist\": {\n        0: {1: 301, 2: 313, 3: 298, 4: 280, 5: 300},\n        1: {0: 309, 2: 317, 3: 317, 4: 279, 5: 321},\n        2: {0: 297, 1: 290, 3: 302, 4: 278, 5: 323},\n        3: {0: 292, 1: 305, 2: 321, 4: 292, 5: 321},\n        4: {0: 299, 1: 295, 2: 282, 3: 284, 5: 300},\n        5: {0: 318, 1: 317, 2: 304, 3: 278, 4: 284},\n    },\n    \"position_lb\": 0,\n    \"position_ub\": 5,\n    \"depot\": 0,\n    \"depot_position\": 0,\n    \"non_depot_position_lb\": 1,\n    \"non_depot_position_ub\": 5,\n    \"mtz_big_m\": 5,\n    \"mtz_rhs\": 5,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    n = d[\"n\"]\n    dist = d[\"dist\"]\n    depot = d[\"depot\"]\n\n    model = pyo.ConcreteModel()\n\n    # Arcs between distinct cities.\n    model.arcs = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n    model.cities = pyo.Set(initialize=cities)\n\n    # \"The decision variables are binary, indicating whether a route segment is included\"\n    model.x = pyo.Var(model.arcs, within=pyo.Binary)\n\n    # \"auxiliary variables represent the position of each city in the tour, with positions ranging from 0 to 5\"\n    # assumption: domain_of_position_variables -> Integers bounded [0,5]\n    model.u = pyo.Var(\n        model.cities,\n        within=pyo.Integers,\n        bounds=(d[\"position_lb\"], d[\"position_ub\"]),\n    )\n\n    # \"City 0 fixed to position 0, others [1,5]\"\n    # assumption: position_bounds_for_depot\n    def depot_position_rule(m):\n        return m.u[depot] == d[\"depot_position\"]\n\n    model.depot_position = pyo.Constraint(rule=depot_position_rule)\n\n    def non_depot_position_lb_rule(m, i):\n        if i == depot:\n            return pyo.Constraint.Skip\n        return m.u[i] >= d[\"non_depot_position_lb\"]\n\n    model.non_depot_position_lb = pyo.Constraint(\n        model.cities, rule=non_depot_position_lb_rule\n    )\n\n    def non_depot_position_ub_rule(m, i):\n        if i == depot:\n            return pyo.Constraint.Skip\n        return m.u[i] <= d[\"non_depot_position_ub\"]\n\n    model.non_depot_position_ub = pyo.Constraint(\n        model.cities, rule=non_depot_position_ub_rule\n    )\n\n    # \"Each city must be visited exactly once\"\n    def visit_once_rule(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n\n    model.visit_once = pyo.Constraint(model.cities, rule=visit_once_rule)\n\n    # \"each city must be departed exactly once\"\n    def depart_once_rule(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n\n    model.depart_once = pyo.Constraint(model.cities, rule=depart_once_rule)\n\n    # \"6 times the route segment from i to j plus the position of City i minus the position of City j must be less than or equal to 5\"\n    # assumption: mtz_big_m_value = 5 (n-1); mtz_constraint_scope = all arcs i != j\n    def mtz_rule(m, i, j):\n        return (\n            (n - 1) * m.x[i, j] + m.u[i] - m.u[j] <= d[\"mtz_rhs\"]\n        )\n\n    model.mtz = pyo.Constraint(model.arcs, rule=mtz_rule)\n\n    # \"Minimize the total travel distance\"\n    # assumption: distance_matrix_orientation -> DIST[i][j] as given (row = origin, column = destination)\n    # assumption: objective_units -> sum of arc distances in km\n    def obj_rule(m):\n        return sum(dist[i][j] * m.x[i, j] for (i, j) in m.arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1349,
+      "completion_tokens": 1197
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.318220376968384,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 2,
+    "assignment": [
+     {
+      "decision": "domain_of_position_variables",
+      "option": "Integers bounded [0,5]",
+      "evidence": "\"auxiliary variables represent the position of each city in the tour, with positions ranging from 0 to 5\"",
+      "plausibility": 0.6000000000000001
+     },
+     {
+      "decision": "mtz_big_m_value",
+      "option": "Big-M = 6 (n)",
+      "evidence": "\"6 times the route segment from i to j plus the position of City i minus the position of City j must be less than or equal to 5\"",
+      "plausibility": 0.20000000000000004
+     },
+     {
+      "decision": "position_bounds_for_depot",
+      "option": "All cities including City 0 bounded [0,5]",
+      "evidence": "\"positions ranging from 0 to 5\"",
+      "plausibility": 0.6
+     },
+     {
+      "decision": "mtz_constraint_scope",
+      "option": "Apply MTZ to all arcs i != j",
+      "evidence": "\"for each pair of cities i and j, the constraint ... must be less than or equal to 5\"",
+      "plausibility": 0.75
+     },
+     {
+      "decision": "distance_matrix_orientation",
+      "option": "Use DIST[i][j] as given (row = origin, column = destination)",
+      "evidence": "\"From City 0: To City 1: 301 km ... From City 1: To City 0: 309 km\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "objective_units",
+      "option": "Sum of arc distances in km",
+      "evidence": "\"Minimize the total travel distance\"",
+      "plausibility": 0.95
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"cities\": [0, 1, 2, 3, 4, 5],\n    \"dist\": {\n        0: {1: 301, 2: 313, 3: 298, 4: 280, 5: 300},\n        1: {0: 309, 2: 317, 3: 317, 4: 279, 5: 321},\n        2: {0: 297, 1: 290, 3: 302, 4: 278, 5: 323},\n        3: {0: 292, 1: 305, 2: 321, 4: 292, 5: 321},\n        4: {0: 299, 1: 295, 2: 282, 3: 284, 5: 300},\n        5: {0: 318, 1: 317, 2: 304, 3: 278, 4: 284},\n    },\n    \"n\": 6,\n    \"pos_lb\": 0,\n    \"pos_ub\": 5,\n    \"big_m\": 6,\n    \"mtz_rhs\": 5,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    dist = d[\"dist\"]\n    n = d[\"n\"]\n\n    model = pyo.ConcreteModel()\n\n    # \"The decision variables are binary, indicating whether a route segment is included\"\n    model.arcs = pyo.Set(initialize=[(i, j) for i in cities for j in cities if i != j])\n    model.x = pyo.Var(model.arcs, within=pyo.Binary)\n\n    # \"auxiliary variables represent the position of each city in the tour, with positions ranging from 0 to 5\"\n    # assumption: domain_of_position_variables -> Integers bounded [0,5]\n    model.pos = pyo.Var(\n        cities,\n        within=pyo.Integers,\n        bounds=(d[\"pos_lb\"], d[\"pos_ub\"]),\n    )\n\n    # \"Minimize the total travel distance\"\n    def obj_rule(m):\n        return sum(dist[i][j] * m.x[i, j] for (i, j) in m.arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # \"Each city must be visited exactly once\" (in-degree)\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n\n    model.in_deg = pyo.Constraint(cities, rule=in_rule)\n\n    # \"each city must be departed exactly once\" (out-degree)\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n\n    model.out_deg = pyo.Constraint(cities, rule=out_rule)\n\n    # \"6 times the route segment from i to j plus the position of City i minus the position of City j must be less than or equal to 5\"\n    # assumption: mtz_constraint_scope -> apply MTZ to all arcs i != j\n    def mtz_rule(m, i, j):\n        return d[\"big_m\"] * m.x[i, j] + m.pos[i] - m.pos[j] <= d[\"mtz_rhs\"]\n\n    model.mtz = pyo.Constraint(model.arcs, rule=mtz_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1344,
+      "completion_tokens": 811
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.044297695159912,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 3,
+    "assignment": [
+     {
+      "decision": "domain_of_position_variables",
+      "option": "Integers bounded [0,5]",
+      "evidence": "\"auxiliary variables represent the position of each city in the tour, with positions ranging from 0 to 5\"",
+      "plausibility": 0.6000000000000001
+     },
+     {
+      "decision": "mtz_big_m_value",
+      "option": "Big-M = 5 (n-1)",
+      "evidence": "\"6 times the route segment from i to j plus the position of City i minus the position of City j must be less than or equal to 5\"",
+      "plausibility": 0.7000000000000001
+     },
+     {
+      "decision": "position_bounds_for_depot",
+      "option": "City 0 fixed to position 0, others [0,5]",
+      "evidence": "\"positions ranging from 0 to 5\"",
+      "plausibility": 0.15
+     },
+     {
+      "decision": "mtz_constraint_scope",
+      "option": "Apply MTZ to all arcs i != j",
+      "evidence": "\"for each pair of cities i and j, the constraint ... must be less than or equal to 5\"",
+      "plausibility": 0.75
+     },
+     {
+      "decision": "distance_matrix_orientation",
+      "option": "Use DIST[i][j] as given (row = origin, column = destination)",
+      "evidence": "\"From City 0: To City 1: 301 km ... From City 1: To City 0: 309 km\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "objective_units",
+      "option": "Sum of arc distances in km",
+      "evidence": "\"Minimize the total travel distance\"",
+      "plausibility": 0.95
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"cities\": [0, 1, 2, 3, 4, 5],\n    \"n\": 6,\n    \"dist\": {\n        0: {1: 301, 2: 313, 3: 298, 4: 280, 5: 300},\n        1: {0: 309, 2: 317, 3: 317, 4: 279, 5: 321},\n        2: {0: 297, 1: 290, 3: 302, 4: 278, 5: 323},\n        3: {0: 292, 1: 305, 2: 321, 4: 292, 5: 321},\n        4: {0: 299, 1: 295, 2: 282, 3: 284, 5: 300},\n        5: {0: 318, 1: 317, 2: 304, 3: 278, 4: 284},\n    },\n    \"depot\": 0,\n    \"pos_lb\": 0,\n    \"pos_ub\": 5,\n    \"big_m\": 5,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    cities = d[\"cities\"]\n    depot = d[\"depot\"]\n    dist = d[\"dist\"]\n\n    model = pyo.ConcreteModel()\n\n    # Arcs i != j\n    model.arcs = pyo.Set(\n        initialize=[(i, j) for i in cities for j in cities if i != j],\n        dimen=2,\n    )\n    model.cities = pyo.Set(initialize=cities)\n\n    # \"The decision variables are binary, indicating whether a route segment is included\"\n    model.x = pyo.Var(model.arcs, within=pyo.Binary)\n\n    # \"auxiliary variables represent the position of each city in the tour, with positions ranging from 0 to 5\"\n    # assumption: City 0 fixed to position 0, others [0,5]\n    def pos_bounds(m, i):\n        if i == depot:\n            return (d[\"pos_lb\"], d[\"pos_lb\"])\n        return (d[\"pos_lb\"], d[\"pos_ub\"])\n\n    model.u = pyo.Var(\n        model.cities,\n        within=pyo.Integers,\n        bounds=pos_bounds,\n    )\n\n    # \"Each city must be visited exactly once\" -> exactly one incoming arc\n    def in_rule(m, j):\n        return sum(m.x[i, j] for i in cities if i != j) == 1\n\n    model.in_degree = pyo.Constraint(model.cities, rule=in_rule)\n\n    # \"each city must be departed exactly once\" -> exactly one outgoing arc\n    def out_rule(m, i):\n        return sum(m.x[i, j] for j in cities if j != i) == 1\n\n    model.out_degree = pyo.Constraint(model.cities, rule=out_rule)\n\n    # \"6 times the route segment from i to j plus the position of City i minus the position of City j must be less than or equal to 5\"\n    # assumption: MTZ applied to all arcs i != j, big-M = 5\n    def mtz_rule(m, i, j):\n        return d[\"n\"] * m.x[i, j] + m.u[i] - m.u[j] <= d[\"big_m\"]\n\n    model.mtz = pyo.Constraint(model.arcs, rule=mtz_rule)\n\n    # \"Minimize the total travel distance\"\n    def obj_rule(m):\n        return sum(dist[i][j] * m.x[i, j] for (i, j) in m.arcs)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1349,
+      "completion_tokens": 881
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.445724725723267,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "branch",
+ "generated_at": "2026-11-02T08:16:16"
+}

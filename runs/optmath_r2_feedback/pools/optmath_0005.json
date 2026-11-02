@@ -1,0 +1,99 @@
+{
+ "pid": "optmath_0005",
+ "question": "Imagine you are managing a supply chain network for a company that operates across three key locations: **Node 0**, **Node 1**, and **Node 2**. Each location has specific supply and demand requirements, and your goal is to optimize the flow of goods between these nodes while minimizing the total cost of establishing connections and shipping products.\n\n#### Supply and Demand:\n- **Node 0** has a net supply of **236 units**, meaning it can provide this amount to other nodes.\n- **Node 1** has a net demand of **29 units**, requiring this amount to be fulfilled from other nodes.\n- **Node 2** has a net demand of **207 units**, which must also be met through shipments from other nodes.\n\n#### Shipping Costs and Capacities:\nTo move goods between nodes, you must decide whether to establish a connection (which incurs a fixed cost) and how much to ship (which incurs a variable cost per unit). The costs and capacities for each possible connection are as follows:\n\n1. **Node 0 to Node 1**:\n   - Fixed cost to establish the connection: **$3,532**\n   - Variable shipping cost per unit: **$45**\n   - Maximum shipping capacity: **773 units**\n\n2. **Node 0 to Node 2**:\n   - Fixed cost: **$3,895**\n   - Variable shipping cost: **$49**\n   - Maximum capacity: **973 units**\n\n3. **Node 1 to Node 0**:\n   - Fixed cost: **$3,485**\n   - Variable shipping cost: **$11**\n   - Maximum capacity: **785 units**\n\n4. **Node 1 to Node 2**:\n   - Fixed cost: **$1,845**\n   - Variable shipping cost: **$40**\n   - Maximum capacity: **787 units**\n\n5. **Node 2 to Node 0**:\n   - Fixed cost: **$1,291**\n   - Variable shipping cost: **$13**\n   - Maximum capacity: **602 units**\n\n6. **Node 2 to Node 1**:\n   - Fixed cost: **$1,818**\n   - Variable shipping cost: **$47**\n   - Maximum capacity: **766 units**\n\n#### Key Decisions:\n- For each connection between nodes, you must decide whether to establish it (a binary decision: yes or no).\n- For each established connection, you must determine the amount of goods to ship, ensuring it does not exceed the connection's capacity.\n\n#### Objective:\nYour goal is to minimize the total cost, which includes:\n1. The fixed costs of establishing the necessary connections.\n2. The variable shipping costs based on the amount of goods transported.\n\n#### Constraints:\n1. **Capacity Constraints**: The amount of goods shipped between any two nodes cannot exceed the maximum capacity of that connection. For example, if you decide to ship goods from **Node 0 to Node 1**, the shipment must be **773 units or less**.\n2. **Flow Balance Constraints**: The total inflow and outflow of goods at each node must match its supply or demand. For example:\n   - At **Node 0**, the total inflow from **Node 1** and **Node 2** minus the outflow to **Node 1** and **Node 2** must equal **236 units**.\n   - At **Node 1**, the total inflow from **Node 0** and **Node 2** minus the outflow to **Node 0** and **Node 2** must equal **-29 units** (indicating a net demand).\n   - At **Node 2**, the total inflow from **Node 0** and **Node 1** minus the outflow to **Node 0** and **Node 1** must equal **-207 units** (indicating a net demand).\n\n#### Summary:\nYour task is to determine the most cost-effective way to establish connections and ship goods between **Node 0**, **Node 1**, and **Node 2** to meet the supply and demand requirements while minimizing the total cost. This involves balancing fixed and variable costs, adhering to capacity limits, and ensuring the flow of goods aligns with the needs of each node.",
+ "templates": [
+  "Transportation",
+  "Network Flow",
+  "Facility Location"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "feedback",
+    "b": 0,
+    "temperature": 0.6
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"nodes\": [0, 1, 2],\n    \"arcs\": [(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)],\n    # net supply b_n such that (inflow - outflow) = b_n\n    # positive = supply, negative = demand\n    \"net_supply\": {0: 236, 1: -29, 2: -207},\n    \"fixed_cost\": {\n        (0, 1): 3532, (0, 2): 3895,\n        (1, 0): 3485, (1, 2): 1845,\n        (2, 0): 1291, (2, 1): 1818,\n    },\n    \"var_cost\": {\n        (0, 1): 45, (0, 2): 49,\n        (1, 0): 11, (1, 2): 40,\n        (2, 0): 13, (2, 1): 47,\n    },\n    \"capacity\": {\n        (0, 1): 773, (0, 2): 973,\n        (1, 0): 785, (1, 2): 787,\n        (2, 0): 602, (2, 1): 766,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.N = pyo.Set(initialize=d[\"nodes\"])\n    model.A = pyo.Set(initialize=d[\"arcs\"], dimen=2)\n\n    # x[i,j]: units shipped on arc (i,j); upper bound enforced by capacity_link\n    model.x = pyo.Var(model.A, within=pyo.NonNegativeReals)\n\n    # y[i,j]: 1 if arc (i,j) is established\n    model.y = pyo.Var(model.A, within=pyo.Binary)\n\n    # Objective: fixed establishment cost + variable shipping cost\n    model.obj = pyo.Objective(\n        expr=sum(\n            d[\"fixed_cost\"][(i, j)] * model.y[i, j]\n            + d[\"var_cost\"][(i, j)] * model.x[i, j]\n            for (i, j) in d[\"arcs\"]\n        ),\n        sense=pyo.minimize,\n    )\n\n    # Capacity / linking: ship only if established, up to capacity\n    def capacity_rule(m, i, j):\n        return m.x[i, j] <= d[\"capacity\"][(i, j)] * m.y[i, j]\n\n    model.capacity_link = pyo.Constraint(model.A, rule=capacity_rule)\n\n    # Flow balance (this IS the demand-satisfaction constraint):\n    #   inflow - outflow = net_supply[n]\n    def balance_rule(m, n):\n        inflow = sum(m.x[i, n] for i in d[\"nodes\"] if (i, n) in d[\"arcs\"])\n        outflow = sum(m.x[n, j] for j in d[\"nodes\"] if (n, j) in d[\"arcs\"])\n        return inflow - outflow == d[\"net_supply\"][n]\n\n    model.flow_balance = pyo.Constraint(model.N, rule=balance_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2344,
+      "completion_tokens": 1312
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.117371559143066,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "feedback",
+    "b": 1,
+    "temperature": 0.8
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"nodes\": [0, 1, 2],\n    \"arcs\": [(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)],\n    # Net balance b_n with convention:  inflow - outflow = b_n\n    # (positive = net supply, negative = net demand)\n    \"balance\": {0: 236, 1: -29, 2: -207},\n    \"fixed_cost\": {\n        (0, 1): 3532, (0, 2): 3895,\n        (1, 0): 3485, (1, 2): 1845,\n        (2, 0): 1291, (2, 1): 1818,\n    },\n    \"var_cost\": {\n        (0, 1): 45, (0, 2): 49,\n        (1, 0): 11, (1, 2): 40,\n        (2, 0): 13, (2, 1): 47,\n    },\n    \"capacity\": {\n        (0, 1): 773, (0, 2): 973,\n        (1, 0): 785, (1, 2): 787,\n        (2, 0): 602, (2, 1): 766,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.N = pyo.Set(initialize=d[\"nodes\"])\n    model.A = pyo.Set(initialize=d[\"arcs\"], dimen=2)\n\n    # x[i,j]: units shipped on arc (i,j)\n    def x_bounds(m, i, j):\n        return (0, d[\"capacity\"][(i, j)])\n\n    model.x = pyo.Var(model.A, within=pyo.NonNegativeReals, bounds=x_bounds)\n\n    # y[i,j]: 1 if arc (i,j) is established\n    model.y = pyo.Var(model.A, within=pyo.Binary)\n\n    # Objective: fixed establishment cost + variable shipping cost\n    model.obj = pyo.Objective(\n        expr=sum(\n            d[\"fixed_cost\"][(i, j)] * model.y[i, j]\n            + d[\"var_cost\"][(i, j)] * model.x[i, j]\n            for (i, j) in d[\"arcs\"]\n        ),\n        sense=pyo.minimize,\n    )\n\n    # Capacity / linking: ship only if established, up to capacity\n    def capacity_rule(m, i, j):\n        return m.x[i, j] <= d[\"capacity\"][(i, j)] * m.y[i, j]\n\n    model.capacity_link = pyo.Constraint(model.A, rule=capacity_rule)\n\n    # Flow balance (inflow - outflow = b_n): satisfies supply AND demand\n    def balance_rule(m, n):\n        inflow = sum(m.x[i, n] for i in d[\"nodes\"] if (i, n) in d[\"arcs\"])\n        outflow = sum(m.x[n, j] for j in d[\"nodes\"] if (n, j) in d[\"arcs\"])\n        return inflow - outflow == d[\"balance\"][n]\n\n    model.flow_balance = pyo.Constraint(model.N, rule=balance_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2344,
+      "completion_tokens": 1281
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.003455400466919,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "feedback",
+    "b": 2,
+    "temperature": 1.0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"nodes\": [0, 1, 2],\n    \"arcs\": [(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)],\n    # net supply under the convention: inflow - outflow = b_n\n    # (positive = net supply, negative = net demand)\n    \"supply\": {0: 236, 1: -29, 2: -207},\n    \"fixed_cost\": {\n        (0, 1): 3532, (0, 2): 3895,\n        (1, 0): 3485, (1, 2): 1845,\n        (2, 0): 1291, (2, 1): 1818,\n    },\n    \"var_cost\": {\n        (0, 1): 45, (0, 2): 49,\n        (1, 0): 11, (1, 2): 40,\n        (2, 0): 13, (2, 1): 47,\n    },\n    \"capacity\": {\n        (0, 1): 773, (0, 2): 973,\n        (1, 0): 785, (1, 2): 787,\n        (2, 0): 602, (2, 1): 766,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.N = pyo.Set(initialize=d[\"nodes\"])\n    model.A = pyo.Set(initialize=d[\"arcs\"], dimen=2)\n\n    def x_bounds(m, i, j):\n        return (0, d[\"capacity\"][(i, j)])\n\n    model.x = pyo.Var(model.A, within=pyo.NonNegativeReals, bounds=x_bounds)\n    model.y = pyo.Var(model.A, within=pyo.Binary)\n\n    def obj_rule(m):\n        return sum(\n            d[\"fixed_cost\"][(i, j)] * m.y[i, j]\n            + d[\"var_cost\"][(i, j)] * m.x[i, j]\n            for (i, j) in d[\"arcs\"]\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    def capacity_rule(m, i, j):\n        return m.x[i, j] <= d[\"capacity\"][(i, j)] * m.y[i, j]\n\n    model.capacity_link = pyo.Constraint(model.A, rule=capacity_rule)\n\n    # Flow balance (inflow - outflow = net supply):\n    #   sum_i x[i,n] - sum_j x[n,j] == supply[n]\n    def balance_rule(m, n):\n        inflow = sum(m.x[i, n] for i in d[\"nodes\"] if (i, n) in d[\"arcs\"])\n        outflow = sum(m.x[n, j] for j in d[\"nodes\"] if (n, j) in d[\"arcs\"])\n        return inflow - outflow == d[\"supply\"][n]\n\n    model.flow_balance = pyo.Constraint(model.N, rule=balance_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2344,
+      "completion_tokens": 1230
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.381350994110107,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "feedback",
+    "b": 3,
+    "temperature": 1.2
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"nodes\": [0, 1, 2],\n    \"arcs\": [(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)],\n    # net value b_n for  inflow - outflow = b_n  (positive = supply, negative = demand)\n    \"net_supply\": {0: 236, 1: -29, 2: -207},\n    # fixed cost to establish each connection\n    \"fixed_cost\": {\n        (0, 1): 3532, (0, 2): 3895,\n        (1, 0): 3485, (1, 2): 1845,\n        (2, 0): 1291, (2, 1): 1818,\n    },\n    # variable shipping cost per unit\n    \"var_cost\": {\n        (0, 1): 45, (0, 2): 49,\n        (1, 0): 11, (1, 2): 40,\n        (2, 0): 13, (2, 1): 47,\n    },\n    # maximum shipping capacity per connection\n    \"capacity\": {\n        (0, 1): 773, (0, 2): 973,\n        (1, 0): 785, (1, 2): 787,\n        (2, 0): 602, (2, 1): 766,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.N = pyo.Set(initialize=d[\"nodes\"])\n    model.A = pyo.Set(initialize=d[\"arcs\"], dimen=2)\n\n    # x[i,j]: units shipped on arc (i,j); 0 <= x[i,j] <= capacity[i,j]\n    def x_bounds(m, i, j):\n        return (0, d[\"capacity\"][(i, j)])\n\n    model.x = pyo.Var(model.A, within=pyo.NonNegativeReals, bounds=x_bounds)\n\n    # y[i,j]: 1 if connection (i,j) is established\n    model.y = pyo.Var(model.A, within=pyo.Binary)\n\n    # Objective: minimize fixed establishment cost + variable shipping cost\n    def obj_rule(m):\n        return sum(\n            d[\"fixed_cost\"][(i, j)] * m.y[i, j]\n            + d[\"var_cost\"][(i, j)] * m.x[i, j]\n            for (i, j) in d[\"arcs\"]\n        )\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    # Capacity linking: ship only if established, up to the capacity (big-M = capacity)\n    def capacity_rule(m, i, j):\n        return m.x[i, j] <= d[\"capacity\"][(i, j)] * m.y[i, j]\n\n    model.capacity_link = pyo.Constraint(model.A, rule=capacity_rule)\n\n    # Flow balance (matches text orientation):\n    #   sum_j x[n,j]  (outflow)  ;  sum_i x[i,n]  (inflow)\n    #   inflow - outflow = b_n   (b_n positive = supply, negative = demand met exactly)\n    def balance_rule(m, n):\n        inflow = sum(m.x[i, n] for i in d[\"nodes\"] if (i, n) in d[\"arcs\"])\n        outflow = sum(m.x[n, j] for j in d[\"nodes\"] if (n, j) in d[\"arcs\"])\n        return inflow - outflow == d[\"net_supply\"][n]\n\n    model.flow_balance = pyo.Constraint(model.N, rule=balance_rule)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2344,
+      "completion_tokens": 1275
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 7.181561231613159,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "feedback",
+ "generated_at": "2026-11-02T07:51:39"
+}

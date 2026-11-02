@@ -32,9 +32,25 @@ def _to_float(x) -> float | None:
         return None
 
 
+def _from_runs(name: str, n: int) -> list[dict]:
+    """Fallback when data/benchmarks/<name>.jsonl is absent: rebuild the eval
+    split from the round-1 artifacts (question from pools/, gold from eval/)."""
+    run = _ROOT / "runs" / name
+    rows = []
+    for f in sorted((run / "pools").glob(f"{name}_*.json"))[:n]:
+        pool = json.loads(f.read_text(encoding="utf-8"))
+        ev = run / "eval" / f.name
+        gold = json.loads(ev.read_text(encoding="utf-8"))["gold"] if ev.exists() else None
+        rows.append({"pid": pool["pid"], "index": int(pool["pid"].rsplit("_", 1)[1]),
+                     "question": pool["question"], "answer": gold, "answer_raw": gold})
+    return rows
+
+
 def load_benchmark(name: str, n: int | None = None) -> list[dict]:
     spec = BENCHMARKS[name]
     n = spec["n_eval"] if n is None else n
+    if not (_ROOT / spec["file"]).exists():
+        return _from_runs(name, n)
     rows = []
     with open(_ROOT / spec["file"], encoding="utf-8") as f:
         for k, line in enumerate(f):

@@ -1,0 +1,247 @@
+{
+ "pid": "optmath_0014",
+ "question": "There are two aircraft, **aircraft_0** and **aircraft_1**, that need to be scheduled for landing. The goal is to minimize the total penalty costs associated with deviations from their target landing times. **aircraft_0** must land between 0 and 30 units of time, while **aircraft_1** must land between 128 and 188 units of time. The target landing time for **aircraft_0** is 0 units, and for **aircraft_1**, it is 158 units. Penalties are incurred for deviations from the target times: **aircraft_0** incurs a penalty of 42 units per unit time for landing early and 32 units per unit time for landing late, while **aircraft_1** incurs a penalty of 62 units per unit time for landing early and 55 units per unit time for landing late.\n\nTo ensure safety, a minimum separation time must be maintained between the landings of the two aircraft. If **aircraft_0** lands before **aircraft_1**, there must be at least 3 units of separation time. If **aircraft_1** lands before **aircraft_0**, there must be at least 98 units of separation time. The order of landings is determined by binary variables **AircraftOrder[aircraft_0,aircraft_1]** and **AircraftOrder[aircraft_1,aircraft_0]**, which are mutually exclusive and must sum to 1. The landing times must respect the separation requirements based on the landing order, and each aircraft must land within its specified time window.\n\nThe early and late deviations for each aircraft are calculated based on the difference between the actual landing time and the target time. For **aircraft_0**, the early deviation is non-negative, and the late deviation is non-negative. For **aircraft_1**, the early deviation is calculated as the difference between the target time and the actual landing time, and the late deviation is calculated as the difference between the actual landing time and the target time. The objective is to minimize the total penalty costs, which are calculated as the sum of the penalties for early and late deviations for both aircraft.",
+ "templates": [
+  "Production Planning / Product Mix",
+  "Blending / Diet",
+  "Scheduling"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 0,
+    "assignment": [
+     {
+      "decision": "deviation_link_formulation",
+      "option": "single equality: x_i - target_i == l_i - e_i",
+      "evidence": "\"The early and late deviations for each aircraft are calculated based on the difference between the actual landing time and the target time.\"",
+      "plausibility": 0.6000000000000001
+     },
+     {
+      "decision": "big_m_value",
+      "option": "bigM = 300",
+      "evidence": "none (the text specifies separation times but no big-M)",
+      "plausibility": 0.4
+     },
+     {
+      "decision": "separation_constraint_direction",
+      "option": "x_j - x_i - sep + M(1-y) >= 0 (i.e. x_j >= x_i + sep when y=1)",
+      "evidence": "\"If aircraft_0 lands before aircraft_1, there must be at least 3 units of separation time.\"",
+      "plausibility": 0.97
+     },
+     {
+      "decision": "landing_time_domain",
+      "option": "NonNegativeReals with bounds [earliest, latest]",
+      "evidence": "\"aircraft_0 must land between 0 and 30 units of time, while aircraft_1 must land between 128 and 188 units of time.\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "order_binary_orientation",
+      "option": "y[(i,j)] = 1 means i lands before j; sum over all ordered pairs == 1",
+      "evidence": "\"The order of landings is determined by binary variables AircraftOrder[aircraft_0,aircraft_1] and AircraftOrder[aircraft_1,aircraft_0], which are mutually exclusive and must sum to 1.\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_units_and_scale",
+      "option": "raw penalty units: sum_i (early_rate_i * e_i + late_rate_i * l_i)",
+      "evidence": "\"The objective is to minimize the total penalty costs, which are calculated as the sum of the penalties for early and late deviations for both aircraft.\"",
+      "plausibility": 0.95
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"aircraft\": [\"aircraft_0\", \"aircraft_1\"],\n    \"earliest\": {\"aircraft_0\": 0, \"aircraft_1\": 128},\n    \"latest\": {\"aircraft_0\": 30, \"aircraft_1\": 188},\n    \"target\": {\"aircraft_0\": 0, \"aircraft_1\": 158},\n    \"early_rate\": {\"aircraft_0\": 42, \"aircraft_1\": 62},\n    \"late_rate\": {\"aircraft_0\": 32, \"aircraft_1\": 55},\n    \"separation\": {\n        (\"aircraft_0\", \"aircraft_1\"): 3,\n        (\"aircraft_1\", \"aircraft_0\"): 98,\n    },\n    \"bigM\": 300,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    aircraft = d[\"aircraft\"]\n    pairs = [(i, j) for i in aircraft for j in aircraft if i != j]\n\n    model = pyo.ConcreteModel()\n\n    model.I = pyo.Set(initialize=aircraft)\n    model.P = pyo.Set(initialize=pairs, dimen=2)\n\n    # Landing time: \"aircraft_0 must land between 0 and 30 units of time,\n    # while aircraft_1 must land between 128 and 188 units of time.\"\n    def x_bounds(m, i):\n        return (d[\"earliest\"][i], d[\"latest\"][i])\n\n    model.x = pyo.Var(model.I, domain=pyo.NonNegativeReals,\n                      bounds=x_bounds)\n\n    # \"The early and late deviations for each aircraft are calculated based\n    # on the difference between the actual landing time and the target time.\"\n    model.e = pyo.Var(model.I, domain=pyo.NonNegativeReals)\n    model.l = pyo.Var(model.I, domain=pyo.NonNegativeReals)\n\n    # \"The order of landings is determined by binary variables\n    # AircraftOrder[aircraft_0,aircraft_1] and AircraftOrder[aircraft_1,aircraft_0],\n    # which are mutually exclusive and must sum to 1.\"\n    model.y = pyo.Var(model.P, domain=pyo.Binary)\n\n    # deviation_link_formulation: x_i - target_i == l_i - e_i\n    def dev_rule(m, i):\n        return m.x[i] - d[\"target\"][i] == m.l[i] - m.e[i]\n\n    model.dev_link = pyo.Constraint(model.I, rule=dev_rule)\n\n    # \"which are mutually exclusive and must sum to 1\"\n    def order_rule(m):\n        return sum(m.y[i, j] for (i, j) in pairs) == 1\n\n    model.order_sum = pyo.Constraint(rule=order_rule)\n\n    # separation_constraint_direction: x_j - x_i - sep + M(1-y) >= 0\n    # \"If aircraft_0 lands before aircraft_1, there must be at least 3 units\n    # of separation time. If aircraft_1 lands before aircraft_0, there must\n    # be at least 98 units of separation time.\"\n    def sep_rule(m, i, j):\n        return (m.x[j] - m.x[i] - d[\"separation\"][(i, j)]\n                + d[\"bigM\"] * (1 - m.y[i, j]) >= 0)\n\n    model.separation = pyo.Constraint(model.P, rule=sep_rule)\n\n    # \"The objective is to minimize the total penalty costs, which are\n    # calculated as the sum of the penalties for early and late deviations\n    # for both aircraft.\"\n    def obj_rule(m):\n        return sum(d[\"early_rate\"][i] * m.e[i] + d[\"late_rate\"][i] * m.l[i]\n                   for i in aircraft)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1335,
+      "completion_tokens": 913
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.554257869720459,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 1,
+    "assignment": [
+     {
+      "decision": "deviation_link_formulation",
+      "option": "single equality: x_i - target_i == l_i - e_i",
+      "evidence": "\"The early and late deviations for each aircraft are calculated based on the difference between the actual landing time and the target time.\"",
+      "plausibility": 0.6000000000000001
+     },
+     {
+      "decision": "big_m_value",
+      "option": "bigM = 200",
+      "evidence": "none (the text specifies separation times but no big-M)",
+      "plausibility": 0.4
+     },
+     {
+      "decision": "separation_constraint_direction",
+      "option": "x_j - x_i - sep + M(1-y) >= 0 (i.e. x_j >= x_i + sep when y=1)",
+      "evidence": "\"If aircraft_0 lands before aircraft_1, there must be at least 3 units of separation time.\"",
+      "plausibility": 0.97
+     },
+     {
+      "decision": "landing_time_domain",
+      "option": "NonNegativeReals with bounds [earliest, latest]",
+      "evidence": "\"aircraft_0 must land between 0 and 30 units of time, while aircraft_1 must land between 128 and 188 units of time.\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "order_binary_orientation",
+      "option": "y[(i,j)] = 1 means i lands before j; sum over all ordered pairs == 1",
+      "evidence": "\"The order of landings is determined by binary variables AircraftOrder[aircraft_0,aircraft_1] and AircraftOrder[aircraft_1,aircraft_0], which are mutually exclusive and must sum to 1.\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_units_and_scale",
+      "option": "raw penalty units: sum_i (early_rate_i * e_i + late_rate_i * l_i)",
+      "evidence": "\"The objective is to minimize the total penalty costs, which are calculated as the sum of the penalties for early and late deviations for both aircraft.\"",
+      "plausibility": 0.95
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"aircraft\": [\"aircraft_0\", \"aircraft_1\"],\n    \"earliest\": {\"aircraft_0\": 0, \"aircraft_1\": 128},\n    \"latest\": {\"aircraft_0\": 30, \"aircraft_1\": 188},\n    \"target\": {\"aircraft_0\": 0, \"aircraft_1\": 158},\n    \"early_rate\": {\"aircraft_0\": 42, \"aircraft_1\": 62},\n    \"late_rate\": {\"aircraft_0\": 32, \"aircraft_1\": 55},\n    \"separation\": {(\"aircraft_0\", \"aircraft_1\"): 3, (\"aircraft_1\", \"aircraft_0\"): 98},\n    \"bigM\": 200,\n    \"ordered_pairs\": [(\"aircraft_0\", \"aircraft_1\"), (\"aircraft_1\", \"aircraft_0\")],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.A = pyo.Set(initialize=d[\"aircraft\"])\n    model.P = pyo.Set(initialize=d[\"ordered_pairs\"], dimen=2)\n\n    # Landing time: \"aircraft_0 must land between 0 and 30 units of time, while\n    # aircraft_1 must land between 128 and 188 units of time.\"\n    # assumption: NonNegativeReals with bounds [earliest, latest]\n    def x_bounds(m, i):\n        return (d[\"earliest\"][i], d[\"latest\"][i])\n\n    model.x = pyo.Var(model.A, within=pyo.NonNegativeReals, bounds=x_bounds)\n\n    # \"For aircraft_0, the early deviation is non-negative, and the late deviation is non-negative.\"\n    model.e = pyo.Var(model.A, within=pyo.NonNegativeReals)\n    model.l = pyo.Var(model.A, within=pyo.NonNegativeReals)\n\n    # \"The order of landings is determined by binary variables AircraftOrder[...]\"\n    # assumption: y[(i,j)] = 1 means i lands before j\n    model.y = pyo.Var(model.P, within=pyo.Binary)\n\n    # \"The early and late deviations ... are calculated based on the difference\n    # between the actual landing time and the target time.\"\n    # assumption: single equality x_i - target_i == l_i - e_i\n    def dev_rule(m, i):\n        return m.x[i] - d[\"target\"][i] == m.l[i] - m.e[i]\n\n    model.dev_link = pyo.Constraint(model.A, rule=dev_rule)\n\n    # \"AircraftOrder[aircraft_0,aircraft_1] and AircraftOrder[aircraft_1,aircraft_0],\n    # which are mutually exclusive and must sum to 1.\"\n    def order_rule(m):\n        return sum(m.y[i, j] for (i, j) in d[\"ordered_pairs\"]) == 1\n\n    model.order_sum = pyo.Constraint(rule=order_rule)\n\n    # \"If aircraft_0 lands before aircraft_1, there must be at least 3 units of\n    # separation time. If aircraft_1 lands before aircraft_0, there must be at\n    # least 98 units of separation time.\"\n    # assumption: x_j - x_i - sep + M(1-y) >= 0\n    def sep_rule(m, i, j):\n        return m.x[j] - m.x[i] - d[\"separation\"][(i, j)] + d[\"bigM\"] * (1 - m.y[i, j]) >= 0\n\n    model.separation = pyo.Constraint(model.P, rule=sep_rule)\n\n    # \"The objective is to minimize the total penalty costs, which are calculated\n    # as the sum of the penalties for early and late deviations for both aircraft.\"\n    # assumption: raw penalty units\n    def obj_rule(m):\n        return sum(d[\"early_rate\"][i] * m.e[i] + d[\"late_rate\"][i] * m.l[i] for i in m.A)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1335,
+      "completion_tokens": 965
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.84133243560791,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 2,
+    "assignment": [
+     {
+      "decision": "deviation_link_formulation",
+      "option": "single equality: x_i - target_i == l_i - e_i",
+      "evidence": "\"The early and late deviations for each aircraft are calculated based on the difference between the actual landing time and the target time.\"",
+      "plausibility": 0.6000000000000001
+     },
+     {
+      "decision": "big_m_value",
+      "option": "bigM = max(latest) - min(earliest) + max(separation) = 188 - 0 + 98 = 286",
+      "evidence": "none (the text specifies separation times but no big-M)",
+      "plausibility": 0.2
+     },
+     {
+      "decision": "separation_constraint_direction",
+      "option": "x_j - x_i - sep + M(1-y) >= 0 (i.e. x_j >= x_i + sep when y=1)",
+      "evidence": "\"If aircraft_0 lands before aircraft_1, there must be at least 3 units of separation time.\"",
+      "plausibility": 0.97
+     },
+     {
+      "decision": "landing_time_domain",
+      "option": "NonNegativeReals with bounds [earliest, latest]",
+      "evidence": "\"aircraft_0 must land between 0 and 30 units of time, while aircraft_1 must land between 128 and 188 units of time.\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "order_binary_orientation",
+      "option": "y[(i,j)] = 1 means i lands before j; sum over all ordered pairs == 1",
+      "evidence": "\"The order of landings is determined by binary variables AircraftOrder[aircraft_0,aircraft_1] and AircraftOrder[aircraft_1,aircraft_0], which are mutually exclusive and must sum to 1.\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_units_and_scale",
+      "option": "raw penalty units: sum_i (early_rate_i * e_i + late_rate_i * l_i)",
+      "evidence": "\"The objective is to minimize the total penalty costs, which are calculated as the sum of the penalties for early and late deviations for both aircraft.\"",
+      "plausibility": 0.95
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"aircraft\": [\"aircraft_0\", \"aircraft_1\"],\n    \"earliest\": {\"aircraft_0\": 0, \"aircraft_1\": 128},\n    \"latest\": {\"aircraft_0\": 30, \"aircraft_1\": 188},\n    \"target\": {\"aircraft_0\": 0, \"aircraft_1\": 158},\n    \"early_rate\": {\"aircraft_0\": 42, \"aircraft_1\": 62},\n    \"late_rate\": {\"aircraft_0\": 32, \"aircraft_1\": 55},\n    \"separation\": {\n        (\"aircraft_0\", \"aircraft_1\"): 3,\n        (\"aircraft_1\", \"aircraft_0\"): 98,\n    },\n    \"bigM\": 286,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    aircraft = d[\"aircraft\"]\n\n    # Ordered pairs of distinct aircraft\n    pairs = [(i, j) for i in aircraft for j in aircraft if i != j]\n\n    model.Aircraft = pyo.Set(initialize=aircraft)\n    model.Pairs = pyo.Set(initialize=pairs, dimen=2)\n\n    # Landing time variables\n    # \"aircraft_0 must land between 0 and 30 units of time, while aircraft_1 must land between 128 and 188 units of time.\"\n    model.x = pyo.Var(\n        model.Aircraft,\n        within=pyo.NonNegativeReals,\n        bounds=lambda m, i: (d[\"earliest\"][i], d[\"latest\"][i]),\n    )\n\n    # Early and late deviation variables\n    # \"For aircraft_0, the early deviation is non-negative, and the late deviation is non-negative.\"\n    model.e = pyo.Var(model.Aircraft, within=pyo.NonNegativeReals)\n    model.l = pyo.Var(model.Aircraft, within=pyo.NonNegativeReals)\n\n    # Order binary: y[(i,j)] = 1 means i lands before j\n    # \"The order of landings is determined by binary variables AircraftOrder[aircraft_0,aircraft_1] and AircraftOrder[aircraft_1,aircraft_0], which are mutually exclusive and must sum to 1.\"\n    model.y = pyo.Var(model.Pairs, within=pyo.Binary)\n\n    # Deviation link: x_i - target_i == l_i - e_i\n    # \"The early and late deviations for each aircraft are calculated based on the difference between the actual landing time and the target time.\"\n    def dev_link_rule(m, i):\n        return m.x[i] - d[\"target\"][i] == m.l[i] - m.e[i]\n\n    model.dev_link = pyo.Constraint(model.Aircraft, rule=dev_link_rule)\n\n    # Order binaries sum to 1\n    # \"which are mutually exclusive and must sum to 1.\"\n    def order_sum_rule(m):\n        return sum(m.y[i, j] for (i, j) in pairs) == 1\n\n    model.order_sum = pyo.Constraint(rule=order_sum_rule)\n\n    # Separation constraints: x_j - x_i - sep + M(1-y) >= 0\n    # \"If aircraft_0 lands before aircraft_1, there must be at least 3 units of separation time. If aircraft_1 lands before aircraft_0, there must be at least 98 units of separation time.\"\n    def sep_rule(m, i, j):\n        return (\n            m.x[j]\n            - m.x[i]\n            - d[\"separation\"][(i, j)]\n            + d[\"bigM\"] * (1 - m.y[i, j])\n            >= 0\n        )\n\n    model.separation = pyo.Constraint(model.Pairs, rule=sep_rule)\n\n    # Objective: minimize total penalty costs\n    # \"The objective is to minimize the total penalty costs, which are calculated as the sum of the penalties for early and late deviations for both aircraft.\"\n    def obj_rule(m):\n        return sum(\n            d[\"early_rate\"][i] * m.e[i] + d[\"late_rate\"][i] * m.l[i]\n            for i in aircraft\n        )\n\n    model.obj = pyo.Objective(expr=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1361,
+      "completion_tokens": 982
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 4.626888275146484,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "branch",
+    "b": 3,
+    "assignment": [
+     {
+      "decision": "deviation_link_formulation",
+      "option": "two inequalities: x_i - target_i - l_i + e_i <= 0 and >= 0",
+      "evidence": "\"The early and late deviations for each aircraft are calculated based on the difference between the actual landing time and the target time.\"",
+      "plausibility": 0.30000000000000004
+     },
+     {
+      "decision": "big_m_value",
+      "option": "bigM = 200",
+      "evidence": "none (the text specifies separation times but no big-M)",
+      "plausibility": 0.4
+     },
+     {
+      "decision": "separation_constraint_direction",
+      "option": "x_j - x_i - sep + M(1-y) >= 0 (i.e. x_j >= x_i + sep when y=1)",
+      "evidence": "\"If aircraft_0 lands before aircraft_1, there must be at least 3 units of separation time.\"",
+      "plausibility": 0.97
+     },
+     {
+      "decision": "landing_time_domain",
+      "option": "NonNegativeReals with bounds [earliest, latest]",
+      "evidence": "\"aircraft_0 must land between 0 and 30 units of time, while aircraft_1 must land between 128 and 188 units of time.\"",
+      "plausibility": 0.85
+     },
+     {
+      "decision": "order_binary_orientation",
+      "option": "y[(i,j)] = 1 means i lands before j; sum over all ordered pairs == 1",
+      "evidence": "\"The order of landings is determined by binary variables AircraftOrder[aircraft_0,aircraft_1] and AircraftOrder[aircraft_1,aircraft_0], which are mutually exclusive and must sum to 1.\"",
+      "plausibility": 0.9
+     },
+     {
+      "decision": "objective_units_and_scale",
+      "option": "raw penalty units: sum_i (early_rate_i * e_i + late_rate_i * l_i)",
+      "evidence": "\"The objective is to minimize the total penalty costs, which are calculated as the sum of the penalties for early and late deviations for both aircraft.\"",
+      "plausibility": 0.95
+     }
+    ]
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"aircraft\": [\"aircraft_0\", \"aircraft_1\"],\n    \"earliest\": {\"aircraft_0\": 0, \"aircraft_1\": 128},\n    \"latest\": {\"aircraft_0\": 30, \"aircraft_1\": 188},\n    \"target\": {\"aircraft_0\": 0, \"aircraft_1\": 158},\n    \"early_rate\": {\"aircraft_0\": 42, \"aircraft_1\": 62},\n    \"late_rate\": {\"aircraft_0\": 32, \"aircraft_1\": 55},\n    # separation[(i,j)] = required separation if i lands before j\n    \"separation\": {(\"aircraft_0\", \"aircraft_1\"): 3, (\"aircraft_1\", \"aircraft_0\"): 98},\n    \"bigM\": 200,\n    \"order_pairs\": [(\"aircraft_0\", \"aircraft_1\"), (\"aircraft_1\", \"aircraft_0\")],\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    model = pyo.ConcreteModel()\n\n    model.Aircraft = pyo.Set(initialize=d[\"aircraft\"])\n    model.OrderPairs = pyo.Set(initialize=d[\"order_pairs\"], dimen=2)\n\n    # Landing time for each aircraft, bounded by its time window.\n    # \"aircraft_0 must land between 0 and 30 units of time, while aircraft_1 must land between 128 and 188 units of time.\"\n    # assumption: landing_time_domain = NonNegativeReals with bounds [earliest, latest]\n    def x_bounds(m, i):\n        return (d[\"earliest\"][i], d[\"latest\"][i])\n\n    model.x = pyo.Var(model.Aircraft, within=pyo.NonNegativeReals, bounds=x_bounds)\n\n    # Early deviation: non-negative.\n    # \"For aircraft_0, the early deviation is non-negative, and the late deviation is non-negative.\"\n    model.e = pyo.Var(model.Aircraft, within=pyo.NonNegativeReals)\n\n    # Late deviation: non-negative.\n    # \"For aircraft_0, the early deviation is non-negative, and the late deviation is non-negative.\"\n    model.l = pyo.Var(model.Aircraft, within=pyo.NonNegativeReals)\n\n    # Order binary: y[(i,j)] = 1 means i lands before j.\n    # \"The order of landings is determined by binary variables AircraftOrder[aircraft_0,aircraft_1] and AircraftOrder[aircraft_1,aircraft_0]\"\n    # assumption: order_binary_orientation = y[(i,j)] = 1 means i lands before j\n    model.y = pyo.Var(model.OrderPairs, within=pyo.Binary)\n\n    # Deviation link: x_i - target_i - l_i + e_i == 0, expressed as two inequalities.\n    # \"The early and late deviations for each aircraft are calculated based on the difference between the actual landing time and the target time.\"\n    # assumption: deviation_link_formulation = two inequalities (<= 0 and >= 0)\n    def dev_link_le_rule(m, i):\n        return m.x[i] - d[\"target\"][i] - m.l[i] + m.e[i] <= 0\n\n    def dev_link_ge_rule(m, i):\n        return m.x[i] - d[\"target\"][i] - m.l[i] + m.e[i] >= 0\n\n    model.dev_link_le = pyo.Constraint(model.Aircraft, rule=dev_link_le_rule)\n    model.dev_link_ge = pyo.Constraint(model.Aircraft, rule=dev_link_ge_rule)\n\n    # Separation constraint: x_j - x_i - sep + M(1-y) >= 0.\n    # \"If aircraft_0 lands before aircraft_1, there must be at least 3 units of separation time. If aircraft_1 lands before aircraft_0, there must be at least 98 units of separation time.\"\n    # assumption: separation_constraint_direction = x_j - x_i - sep + M(1-y) >= 0\n    # assumption: big_m_value = 200\n    def sep_rule(m, i, j):\n        return m.x[j] - m.x[i] - d[\"separation\"][(i, j)] + d[\"bigM\"] * (1 - m.y[(i, j)]) >= 0\n\n    model.sep = pyo.Constraint(model.OrderPairs, rule=sep_rule)\n\n    # Order binaries are mutually exclusive and sum to 1.\n    # \"which are mutually exclusive and must sum to 1\"\n    def order_sum_rule(m):\n        return sum(m.y[p] for p in m.OrderPairs) == 1\n\n    model.order_sum = pyo.Constraint(rule=order_sum_rule)\n\n    # Objective: minimize total penalty cost.\n    # \"The objective is to minimize the total penalty costs, which are calculated as the sum of the penalties for early and late deviations for both aircraft.\"\n    # assumption: objective_units_and_scale = raw penalty units\n    def obj_rule(m):\n        return sum(d[\"early_rate\"][i] * m.e[i] + d[\"late_rate\"][i] * m.l[i] for i in m.Aircraft)\n\n    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return model\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 1342,
+      "completion_tokens": 1214
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.670250654220581,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "branch",
+ "generated_at": "2026-11-02T08:10:28"
+}

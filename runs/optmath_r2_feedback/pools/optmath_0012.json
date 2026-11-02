@@ -1,0 +1,99 @@
+{
+ "pid": "optmath_0012",
+ "question": "The problem involves scheduling the landing times of three aircraft (Aircraft 0, Aircraft 1, and Aircraft 2) to minimize the total penalty costs associated with landing early or late. Each aircraft has a target landing time, and the actual landing time must fall within a specified earliest and latest possible landing time window. Aircraft 0 must land between 24 and 84 minutes, Aircraft 1 between 180 and 240 minutes, and Aircraft 2 between 215 and 275 minutes. The penalties for landing early are \\$21, \\$16, and \\$49 per minute for Aircraft 0, 1, and 2, respectively. The penalties for landing late are \\$57, \\$34, and \\$45 per minute for Aircraft 0, 1, and 2, respectively. The target landing times are defined such that Aircraft 0 must land no earlier than 54 minutes, Aircraft 1 no earlier than 210 minutes, and Aircraft 2 no earlier than 245 minutes. \n\nTo ensure safe landings, separation times between aircraft must be maintained based on the order in which they land. Binary variables determine the order of landings between any two aircraft. If Aircraft 0 lands before Aircraft 1, there must be at least 5 minutes between their landings; if Aircraft 1 lands before Aircraft 0, the separation must be at least 96 minutes. If Aircraft 0 lands before Aircraft 2, the separation must be at least 4 minutes; if Aircraft 2 lands before Aircraft 0, the separation must be at least 131 minutes. If Aircraft 1 lands before Aircraft 2, the separation must be at least 5 minutes; if Aircraft 2 lands before Aircraft 1, the separation must be at least 25 minutes. Additionally, if Aircraft 0 lands before Aircraft 1, the separation must be at least 216 minutes; if Aircraft 1 lands before Aircraft 0, the separation must be at least 2 minutes. If Aircraft 0 lands before Aircraft 2, the separation must be at least 251 minutes; if Aircraft 2 lands before Aircraft 0, the separation must be at least 1 minute. If Aircraft 1 lands before Aircraft 2, the separation must be at least 95 minutes; if Aircraft 2 lands before Aircraft 1, the separation must be at least 3 minutes.\n\nThe objective is to determine the landing times for each aircraft that minimize the total penalty costs, which are calculated as the sum of the early and late penalties for all aircraft. The early penalty for each aircraft is the number of minutes it lands before its target time multiplied by its early penalty rate, and the late penalty is the number of minutes it lands after its target time multiplied by its late penalty rate. The solution must ensure that all aircraft land within their respective time windows and that the separation times between landings are respected based on the order in which the aircraft land. The decision variables include the actual landing times for each aircraft and binary variables that determine the order of landings between any two aircraft. The goal is to find the optimal landing schedule that minimizes the total penalty costs while satisfying all constraints.",
+ "templates": [
+  "Scheduling",
+  "Set Covering / Location Covering",
+  "Blending / Diet"
+ ],
+ "candidates": [
+  {
+   "recipe": {
+    "arm": "feedback",
+    "b": 0,
+    "temperature": 0.6
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"aircraft\": [0, 1, 2],\n    \"index_pairs\": [(0, 1), (0, 2), (1, 2)],\n    \"ordered_pairs\": [(0, 1), (1, 0), (0, 2), (2, 0), (1, 2), (2, 1)],\n    # Earliest / latest landing windows\n    \"earliest\": {0: 24, 1: 180, 2: 215},\n    \"latest\":   {0: 84, 1: 240, 2: 275},\n    # Target times (\"no earlier than\")\n    \"target\": {0: 54, 1: 210, 2: 245},\n    # Early penalty rates ($/min)\n    \"early_pen\": {0: 21, 1: 16, 2: 49},\n    # Late penalty rates ($/min)\n    \"late_pen\": {0: 57, 1: 34, 2: 45},\n    # Separation set 1: (i before j): req\n    \"sep1\": {\n        (0, 1): 5, (1, 0): 96,\n        (0, 2): 4, (2, 0): 131,\n        (1, 2): 5, (2, 1): 25,\n    },\n    # Separation set 2: (i before j): req\n    \"sep2\": {\n        (0, 1): 216, (1, 0): 2,\n        (0, 2): 251, (2, 0): 1,\n        (1, 2): 95, (2, 1): 3,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    A = d[\"aircraft\"]\n    P = d[\"index_pairs\"]\n\n    m = pyo.ConcreteModel()\n\n    m.A = pyo.Set(initialize=A)\n    m.P = pyo.Set(initialize=P, dimen=2)\n\n    # Landing time variables within [earliest, latest]\n    def t_bounds(m, i):\n        return (d[\"earliest\"][i], d[\"latest\"][i])\n\n    m.T = pyo.Var(m.A, within=pyo.NonNegativeReals, bounds=t_bounds)\n\n    # Early / late deviation variables\n    m.early = pyo.Var(m.A, within=pyo.NonNegativeReals)\n    m.late = pyo.Var(m.A, within=pyo.NonNegativeReals)\n\n    # Ordering binaries: y[i,j] = 1 if i lands before j (for i < j)\n    m.y = pyo.Var(m.P, within=pyo.Binary)\n\n    # Effective separation = max of the two stated values per direction\n    def eff_sep(i, j):\n        return max(d[\"sep1\"][(i, j)], d[\"sep2\"][(i, j)])\n\n    # Big-M: max separation plus max window span (safe upper bound)\n    max_sep = max(eff_sep(a, b) for (a, b) in d[\"ordered_pairs\"])\n    max_latest = max(d[\"latest\"].values())\n    min_earliest = min(d[\"earliest\"].values())\n    M_big = max_sep + (max_latest - min_earliest)\n\n    # Target lower bound: must land no earlier than target\n    def rule_target(m, i):\n        return m.T[i] >= d[\"target\"][i]\n\n    m.target_lower = pyo.Constraint(m.A, rule=rule_target)\n\n    # Early deviation: early >= target - T\n    def rule_early(m, i):\n        return m.early[i] >= d[\"target\"][i] - m.T[i]\n\n    m.early_def = pyo.Constraint(m.A, rule=rule_early)\n\n    # Late deviation: late >= T - target\n    def rule_late(m, i):\n        return m.late[i] >= m.T[i] - d[\"target\"][i]\n\n    m.late_def = pyo.Constraint(m.A, rule=rule_late)\n\n    # Ordering constraints (big-M)\n    # y[i,j] = 1 -> i before j: T[j] >= T[i] + sep(i,j)\n    # y[i,j] = 0 -> j before i: T[i] >= T[j] + sep(j,i)\n    def rule_order_ij(m, i, j):\n        sep_ij = eff_sep(i, j)\n        return m.T[j] - m.T[i] >= sep_ij - M_big * (1 - m.y[i, j])\n\n    m.order_ij = pyo.Constraint(m.P, rule=rule_order_ij)\n\n    def rule_order_ji(m, i, j):\n        sep_ji = eff_sep(j, i)\n        return m.T[i] - m.T[j] >= sep_ji - M_big * m.y[i, j]\n\n    m.order_ji = pyo.Constraint(m.P, rule=rule_order_ji)\n\n    # Objective: minimize total early + late penalty\n    def obj_rule(m):\n        total = 0\n        for i in m.A:\n            total += d[\"early_pen\"][i] * m.early[i]\n            total += d[\"late_pen\"][i] * m.late[i]\n        return total\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2592,
+      "completion_tokens": 1251
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 5.4566755294799805,
+   "position": 0
+  },
+  {
+   "recipe": {
+    "arm": "feedback",
+    "b": 1,
+    "temperature": 0.8
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"aircraft\": [0, 1, 2],\n    \"index_pairs\": [(0, 1), (0, 2), (1, 2)],\n    \"ordered_pairs\": [(0, 1), (1, 0), (0, 2), (2, 0), (1, 2), (2, 1)],\n    # time windows\n    \"earliest\": {0: 24, 1: 180, 2: 215},\n    \"latest\": {0: 84, 1: 240, 2: 275},\n    # \"no earlier than\" target lower bounds\n    \"target\": {0: 54, 1: 210, 2: 245},\n    # early penalty rates\n    \"early_pen\": {0: 21, 1: 16, 2: 49},\n    # late penalty rates\n    \"late_pen\": {0: 57, 1: 34, 2: 45},\n    # operative separation table (i before j : minutes)\n    \"sep\": {\n        (0, 1): 5, (1, 0): 96,\n        (0, 2): 4, (2, 0): 131,\n        (1, 2): 5, (2, 1): 25,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    A = d[\"aircraft\"]\n    P = d[\"index_pairs\"]\n\n    m = pyo.ConcreteModel()\n\n    m.A = pyo.Set(initialize=A)\n    m.P = pyo.Set(initialize=P, dimen=2)\n\n    def t_bounds(m, i):\n        return (d[\"earliest\"][i], d[\"latest\"][i])\n\n    m.T = pyo.Var(m.A, within=pyo.NonNegativeReals, bounds=t_bounds)\n\n    m.early = pyo.Var(m.A, within=pyo.NonNegativeReals)\n    m.late = pyo.Var(m.A, within=pyo.NonNegativeReals)\n\n    m.y = pyo.Var(m.P, within=pyo.Binary)\n\n    # target lower bound: T_i >= target_i\n    def rule_target(m, i):\n        return m.T[i] >= d[\"target\"][i]\n\n    m.target_lb = pyo.Constraint(m.A, rule=rule_target)\n\n    # early deviation: early_i >= target_i - T_i\n    def rule_early(m, i):\n        return m.early[i] >= d[\"target\"][i] - m.T[i]\n\n    m.early_def = pyo.Constraint(m.A, rule=rule_early)\n\n    # late deviation: late_i >= T_i - target_i\n    def rule_late(m, i):\n        return m.late[i] >= m.T[i] - d[\"target\"][i]\n\n    m.late_def = pyo.Constraint(m.A, rule=rule_late)\n\n    # big-M\n    span = max(d[\"latest\"].values()) - min(d[\"earliest\"].values())\n    max_sep = max(d[\"sep\"][p] for p in d[\"ordered_pairs\"])\n    M_big = span + max_sep\n\n    # y[i,j] = 1 -> i before j -> T_j >= T_i + sep(i,j)\n    def rule_order_ij(m, i, j):\n        sep_ij = d[\"sep\"][(i, j)]\n        return m.T[j] - m.T[i] >= sep_ij - M_big * (1 - m.y[i, j])\n\n    m.order_ij = pyo.Constraint(m.P, rule=rule_order_ij)\n\n    # y[i,j] = 0 -> j before i -> T_i >= T_j + sep(j,i)\n    def rule_order_ji(m, i, j):\n        sep_ji = d[\"sep\"][(j, i)]\n        return m.T[i] - m.T[j] >= sep_ji - M_big * m.y[i, j]\n\n    m.order_ji = pyo.Constraint(m.P, rule=rule_order_ji)\n\n    def obj_rule(m):\n        total = 0\n        for i in m.A:\n            total += d[\"early_pen\"][i] * m.early[i]\n            total += d[\"late_pen\"][i] * m.late[i]\n        return total\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2592,
+      "completion_tokens": 2315
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 11.298733472824097,
+   "position": 1
+  },
+  {
+   "recipe": {
+    "arm": "feedback",
+    "b": 2,
+    "temperature": 1.0
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"aircraft\": [0, 1, 2],\n    \"index_pairs\": [(0, 1), (0, 2), (1, 2)],\n    \"ordered_pairs\": [(0, 1), (1, 0), (0, 2), (2, 0), (1, 2), (2, 1)],\n    \"earliest\": {0: 24, 1: 180, 2: 215},\n    \"latest\":   {0: 84, 1: 240, 2: 275},\n    \"target\":   {0: 54, 1: 210, 2: 245},\n    \"early_pen\": {0: 21, 1: 16, 2: 49},\n    \"late_pen\":  {0: 57, 1: 34, 2: 45},\n    \"sep1\": {\n        (0, 1): 5,   (1, 0): 96,\n        (0, 2): 4,   (2, 0): 131,\n        (1, 2): 5,   (2, 1): 25,\n    },\n    \"sep2\": {\n        (0, 1): 216, (1, 0): 2,\n        (0, 2): 251, (2, 0): 1,\n        (1, 2): 95,  (2, 1): 3,\n    },\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n\n    A = d[\"aircraft\"]\n    P = d[\"index_pairs\"]\n    OP = d[\"ordered_pairs\"]\n\n    m = pyo.ConcreteModel()\n\n    m.A = pyo.Set(initialize=A)\n    m.P = pyo.Set(initialize=P, dimen=2)\n    m.OP = pyo.Set(initialize=OP, dimen=2)\n\n    # Effective separation: both stated values must hold -> take max per direction.\n    eff_sep = {(i, j): max(d[\"sep1\"][(i, j)], d[\"sep2\"][(i, j)]) for (i, j) in OP}\n\n    # Landing times within hard windows.\n    def t_bounds(m, i):\n        return (d[\"earliest\"][i], d[\"latest\"][i])\n\n    m.T = pyo.Var(m.A, within=pyo.NonNegativeReals, bounds=t_bounds)\n\n    # Early / late deviation variables (nonnegative).\n    m.early = pyo.Var(m.A, within=pyo.NonNegativeReals)\n    m.late = pyo.Var(m.A, within=pyo.NonNegativeReals)\n\n    # Ordering binaries for i < j.\n    m.y = pyo.Var(m.P, within=pyo.Binary)\n\n    # Early deviation: early >= target - T   (nothing forces a target lower bound).\n    def rule_early(m, i):\n        return m.early[i] >= d[\"target\"][i] - m.T[i]\n\n    m.early_def = pyo.Constraint(m.A, rule=rule_early)\n\n    # Late deviation: late >= T - target.\n    def rule_late(m, i):\n        return m.late[i] >= m.T[i] - d[\"target\"][i]\n\n    m.late_def = pyo.Constraint(m.A, rule=rule_late)\n\n    # Big-M: a safe constant covering the largest possible T-difference minus sep.\n    latest_max = max(d[\"latest\"].values())\n    earliest_min = min(d[\"earliest\"].values())\n    sep_max = max(eff_sep.values())\n    M_big = (latest_max - earliest_min) + sep_max\n\n    # For i < j: y[i,j]=1 -> i before j; y[i,j]=0 -> j before i.\n    def rule_order_ij(m, i, j):\n        # T[j] - T[i] >= sep(i,j) - M*(1 - y[i,j])\n        return m.T[j] - m.T[i] >= eff_sep[(i, j)] - M_big * (1 - m.y[i, j])\n\n    m.order_ij = pyo.Constraint(m.P, rule=rule_order_ij)\n\n    def rule_order_ji(m, i, j):\n        # T[i] - T[j] >= sep(j,i) - M*y[i,j]\n        return m.T[i] - m.T[j] >= eff_sep[(j, i)] - M_big * m.y[i, j]\n\n    m.order_ji = pyo.Constraint(m.P, rule=rule_order_ji)\n\n    def obj_rule(m):\n        return sum(d[\"early_pen\"][i] * m.early[i] + d[\"late_pen\"][i] * m.late[i]\n                   for i in m.A)\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2592,
+      "completion_tokens": 1776
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 9.253471612930298,
+   "position": 2
+  },
+  {
+   "recipe": {
+    "arm": "feedback",
+    "b": 3,
+    "temperature": 1.2
+   },
+   "code": "import pyomo.environ as pyo\n\nDATA = {\n    \"aircraft\": [0, 1, 2],\n    \"pairs\": [(0, 1), (0, 2), (1, 2)],\n    # time windows: [earliest, latest]\n    \"earliest\": {0: 24, 1: 180, 2: 215},\n    \"latest\": {0: 84, 1: 240, 2: 275},\n    # target (desired) landing times, lower bounds per text\n    \"target\": {0: 54, 1: 210, 2: 245},\n    # early penalty rates per minute\n    \"early_pen\": {0: 21, 1: 16, 2: 49},\n    # late penalty rates per minute\n    \"late_pen\": {0: 57, 1: 34, 2: 45},\n    # separation requirements for \"i lands before j\": sep_before[i][j]\n    # Two constraint sets are given; both must hold simultaneously,\n    # so the effective separation is their sum? The text lists them as\n    # separate statements (\"Additionally, ...\"), i.e. both must be satisfied,\n    # hence we require the maximum of each directional requirement.\n    # We store both sets and combine via max in the model.\n    \"sep_set_1\": {\n        (0, 1): 5, (1, 0): 96,\n        (0, 2): 4, (2, 0): 131,\n        (1, 2): 5, (2, 1): 25,\n    },\n    \"sep_set_2\": {\n        (0, 1): 216, (1, 0): 2,\n        (0, 2): 251, (2, 0): 1,\n        (1, 2): 95, (2, 1): 3,\n    },\n    # big-M: maximum possible time difference scale plus separation allowances\n    \"big_m\": 1000,\n}\n\n\ndef build_model(data=None):\n    d = data or DATA\n    airports = d[\"aircraft\"]\n    pairs = d[\"pairs\"]\n    big_m = d[\"big_m\"]\n\n    def sep_before(i, j):\n        return max(d[\"sep_set_1\"][(i, j)], d[\"sep_set_2\"][(i, j)])\n\n    m = pyo.ConcreteModel()\n\n    m.A = pyo.Set(initialize=airports)\n    m.P = pyo.Set(initialize=pairs, dimen=2)\n\n    # Decision: landing times within windows\n    def t_bounds(m, i):\n        return (d[\"earliest\"][i], d[\"latest\"][i])\n\n    m.T = pyo.Var(m.A, within=pyo.NonNegativeReals, bounds=t_bounds)\n\n    # early/late deviation auxiliaries (nonnegative)\n    m.early = pyo.Var(m.A, within=pyo.NonNegativeReals)\n    m.late = pyo.Var(m.A, within=pyo.NonNegativeReals)\n\n    # order binaries per pair (i<j)\n    m.y = pyo.Var(m.P, within=pyo.Binary)\n\n    # target lower bound: aircraft must land no earlier than target\n    def rule_target(m, i):\n        return m.T[i] >= d[\"target\"][i]\n\n    m.c_target = pyo.Constraint(m.A, rule=rule_target)\n\n    # early deviation: early >= target - T\n    def rule_early(m, i):\n        return m.early[i] >= d[\"target\"][i] - m.T[i]\n\n    m.c_early = pyo.Constraint(m.A, rule=rule_early)\n\n    # late deviation: late >= T - target\n    def rule_late(m, i):\n        return m.late[i] >= m.T[i] - d[\"target\"][i]\n\n    m.c_late = pyo.Constraint(m.A, rule=rule_late)\n\n    # ordering constraints based on binary y[i,j] (for i<j)\n    # y[i,j] = 1 => i lands before j => T[j] - T[i] >= sep(i->j)\n    # y[i,j] = 0 => j lands before i => T[i] - T[j] >= sep(j->i)\n    def rule_fwd(m, i, j):\n        s = sep_before(i, j)\n        return m.T[j] - m.T[i] >= s - big_m * (1 - m.y[i, j])\n\n    m.c_fwd = pyo.Constraint(m.P, rule=rule_fwd)\n\n    def rule_bwd(m, i, j):\n        s = sep_before(j, i)\n        return m.T[i] - m.T[j] >= s - big_m * m.y[i, j]\n\n    m.c_bwd = pyo.Constraint(m.P, rule=rule_bwd)\n\n    # objective: total penalty cost\n    def obj_rule(m):\n        cost = 0\n        for i in m.A:\n            cost += d[\"early_pen\"][i] * m.early[i]\n            cost += d[\"late_pen\"][i] * m.late[i]\n        return cost\n\n    m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)\n\n    return m\n\n\nGOLD_ANSWER = None\n",
+   "history": [
+    {
+     "stage": "generate",
+     "cached": false,
+     "usage": {
+      "prompt_tokens": 2592,
+      "completion_tokens": 1196
+     }
+    }
+   ],
+   "defects_at_generation": [],
+   "seconds": 6.154863595962524,
+   "position": 3
+  }
+ ],
+ "model": "deepseek-flash",
+ "round": 2,
+ "arm": "feedback",
+ "generated_at": "2026-11-02T07:52:00"
+}
